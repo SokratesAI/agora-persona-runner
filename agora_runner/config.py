@@ -27,6 +27,14 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 # rule and why attended turns are deliberately still allowed.
 ALLOW_METERED_UNATTENDED = os.environ.get(
     "ALLOW_METERED_UNATTENDED", "").strip().lower() in ("1", "true", "yes")
+# The metered guard above is a boolean: an attended turn on `anthropic:` is
+# allowed and then unlimited. One turn can run TOOL_ROUNDS_MAX (100) rounds and
+# each round resends the whole conversation, so a single tool loop near a
+# 200k-token window is on the order of 20M billed tokens. This ceiling is
+# per turn, counted off the API's own `usage` (input, both cache kinds and
+# output), and the turn is refused before the round that would start past it
+# (idea #249). A normal chat turn is a few rounds of tens of thousands.
+ANTHROPIC_TURN_TOKEN_CEILING = int(os.environ.get("ANTHROPIC_TURN_TOKEN_CEILING", "") or 1_000_000)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 AGORA_URL = os.environ.get("AGORA_URL", "http://agora.agents.svc.cluster.local:8080")
 AGORA_INTERNAL_URL = os.environ.get(

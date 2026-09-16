@@ -9545,3 +9545,49 @@ def test_an_unclaimed_run_still_going_does_not_eat_the_next_slot(runner):
 
     tick()
     assert len(created) == 2, "the next slot was declined by a mark nothing owned"
+
+
+# ---------------------------------------------------------------------------
+# idea #249: the metered guard is a boolean, so an attended `anthropic:` turn
+# was unlimited -- 100 tool rounds, each resending the whole conversation.
+# A turn is refused before the round that would start past its token ceiling.
+# ---------------------------------------------------------------------------
+
+def _tool_round(tokens):
+    return 200, {
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": tokens - 10, "cache_read_input_tokens": 5, "output_tokens": 5},
+        "content": [{"type": "tool_use", "id": "t1", "name": "vault_read", "input": {}}],
+    }
+
+
+def test_anthropic_turn_refused_before_the_round_past_its_token_ceiling(runner):
+    calls = []
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+        calls.append(body)
+        return _tool_round(600)
+
+    with patch.object(runner.providers.anthropic, "ANTHROPIC_TURN_TOKEN_CEILING", 1000), \
+         patch.object(runner.providers.anthropic, "execute_tool", return_value="ok"), \
+         patch.object(runner.providers.anthropic, "http_json", side_effect=fake_http_json):
+        with pytest.raises(runner.providers.anthropic.MeteredTurnCeilingReached, match="1,200 tokens"):
+            runner.anthropic_generate(
+                "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+                dict(runner.NO_CAPS), {"name": "Test", "id": "p1"}, "conv-1",
+            )
+    assert len(calls) == 2
+
+
+def test_anthropic_turn_under_its_token_ceiling_runs_to_the_answer(runner):
+    responses = [_tool_round(600), (200, {"stop_reason": "end_turn", "usage": {"input_tokens": 900},
+                                          "content": [{"type": "text", "text": "done"}]})]
+
+    with patch.object(runner.providers.anthropic, "ANTHROPIC_TURN_TOKEN_CEILING", 1000), \
+         patch.object(runner.providers.anthropic, "execute_tool", return_value="ok"), \
+         patch.object(runner.providers.anthropic, "http_json", side_effect=responses):
+        result = runner.anthropic_generate(
+            "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Test", "id": "p1"}, "conv-1",
+        )
+    assert result == "done"
