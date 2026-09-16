@@ -4683,7 +4683,7 @@ KPI_MEASURERS = {
 #: says nothing about whether anyone tried, and three cycles re-deriving the
 #: same "there is no endpoint for this" is three cycles spent twice.
 #:
-#: The three entries are the must-be floors Edvard's goal chain found for Nova
+#: The three entries are the must-be floors the owner's goal chain found for Nova
 #: the app on 2026-09-16 (Cycle 1689). Each is a floor he named and nothing
 #: here can read yet; delete an entry in the same change that adds its measurer.
 KPI_NO_INSTRUMENT = {
