@@ -50,6 +50,7 @@ from `terminal_exec`:
 import argparse
 import sys
 
+from agora_runner import ask_push_log
 from agora_runner.http_util import agora_internal, unauthorized_hint
 from agora_runner.log import log
 from agora_runner.nova_conversations import ANSWER_PERSONA_ID
@@ -178,9 +179,14 @@ def ask(question, context, cycle=None):
     held = push_held(posted)
     if held:
         log(f"needs_input: {cid} posted but the push was withheld ({held})")
+    # Written now because Agora's answer is the only place this fact exists
+    # (nova-kpi-push-delivered). A failed write is reported, never fatal.
+    unrecorded = ask_push_log.record("ask", cid, message_id, held, cycle=cycle)
+    if unrecorded:
+        log(f"needs_input: {cid} {unrecorded}")
     return True, {"conversationId": cid, "name": name, "repeat": repeat,
                   "messageId": message_id, "pushed": held is None,
-                  "pushHeld": held}
+                  "pushHeld": held, "unrecorded": unrecorded}
 
 
 # What Agora answers when it appended the message and deliberately did not
@@ -248,6 +254,8 @@ def main(argv=None):
         return 1
     what = "posted into the existing thread" if info["repeat"] else "opened"
     print(f"{what}: {info['name']}  ({info['conversationId']})")
+    if info.get("unrecorded"):
+        print(f"WARNING: {info['unrecorded']} -- nova-kpi-push-delivered will not count this ask")
     if info.get("pushHeld"):
         print(f"HIS PHONE DID NOT BUZZ — {info['pushHeld']}. The question is in "
               "the thread and he has no idea it is there. `python3 -m "

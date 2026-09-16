@@ -153,6 +153,19 @@ def _clear_nova_site_cache():
 
 
 @pytest.fixture(autouse=True)
+def _no_ask_push_log_writes(monkeypatch):
+    """No test's ask or nudge may write its push outcome to the vault.
+
+    `needs_input.ask` and `nudge_ask.nudge` record every post they make
+    (nova-kpi-push-delivered). Tests that exercise the record patch `_append`
+    themselves; everything else gets a recorder that writes nowhere.
+    """
+    from agora_runner import ask_push_log
+    monkeypatch.setattr(ask_push_log, "_append",
+                        lambda path, content, after_marker: "written")
+
+
+@pytest.fixture(autouse=True)
 def _no_lifecycle_writes(monkeypatch):
     """No test's `main()` may start the lifecycle ledger's vault write.
 

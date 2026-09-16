@@ -44,6 +44,7 @@ import sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from agora_runner import ask_push_log
 from agora_runner.http_util import agora_get, agora_internal, unauthorized_hint
 from agora_runner.needs_input import SENDER, push_held
 
@@ -169,9 +170,12 @@ def nudge(conversation_id, text=NUDGE_TEXT, now=None, newest=None):
     if status not in (200, 201):
         return False, f"notify returned HTTP {status}{unauthorized_hint(status)}"
     held = push_held(body)
+    message_id = (body.get("message") or {}).get("id") if isinstance(body, dict) else None
+    unrecorded = ask_push_log.record("nudge", conversation_id, message_id, held)
+    note = f"; {unrecorded}" if unrecorded else ""
     if held:
-        return False, f"posted but the push was withheld again ({held})"
-    return True, "his phone buzzed"
+        return False, f"posted but the push was withheld again ({held}){note}"
+    return True, f"his phone buzzed{note}"
 
 
 def main(argv=None):
