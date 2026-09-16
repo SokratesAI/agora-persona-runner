@@ -1537,8 +1537,7 @@ def test_a_kpi_is_either_measured_or_says_why_never_both():
     """Every KPI with no measurer carries a reason, and none carries both --
     an instrument that ships beside a stale "no instrument" line would print
     the measurement and leave the excuse in the map for the next reader."""
-    assert set(goal_measures.KPI_NO_INSTRUMENT) == {
-        "nova-kpi-false-status", "nova-kpi-owner-only-controls"}
+    assert set(goal_measures.KPI_NO_INSTRUMENT) == {"nova-kpi-owner-only-controls"}
     assert not set(goal_measures.KPI_NO_INSTRUMENT) & set(goal_measures.KPI_MEASURERS)
     for kpi_id, why in goal_measures.KPI_NO_INSTRUMENT.items():
         assert why.strip(), kpi_id
@@ -5509,3 +5508,73 @@ class TestNovaScaleBlocksRecorded:
     def test_stop_seconds_states_why_it_has_no_instrument(self):
         reason = gm.KEY_RESULT_NO_INSTRUMENT["nova-kr-control-stop-seconds"]
         assert "five real attempts" in reason
+
+
+# -- nova-kpi-false-status ----------------------------------------------------
+
+def _heartbeat(name, enabled=True, last="2026-09-16T10:00:00Z", schedule="every@24m"):
+    return {"name": name, "enabled": enabled, "lastRunAt": last,
+            "createdAt": "2026-09-01T00:00:00Z", "schedule": schedule}
+
+
+_NOON = datetime(2026, 9, 16, 10, 10, tzinfo=timezone.utc)
+
+
+def test_an_enabled_heartbeat_that_stopped_firing_is_a_false_on():
+    """The real `judge` decides overdue; only the fetch is stubbed."""
+    rows = [_heartbeat("firing"),
+            _heartbeat("stopped", last="2026-09-15T10:00:00Z"),
+            _heartbeat("switched off", enabled=False, last="2026-09-01T10:00:00Z")]
+    names, error = goal_measures.false_heartbeat_statuses(
+        fetch=lambda: (rows, None), now=_NOON)
+    assert error is None
+    assert names == ["stopped"]
+
+
+def test_an_unreadable_heartbeat_list_is_an_error_not_an_empty_list():
+    names, error = goal_measures.false_heartbeat_statuses(
+        fetch=lambda: ([], "connection refused"), now=_NOON)
+    assert names is None and "connection refused" in error
+
+
+def test_board_half_counts_only_the_raising_bucket():
+    finding = ("issues", 12, "Backlog", {"state": "done"})
+    blocked = ("ideas", 7, "Blocked on Edvard", {"state": "done"})
+    labels, error = goal_measures.false_board_statuses(
+        check=lambda: ([finding], [blocked], [], [], 2))
+    assert error is None and labels == ["issues #12 (Backlog)"]
+    labels, error = goal_measures.false_board_statuses(
+        check=lambda: ([], [], [], ["claims.json"], 0))
+    assert labels is None and "claims.json" in error
+
+
+def test_false_status_reports_a_count_above_zero_with_its_scope():
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=lambda: (["stopped"], None),
+        board=lambda: (["issues #12 (Backlog)"], None))
+    assert value == 2
+    assert "heartbeat stopped" in detail and "board row issues #12" in detail
+    assert "not compared" in detail
+
+
+def test_false_status_refuses_to_report_zero():
+    """Floor 0, two kinds uncompared: a 0 would print in bounds off half the app."""
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=lambda: ([], None), board=lambda: ([], None))
+    assert value is None
+    assert "not a reading" in detail
+
+
+def test_false_status_keeps_a_count_when_one_half_is_unreadable():
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=lambda: (None, "agora down"),
+        board=lambda: (["issues #12 (Backlog)"], None))
+    assert value == 1 and "agora down" in detail
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=lambda: (None, "agora down"), board=lambda: ([], None))
+    assert value is None and "agora down" in detail
+
+
+def test_false_status_measurer_is_wired():
+    assert goal_measures.KPI_MEASURERS["nova-kpi-false-status"] is \
+        goal_measures.measure_nova_false_status

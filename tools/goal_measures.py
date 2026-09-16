@@ -4102,6 +4102,78 @@ def measure_nova_push_delivered(since, until, runner=subprocess.run, tool=VAULT_
     return ask_push_log.delivery_share(ask_push_log.parse(done.stdout))
 
 
+def false_heartbeat_statuses(fetch=None, judge=None, now=None):
+    """`(names, error)` -- heartbeats the app shows as on that are not firing.
+
+    The Heartbeats page draws a row's switch from `enabled`. A heartbeat that
+    is enabled and overdue on its own schedule is showing "on" for a job that
+    is not running, which is a false status on screen. A heartbeat that is off
+    shows off and is true, whatever its name says, so it never counts here.
+    """
+    from agora_runner import heartbeat_liveness
+    fetch = fetch or heartbeat_liveness._fetch
+    judge = judge or heartbeat_liveness.judge
+    rows, error = fetch()
+    if error:
+        return None, error
+    now = now or datetime.now(timezone.utc)
+    return [r["name"] for r in (judge(row, now) for row in rows)
+            if r.get("verdict") == "overdue"], None
+
+
+def false_board_statuses(check=None):
+    """`(labels, error)` -- board rows showing open that this loop recorded as done.
+
+    `board_done_drift`'s raising bucket, unchanged: a `done` claim against a
+    cell that is neither closed nor blocked. It only sees rows a cycle claimed,
+    and the detail line says so.
+    """
+    if check is None:
+        from tools import board_done_drift
+        check = board_done_drift.check
+    findings, _blocked, _mirrors, unreadable, _swept = check()
+    if unreadable:
+        return None, "; ".join(unreadable)
+    return [f"{board} #{number} ({status})" for board, number, status, _ in findings], None
+
+
+#: The kinds of status the app shows that have no second source to compare
+#: with yet. Printed beside every reading, because a count over two of four
+#: kinds is not a count over the app.
+FALSE_STATUS_NOT_COMPARED = ("whether a cycle is running", "a KPI's now")
+
+
+def measure_nova_false_status(since, until, heartbeats=false_heartbeat_statuses,
+                              board=false_board_statuses):
+    """Known false statuses showing in the app right now. A count.
+
+    Two comparisons exist and both are summed: a heartbeat shown on that is
+    not firing, and a board row shown open that a cycle released as done.
+    **A zero is not reported.** The floor is 0 and two kinds of status have no
+    comparison at all, so "0 found" would print as in bounds while half the
+    app went unchecked -- the best reading of this KPI coming off the thinnest
+    evidence. Any count above zero is a true floor and is reported.
+    """
+    del since, until
+    found, errors = [], []
+    for label, measure in (("heartbeat", heartbeats), ("board row", board)):
+        names, error = measure()
+        if error:
+            errors.append(f"could not compare {label} statuses -- {error}")
+        else:
+            found.extend(f"{label} {name}" for name in names)
+    not_compared = " and ".join(FALSE_STATUS_NOT_COMPARED)
+    if found:
+        extra = f"; {'; '.join(errors)}" if errors else ""
+        return len(found), (f"at least {len(found)}: {', '.join(found)} "
+                            f"(not compared: {not_compared}){extra}")
+    if errors:
+        return None, "; ".join(errors)
+    return None, ("0 in the two kinds I can compare (heartbeats shown on, "
+                  "claimed board rows shown open) -- not a reading, because "
+                  f"{not_compared} have no second source yet")
+
+
 def measure_research_reused(since, until):
     """Share of research write-ups a later journal entry has cited. A share.
 
@@ -4700,6 +4772,7 @@ KPI_MEASURERS = {
     "pm-kpi-pins-current": measure_maint_pins_current,
     "pm-kpi-research-reused": measure_research_reused,
     "nova-kpi-push-delivered": measure_nova_push_delivered,
+    "nova-kpi-false-status": measure_nova_false_status,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
@@ -4708,14 +4781,11 @@ KPI_MEASURERS = {
 #: same "there is no endpoint for this" is three cycles spent twice.
 #:
 #: The entries are the must-be floors the owner's goal chain found for Nova the
-#: app on 2026-09-16 (Cycle 1689) that nothing here can read yet; the third,
-#: `nova-kpi-push-delivered`, got its measurer in Cycle 1690. Delete an entry in
+#: app on 2026-09-16 (Cycle 1689) that nothing here can read yet;
+#: `nova-kpi-push-delivered` got its measurer in Cycle 1690 and
+#: `nova-kpi-false-status` in Cycle 1691. Delete an entry in
 #: the same change that adds its measurer.
 KPI_NO_INSTRUMENT = {
-    "nova-kpi-false-status": (
-        "a false status needs a second source per kind of status (board row, "
-        "heartbeat, running cycle, KPI now) and only board_done_drift compares "
-        "one, for claimed rows only"),
     "nova-kpi-owner-only-controls": (
         "the app has no login of its own -- the tailnet is the only identity "
         "check and the in-cluster port answers without one -- so who counts as "
