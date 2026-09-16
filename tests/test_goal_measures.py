@@ -5575,6 +5575,68 @@ def test_false_status_keeps_a_count_when_one_half_is_unreadable():
     assert value is None and "agora down" in detail
 
 
+def _status_kpi_row(kpi_id, now, value, low="0", high="1"):
+    return {"project": "Nova", "id": kpi_id, "value": value, "detail": "",
+            "kpi": {"id": kpi_id, "now": now, "low": low, "high": high}}
+
+
+def test_a_kpi_shown_on_the_wrong_side_of_its_range_is_a_false_status():
+    rows = [_status_kpi_row("breach-hidden", "1", 6),       # page: in bounds; really out
+            _status_kpi_row("breach-over", "6", 0),         # page: out of bounds; really in
+            _status_kpi_row("moved-inside", "0", 1),        # drifted, same side
+            _status_kpi_row("out-both", "6", 3),            # out on both
+            _status_kpi_row("blank-now", "", 6),            # page says not measured
+            _status_kpi_row("no-reading", "6", None)]       # nothing to compare with
+    ids, error = goal_measures.false_kpi_statuses(rows)
+    assert error is None
+    assert ids == ["breach-hidden", "breach-over"]
+
+
+def test_kpi_statuses_outside_a_sweep_are_uncompared_not_zero():
+    assert goal_measures.false_kpi_statuses(None) == (None, None)
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=lambda: ([], None), board=lambda: ([], None))
+    assert value is None and "a KPI's now" in detail
+
+
+def test_false_status_counts_a_kpi_and_names_only_the_cycle_kind_uncompared():
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=lambda: ([], None), board=lambda: ([], None),
+        kpi_rows=[_status_kpi_row("nova-kpi-silent-cycles", "1", 6)])
+    assert value == 1
+    assert "KPI nova-kpi-silent-cycles" in detail
+    assert "not compared: whether a cycle is running)" in detail
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=lambda: ([], None), board=lambda: ([], None),
+        kpi_rows=[_status_kpi_row("nova-kpi-silent-cycles", "0", 1)])
+    assert value is None and "a KPI's now" not in detail
+    assert "(heartbeat, board row, KPI)" in detail
+
+
+def test_kpi_rows_hands_a_rows_measurer_every_other_reading_even_when_listed_first(monkeypatch):
+    """The real false-status measurer, deferred past the KPI it judges."""
+    import functools
+    monkeypatch.setattr(goal_measures, "KPI_MEASURERS_OVER_ROWS",
+                        frozenset({"nova-kpi-dropped-ticks"}))
+    monkeypatch.setitem(goal_measures.KPI_MEASURERS, "nova-kpi-dropped-ticks",
+                        functools.partial(goal_measures.measure_nova_false_status,
+                                          heartbeats=lambda: ([], None),
+                                          board=lambda: ([], None)))
+    # written 1.74 inside 0..2.0, measured 2.5 outside it
+    monkeypatch.setitem(goal_measures.KPI_MEASURERS, "nova-kpi-invented-for-this-fixture",
+                        lambda since, until: (2.5, "read"))
+    out = goal_measures.kpi_rows(_kpi_sections(), "2026-09-07", "2026-09-13")
+    assert [row["id"] for row in out] == ["nova-kpi-dropped-ticks",
+                                          "nova-kpi-invented-for-this-fixture"]
+    assert out[0]["value"] == 1
+    assert "KPI nova-kpi-invented-for-this-fixture" in out[0]["detail"]
+    assert out[1]["value"] == 2.5
+
+
+def test_false_status_is_measured_over_the_sweep_rows():
+    assert "nova-kpi-false-status" in goal_measures.KPI_MEASURERS_OVER_ROWS
+
+
 def test_false_status_measurer_is_wired():
     assert goal_measures.KPI_MEASURERS["nova-kpi-false-status"] is \
         goal_measures.measure_nova_false_status
