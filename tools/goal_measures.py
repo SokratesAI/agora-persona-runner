@@ -1883,30 +1883,54 @@ MARCUS_BROWSER_DIR = "public"
 MARCUS_REPO = "SokratesAI/marcus"
 
 
-def _marcus_browser_files():
+def _browser_files(repo, directory):
     """List the JS files served straight to the browser, with their sizes.
 
     One `gh api` call against the contents endpoint, non-recursive on purpose:
-    a `public/vendor/` full of third-party libraries would otherwise decide
-    this number, and a vendored bundle is not code anybody here wrote.
+    a `vendor/` full of third-party libraries would otherwise decide this
+    number, and a vendored bundle is not code anybody here wrote.
     """
     try:
         done = subprocess.run(
-            ["gh", "api", f"repos/{MARCUS_REPO}/contents/"
-             f"{MARCUS_BROWSER_DIR}", "--jq",
+            ["gh", "api", f"repos/{repo}/contents/{directory}", "--jq",
              '[.[] | select(.type == "file") | {name, size}]'],
             capture_output=True, text=True, timeout=60,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return None, f"gh api could not list {MARCUS_REPO}/{MARCUS_BROWSER_DIR}: {exc}"
+        return None, f"gh api could not list {repo}/{directory}: {exc}"
     if done.returncode != 0:
-        return None, (f"gh api failed on {MARCUS_REPO}/{MARCUS_BROWSER_DIR}: "
+        return None, (f"gh api failed on {repo}/{directory}: "
                       f"{done.stderr.strip()[:200]}")
     try:
         entries = json.loads(done.stdout or "[]")
     except json.JSONDecodeError as exc:
-        return None, f"gh api returned unreadable JSON for {MARCUS_REPO}: {exc}"
+        return None, f"gh api returned unreadable JSON for {repo}: {exc}"
     return [e for e in entries if str(e.get("name", "")).endswith(".js")], None
+
+
+def _marcus_browser_files():
+    return _browser_files(MARCUS_REPO, MARCUS_BROWSER_DIR)
+
+
+def _largest_browser_file(repo, directory, files, error):
+    """The biggest file of `files` in kilobytes, or `None` with the reason."""
+    if error:
+        return None, error
+    if not files:
+        return None, (f"{repo}/{directory} holds no .js file, "
+                      "so there is no browser code to size -- that is a moved "
+                      "directory rather than a reading")
+    biggest = max(files, key=lambda e: e.get("size") or 0)
+    size_kb = round((biggest.get("size") or 0) / 1000.0)
+    others = ", ".join(f"{e['name']} {round((e.get('size') or 0) / 1000.0)}KB"
+                       for e in sorted(files, key=lambda e: -(e.get("size") or 0))[1:4])
+    detail = (f"{biggest['name']} is {size_kb}KB, the largest of "
+              f"{len(files)} hand-written browser file(s) in "
+              f"{directory}/; a ratchet, so it may fall and must "
+              "never rise")
+    if others:
+        detail += f" (next: {others})"
+    return size_kb, detail
 
 
 def measure_marcus_browser_monolith(since, until):
@@ -1938,23 +1962,31 @@ def measure_marcus_browser_monolith(since, until):
     """
     del since, until
     files, error = _marcus_browser_files()
-    if error:
-        return None, error
-    if not files:
-        return None, (f"{MARCUS_REPO}/{MARCUS_BROWSER_DIR} holds no .js file, "
-                      "so there is no browser code to size -- that is a moved "
-                      "directory rather than a reading")
-    biggest = max(files, key=lambda e: e.get("size") or 0)
-    size_kb = round((biggest.get("size") or 0) / 1000.0)
-    others = ", ".join(f"{e['name']} {round((e.get('size') or 0) / 1000.0)}KB"
-                       for e in sorted(files, key=lambda e: -(e.get("size") or 0))[1:4])
-    detail = (f"{biggest['name']} is {size_kb}KB, the largest of "
-              f"{len(files)} hand-written browser file(s) in "
-              f"{MARCUS_BROWSER_DIR}/; a ratchet, so it may fall and must "
-              "never rise")
-    if others:
-        detail += f" (next: {others})"
-    return size_kb, detail
+    return _largest_browser_file(MARCUS_REPO, MARCUS_BROWSER_DIR, files, error)
+
+
+NOVA_BROWSER_DIR = "agora_runner/nova_public"
+NOVA_REPO = "SokratesAI/agora-persona-runner"
+
+
+def measure_nova_browser_monolith(since, until):
+    """The biggest hand-written browser file in the Nova app, in kilobytes.
+
+    The guardrail kept by `Framework rewrite`, the Nova the app milestone that
+    served no key result and kept no KPI (issue #227's orphan list). Issue #233
+    decided the rewrite comes before any other Nova frontend change, because
+    every render function in one hand-rolled `app.js` rebuilds its container on
+    each poll. What that milestone cannot catch on its own is the file growing
+    while the rewrite waits -- every surface added there is one more to
+    migrate. Same ratchet as `marcus-kpi-browser-monolith`: it may fall and
+    must never rise, and `high` is the reading taken the day it was written.
+
+    Read from `main` on GitHub rather than the local checkout, because a cycle's
+    checkout can sit days behind what the site actually serves.
+    """
+    del since, until
+    files, error = _browser_files(NOVA_REPO, NOVA_BROWSER_DIR)
+    return _largest_browser_file(NOVA_REPO, NOVA_BROWSER_DIR, files, error)
 
 
 def measure_agora_metered_spend(since, until):
@@ -4977,6 +5009,7 @@ KPI_MEASURERS = {
     "nova-kpi-unfixed-advisories": measure_nova_unfixed_advisories,
     "nova-kpi-markdown-board-readers": measure_nova_markdown_board_readers,
     "marcus-kpi-browser-monolith": measure_marcus_browser_monolith,
+    "nova-kpi-browser-monolith": measure_nova_browser_monolith,
     "agora-kpi-metered-spend": measure_agora_metered_spend,
     "docs-kpi-staleness": measure_docs_staleness,
     "post-kpi-volume": measure_post_volume,

@@ -1893,6 +1893,42 @@ def test_browser_monolith_is_wired_into_the_kpi_map():
     assert "marcus-kpi-browser-monolith" not in goal_measures.KPI_NO_INSTRUMENT
 
 
+# --- nova-kpi-browser-monolith ---------------------------------------------
+#
+# The same ratchet on the Nova app's own browser code, kept by `Framework
+# rewrite` (issue #233): the file must not grow while the rewrite waits.
+
+
+def test_nova_browser_monolith_reads_nova_public_on_main(monkeypatch):
+    calls = []
+    _fake_gh(monkeypatch, _FakeRun(json.dumps([
+        {"name": "app.js", "size": 846488},
+        {"name": "style.css", "size": 212165},
+        {"name": "sw.js", "size": 34585},
+    ])), calls)
+    value, detail = gm.measure_nova_browser_monolith(None, None)
+    assert value == 846
+    assert "app.js is 846KB" in detail
+    assert "agora_runner/nova_public/" in detail
+    assert "style.css" not in detail
+    assert calls[0][2] == ("repos/SokratesAI/agora-persona-runner/contents/"
+                           "agora_runner/nova_public")
+
+
+def test_nova_browser_monolith_returns_nothing_when_gh_fails(monkeypatch):
+    """A failed read is not an app with no front end."""
+    _fake_gh(monkeypatch, _FakeRun("", returncode=1, stderr="Not Found"))
+    value, detail = gm.measure_nova_browser_monolith(None, None)
+    assert value is None
+    assert "Not Found" in detail
+
+
+def test_nova_browser_monolith_is_wired_into_the_kpi_map():
+    assert goal_measures.KPI_MEASURERS["nova-kpi-browser-monolith"] is \
+        goal_measures.measure_nova_browser_monolith
+    assert "nova-kpi-browser-monolith" not in goal_measures.KPI_NO_INSTRUMENT
+
+
 # --- agora-kpi-metered-spend ------------------------------------------------
 
 _CATALOG = [
