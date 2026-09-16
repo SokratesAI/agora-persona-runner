@@ -5274,3 +5274,154 @@ class TestNovaControlStopCoverage:
         # A `None` route would freeze Marcus at nought on the day it ships.
         route, _what = gm.STOP_CONTROLS["marcus"]
         assert route.startswith("/api/")
+
+
+class TestNovaScaleBlocksRecorded:
+    """`nova-kr-scale-blocks-recorded` — is a block something he can answer?
+
+    Two stores, both injected: the journal comes through `gm.fetch_entries`
+    and the ask threads through `agora_runner.http_util.agora_get`, which
+    `gm._live_ask_ids` imports at call time. Each branch below was checked by
+    breaking the line under it.
+    """
+
+    ASK = "0256140f-1b68-437b-b1c7-6a4267c43e05"
+    OTHER = "3f42afbc-668a-45c8-8ed3-60313edd37e6"
+
+    def _journal(self, monkeypatch, entries):
+        monkeypatch.setattr(gm, "fetch_entries",
+                            lambda limit, **kw: (entries, None))
+
+    def _store(self, monkeypatch, conversations, status=200):
+        import agora_runner.http_util as http_util
+        monkeypatch.setattr(
+            http_util, "agora_get",
+            lambda path, **kw: (status, {"conversations": conversations}))
+
+    def _entry(self, date, title, blocks=""):
+        return {"date": date, "title": title, "blocks": blocks, "kind": "cycle"}
+
+    def _asks(self, *ids):
+        return [{"id": i, "tags": ["nova:needs-input"]} for i in ids]
+
+    def test_one_of_two_blocks_names_an_ask(self, monkeypatch):
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you", f"asked in {self.ASK}"),
+            self._entry("2026-09-12", "Still waiting on you, no thread"),
+            self._entry("2026-09-13", "Shipped a thing"),
+        ])
+        self._store(monkeypatch, self._asks(self.ASK))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 50.0
+        assert "1 of 2 entry/entries" in detail
+        assert "Not on record: Still waiting on you, no thread" in detail
+
+    def test_every_block_on_record_reads_a_hundred(self, monkeypatch):
+        # The positive result. Without it the class is satisfied by a measurer
+        # that can never score a block as recorded.
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you", f"asked in {self.ASK}"),
+            self._entry("2026-09-12", "Blocked on you", f"see {self.OTHER}"),
+        ])
+        self._store(monkeypatch, self._asks(self.ASK, self.OTHER))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 100.0
+        assert "2 of 2 entry/entries" in detail
+        assert "Not on record" not in detail
+
+    def test_the_first_eight_characters_are_enough(self, monkeypatch):
+        # How a digest line actually cites a thread.
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you",
+                        f"the ask is {self.ASK[:8]}"),
+        ])
+        self._store(monkeypatch, self._asks(self.ASK))
+        value, _detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 100.0
+
+    def test_an_id_that_is_not_a_live_ask_does_not_count(self, monkeypatch):
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you", f"thread {self.OTHER}"),
+        ])
+        self._store(monkeypatch, self._asks(self.ASK))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 0.0
+        assert "0 of 1 entry/entries" in detail
+
+    def test_entries_outside_the_window_are_not_counted(self, monkeypatch):
+        self._journal(monkeypatch, [
+            self._entry("2026-09-01", "Waiting on you, long ago"),
+            self._entry("2026-09-11", "Waiting on you", f"asked in {self.ASK}"),
+        ])
+        self._store(monkeypatch, self._asks(self.ASK))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 100.0
+        assert "1 of 1 entry/entries" in detail
+
+    def test_no_block_in_the_window_is_no_number(self, monkeypatch):
+        # Not 0: the best possible week must not report the worst value.
+        self._journal(monkeypatch, [self._entry("2026-09-11", "Shipped a thing")])
+        self._store(monkeypatch, self._asks(self.ASK))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value is None
+        assert "no entry in 2026-09-10..2026-09-16" in detail
+
+    def test_an_empty_ask_store_is_no_number(self, monkeypatch):
+        # The dead-scanner branch: every block would read unrecorded.
+        self._journal(monkeypatch, [self._entry("2026-09-11", "Waiting on you")])
+        self._store(monkeypatch, [])
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value is None
+        assert "no ask thread at all" in detail
+
+    def test_a_listing_that_errors_is_no_number(self, monkeypatch):
+        self._journal(monkeypatch, [self._entry("2026-09-11", "Waiting on you")])
+        self._store(monkeypatch, [], status=503)
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value is None
+        assert "HTTP 503" in detail
+
+    def test_an_untagged_unnamed_thread_is_not_an_ask(self, monkeypatch):
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you", f"in {self.ASK}"),
+        ])
+        self._store(monkeypatch, [{"id": self.ASK, "tags": ["chat"]}])
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value is None
+        assert "no ask thread at all" in detail
+
+    def test_the_name_prefix_alone_makes_it_an_ask(self, monkeypatch):
+        from agora_runner.needs_input import NAME_PREFIX
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you", f"in {self.ASK}"),
+        ])
+        self._store(monkeypatch,
+                    [{"id": self.ASK, "name": NAME_PREFIX + "a question"}])
+        value, _detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 100.0
+
+    def test_an_unreadable_journal_is_no_number(self, monkeypatch):
+        monkeypatch.setattr(gm, "fetch_entries",
+                            lambda limit, **kw: ([], "HTTP 500"))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value is None
+        assert "could not read the journal" in detail
+
+    def test_it_is_the_registered_measurer(self):
+        assert (gm.KEY_RESULT_FETCH_MEASURERS["nova-kr-scale-blocks-recorded"]
+                is gm.measure_nova_scale_blocks_recorded)
+
+    def test_stop_seconds_states_why_it_has_no_instrument(self):
+        reason = gm.KEY_RESULT_NO_INSTRUMENT["nova-kr-control-stop-seconds"]
+        assert "five real attempts" in reason
