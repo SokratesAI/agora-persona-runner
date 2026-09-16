@@ -642,7 +642,7 @@ def test_a_401_with_no_token_names_the_pod_rather_than_blaming_agora(monkeypatch
     message has to."""
     monkeypatch.setattr(nudge_ask, "agora_internal", lambda *a, **k: (401, {}))
     monkeypatch.setattr(http_util, "AGORA_TOKEN", "")
-    ok, detail = ask_watch.nudge("c1", newest=_msg("Nova", ts=QUIET_TS))
+    ok, detail = ask_watch.nudge("c1", newest=_msg("Nova", ts=QUIET_TS), now=NOW)
     assert ok is False
     assert "HTTP 401" in detail
     assert "no AGORA_TOKEN" in detail
@@ -656,6 +656,6 @@ def test_a_401_with_a_token_present_is_a_real_refusal(monkeypatch):
     next cycle at the wrong pod."""
     monkeypatch.setattr(nudge_ask, "agora_internal", lambda *a, **k: (401, {}))
     monkeypatch.setattr(http_util, "AGORA_TOKEN", "a-real-token")
-    ok, detail = ask_watch.nudge("c1", newest=_msg("Nova", ts=QUIET_TS))
+    ok, detail = ask_watch.nudge("c1", newest=_msg("Nova", ts=QUIET_TS), now=NOW)
     assert ok is False
     assert detail == "notify returned HTTP 401"

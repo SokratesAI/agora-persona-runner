@@ -228,7 +228,7 @@ def resolve(conversation_id, because, rows=None):
     return True, "closed out and archived"
 
 
-def nudge(conversation_id, text=NUDGE_TEXT, newest=None):
+def nudge(conversation_id, text=NUDGE_TEXT, newest=None, now=None):
     """Post the re-announcement, so the ask gets the one push it never got.
 
     A thin pass-through to `agora_runner.nudge_ask.nudge`, which carries the
@@ -240,7 +240,10 @@ def nudge(conversation_id, text=NUDGE_TEXT, newest=None):
 
     Returns (ok, detail).
     """
-    return _nudge(conversation_id, text=text, newest=newest)
+    # `now` is passed through so a report judged at a fixed clock nudges at
+    # that clock too. Dropped, the guard read the real one, and the suite
+    # failed five tests every night between 22:00 and 07:00 Oslo.
+    return _nudge(conversation_id, text=text, newest=newest, now=now)
 
 
 # His own name as Agora records it, the same literal `agora_runner/nova_ask.py`
@@ -550,7 +553,7 @@ def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
                   "nudge would be withheld too. Run it after 07:00 Oslo.",
                   file=out)
         else:
-            ok, detail = nudge(cid)
+            ok, detail = nudge(cid, now=now)
             print(f"  {'re-announced' if ok else 'COULD NOT re-announce'} — "
                   f"{detail}", file=out)
     for name, cid, age in waiting:
