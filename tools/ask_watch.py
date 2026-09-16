@@ -112,7 +112,6 @@ import pathlib
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
