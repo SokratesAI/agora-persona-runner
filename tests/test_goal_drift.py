@@ -335,6 +335,53 @@ def test_key_results_get_no_carve_out():
     assert "moved inside its own range" not in crossed
 
 
+def test_a_key_result_that_moves_on_the_same_side_of_its_target_is_not_counted():
+    """A rolling-week key result moves every hour; rule 7 checks it weekly.
+
+    G1 went 6.4 -> 5.9 against a target of 2.0 (down) within an hour of a
+    repair, with nothing wrong. Still short either way, so it is reported
+    and not counted. Reaching the target, or a blank `now`, still counts.
+    """
+    from tools.goal_measures import kr_drift_crosses_target
+
+    down = {"now": "6.4", "target": "2.0", "direction": "down"}
+    assert kr_drift_crosses_target(down, 5.9) is False
+    assert kr_drift_crosses_target(down, 2.0) is True
+    assert kr_drift_crosses_target(down, 1.5) is True
+    up = {"now": "66", "target": "90", "direction": "up"}
+    assert kr_drift_crosses_target(up, 71) is False
+    assert kr_drift_crosses_target(up, 90) is True
+    met = {"now": "95", "target": "90", "direction": "up"}
+    assert kr_drift_crosses_target(met, 89.9) is True
+    assert kr_drift_crosses_target(met, 90) is False
+    assert kr_drift_crosses_target({**down, "now": ""}, 5.9) is True
+    assert kr_drift_crosses_target({"now": "6.4", "target": "2.0"}, 5.9) is True
+    assert kr_drift_crosses_target(down, None) is False
+
+
+def test_drift_status_counts_a_key_result_only_when_it_crosses_its_target():
+    from tools import goal_measures
+
+    goal = {"name": "G1", "now": "6.4", "target": "2.0", "direction": "down"}
+    kr = {"id": "nova-kr-your-rows", "now": "6.4", "target": "2.0",
+          "direction": "down"}
+    lines, drifted = goal_measures.drift_status(
+        [{"key": "G1", "goal": goal, "value": 5.9, "detail": "measured"}],
+        [{"project": "planning", "id": kr["id"], "kr": kr, "value": 1.9,
+          "detail": "measured"}],
+        [], "goals.md", "project-goals.md")
+    assert drifted == ["planning / nova-kr-your-rows in project-goals.md"]
+    assert ("- G1 in goals.md moved without crossing its target" in lines)
+    assert lines.strip().splitlines()[-1].startswith("DRIFT — 1 of 2")
+
+    from tools.goal_measures import render_key_results
+    moved = render_key_results(
+        [{"project": "planning", "id": kr["id"], "kr": kr, "value": 5.9,
+          "detail": "measured"}], "project-goals.md")
+    assert "moved without crossing its target" in moved
+    assert "drifted" not in moved
+
+
 def test_the_command_line_reaches_main():
     """`main()` with no argv drops every flag typed at the shell, in silence.
 
