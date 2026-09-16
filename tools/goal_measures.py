@@ -4158,26 +4158,106 @@ def false_kpi_statuses(rows):
             and kpi_drift_crosses_bounds(row["kpi"], row["value"])], None
 
 
+#: How long a cycle has to have been awake before the app saying no cycle is
+#: running counts as false. The site refreshes Agora's heartbeat record
+#: behind a 300-second cache (`nova_site.CADENCE_FRESH_SECONDS`), so for the
+#: first five minutes of a cycle "not running" is the cache being honest
+#: about its age; twice that keeps a slow refresh from reading as a lie.
+RUNNING_BADGE_GRACE_SECONDS = 600
+
+
+def own_cycle_start(conversation_id=None, heartbeat_id=None, listing=None):
+    """`(createdAt, error)` of the hourly cycle this process is running in.
+
+    `(None, None)` when this is not one -- run by hand, or from a weekly
+    heartbeat's own conversation -- because only a live hourly cycle is proof
+    that a cycle is running, and anything else has nothing to compare.
+    """
+    from agora_runner.config import NOVA_CYCLE_HEARTBEAT_ID
+    from agora_runner.conversation_rotation import cycle_tag
+    conversation_id = conversation_id if conversation_id is not None else \
+        os.environ.get("AGORA_CONVERSATION_ID", "")
+    if not conversation_id:
+        return None, None
+    if listing is None:
+        from agora_runner.http_util import agora_get
+        try:
+            status, body = agora_get("/conversations")
+        except Exception as exc:  # noqa: BLE001 -- any failure is "could not read"
+            return None, f"could not list Agora conversations: {exc}"
+        if status != 200:
+            return None, f"Agora /conversations answered {status}"
+        listing = body.get("conversations", [])
+    tag = cycle_tag(heartbeat_id or NOVA_CYCLE_HEARTBEAT_ID)
+    for conversation in listing:
+        if conversation.get("id") == conversation_id:
+            if tag not in (conversation.get("tags") or []):
+                return None, None
+            return conversation.get("createdAt"), None
+    return None, None
+
+
+def false_running_statuses(start=own_cycle_start, site=SITE, fetch=None, now=None):
+    """`(labels, error)` -- the app says no cycle is running while this one is.
+
+    The site draws its "running" badge from Agora's heartbeat record. The
+    second source is the caller itself: a measurement taken from inside a live
+    hourly cycle, past the site's cache grace, is a cycle running, so a badge
+    reading `running: false` then is a false status on screen.
+
+    **Only that direction.** A badge left on after every cycle has ended needs
+    a reader outside any cycle, so it stays uncompared and is named as such.
+    `(None, None)` -- uncompared, not zero -- when not asked from a cycle.
+    """
+    started, error = start()
+    if error:
+        return None, error
+    if not started:
+        return None, None
+    try:
+        began = datetime.fromisoformat(started.replace("Z", "+00:00"))
+    except ValueError:
+        return None, f"unreadable cycle start {started!r}"
+    now = now or datetime.now(timezone.utc)
+    age = (now - began).total_seconds()
+    if age < RUNNING_BADGE_GRACE_SECONDS:
+        return None, None
+    payload, error = (fetch or _get_json)(f"{site}/api/journal?limit=1")
+    if error:
+        return None, error
+    status = (payload or {}).get("status") or {}
+    if "running" not in status:
+        return None, "the site's journal status carries no running field"
+    if status["running"]:
+        return [], None
+    return [f"shown not running {int(age // 60)} min into a live cycle"], None
+
+
 #: The kinds of status the app shows that have no second source to compare
 #: with yet. Printed beside every reading, because a count over some of the
 #: kinds is not a count over the app.
-FALSE_STATUS_NOT_COMPARED = ("whether a cycle is running",)
+FALSE_STATUS_NOT_COMPARED = ("a cycle shown running after it ended",)
 
 #: Printed as uncompared too when the KPI half had no sweep readings to use.
 FALSE_STATUS_KPI_KIND = "a KPI's now"
 
+#: Printed as uncompared too when not measured from inside a live cycle.
+FALSE_STATUS_RUNNING_KIND = "a live cycle shown not running"
+
 
 def measure_nova_false_status(since, until, heartbeats=false_heartbeat_statuses,
-                              board=false_board_statuses, kpi_rows=None):
+                              board=false_board_statuses, kpi_rows=None,
+                              running=false_running_statuses):
     """Known false statuses showing in the app right now. A count.
 
-    Three comparisons exist and all are summed: a heartbeat shown on that is
-    not firing, a board row shown open that a cycle released as done, and a
-    KPI `/plan` shows on the wrong side of its range. The KPI half reads the
+    Four comparisons exist and all are summed: a heartbeat shown on that is
+    not firing, a board row shown open that a cycle released as done, a KPI
+    `/plan` shows on the wrong side of its range, and a live cycle the app
+    shows as not running. The KPI half reads the
     readings the same sweep already took (`kpi_rows` hands them over), so no
     instrument runs twice and this KPI never measures itself.
-    **A zero is not reported.** The floor is 0 and whether a cycle is running
-    has no comparison at all, so "0 found" would print as in bounds while part
+    **A zero is not reported.** The floor is 0 and a badge left on after a
+    cycle ended has no comparison at all, so "0 found" would print as in bounds while part
     of the app went unchecked -- the best reading of this KPI coming off the
     thinnest evidence. Any count above zero is a true floor and is reported.
     """
@@ -4185,13 +4265,15 @@ def measure_nova_false_status(since, until, heartbeats=false_heartbeat_statuses,
     found, errors = [], []
     not_compared = list(FALSE_STATUS_NOT_COMPARED)
     compared = []
-    for label, measure in (("heartbeat", heartbeats), ("board row", board),
-                           ("KPI", lambda: false_kpi_statuses(kpi_rows))):
+    for label, measure, kind in (
+            ("heartbeat", heartbeats, None), ("board row", board, None),
+            ("KPI", lambda: false_kpi_statuses(kpi_rows), FALSE_STATUS_KPI_KIND),
+            ("running badge", running, FALSE_STATUS_RUNNING_KIND)):
         names, error = measure()
         if error:
             errors.append(f"could not compare {label} statuses -- {error}")
         elif names is None:
-            not_compared.append(FALSE_STATUS_KPI_KIND)
+            not_compared.append(kind or label)
         else:
             compared.append(label)
             found.extend(f"{label} {name}" for name in names)

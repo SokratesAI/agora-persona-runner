@@ -9,7 +9,7 @@ import types
 import json
 import sys
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 import yaml
@@ -5548,10 +5548,14 @@ def test_board_half_counts_only_the_raising_bucket():
     assert labels is None and "claims.json" in error
 
 
+def _UNCOMPARED():
+    return None, None
+
+
 def test_false_status_reports_a_count_above_zero_with_its_scope():
     value, detail = goal_measures.measure_nova_false_status(
         None, None, heartbeats=lambda: (["stopped"], None),
-        board=lambda: (["issues #12 (Backlog)"], None))
+        board=lambda: (["issues #12 (Backlog)"], None), running=_UNCOMPARED)
     assert value == 2
     assert "heartbeat stopped" in detail and "board row issues #12" in detail
     assert "not compared" in detail
@@ -5560,7 +5564,7 @@ def test_false_status_reports_a_count_above_zero_with_its_scope():
 def test_false_status_refuses_to_report_zero():
     """Floor 0, two kinds uncompared: a 0 would print in bounds off half the app."""
     value, detail = goal_measures.measure_nova_false_status(
-        None, None, heartbeats=lambda: ([], None), board=lambda: ([], None))
+        None, None, heartbeats=lambda: ([], None), board=lambda: ([], None), running=_UNCOMPARED)
     assert value is None
     assert "not a reading" in detail
 
@@ -5568,10 +5572,10 @@ def test_false_status_refuses_to_report_zero():
 def test_false_status_keeps_a_count_when_one_half_is_unreadable():
     value, detail = goal_measures.measure_nova_false_status(
         None, None, heartbeats=lambda: (None, "agora down"),
-        board=lambda: (["issues #12 (Backlog)"], None))
+        board=lambda: (["issues #12 (Backlog)"], None), running=_UNCOMPARED)
     assert value == 1 and "agora down" in detail
     value, detail = goal_measures.measure_nova_false_status(
-        None, None, heartbeats=lambda: (None, "agora down"), board=lambda: ([], None))
+        None, None, heartbeats=lambda: (None, "agora down"), board=lambda: ([], None), running=_UNCOMPARED)
     assert value is None and "agora down" in detail
 
 
@@ -5595,22 +5599,22 @@ def test_a_kpi_shown_on_the_wrong_side_of_its_range_is_a_false_status():
 def test_kpi_statuses_outside_a_sweep_are_uncompared_not_zero():
     assert goal_measures.false_kpi_statuses(None) == (None, None)
     value, detail = goal_measures.measure_nova_false_status(
-        None, None, heartbeats=lambda: ([], None), board=lambda: ([], None))
+        None, None, heartbeats=lambda: ([], None), board=lambda: ([], None), running=_UNCOMPARED)
     assert value is None and "a KPI's now" in detail
 
 
 def test_false_status_counts_a_kpi_and_names_only_the_cycle_kind_uncompared():
     value, detail = goal_measures.measure_nova_false_status(
         None, None, heartbeats=lambda: ([], None), board=lambda: ([], None),
-        kpi_rows=[_status_kpi_row("nova-kpi-silent-cycles", "1", 6)])
+        kpi_rows=[_status_kpi_row("nova-kpi-silent-cycles", "1", 6)], running=lambda: ([], None))
     assert value == 1
     assert "KPI nova-kpi-silent-cycles" in detail
-    assert "not compared: whether a cycle is running)" in detail
+    assert "not compared: a cycle shown running after it ended)" in detail
     value, detail = goal_measures.measure_nova_false_status(
         None, None, heartbeats=lambda: ([], None), board=lambda: ([], None),
-        kpi_rows=[_status_kpi_row("nova-kpi-silent-cycles", "0", 1)])
+        kpi_rows=[_status_kpi_row("nova-kpi-silent-cycles", "0", 1)], running=lambda: ([], None))
     assert value is None and "a KPI's now" not in detail
-    assert "(heartbeat, board row, KPI)" in detail
+    assert "(heartbeat, board row, KPI, running badge)" in detail
 
 
 def test_kpi_rows_hands_a_rows_measurer_every_other_reading_even_when_listed_first(monkeypatch):
@@ -5640,3 +5644,43 @@ def test_false_status_is_measured_over_the_sweep_rows():
 def test_false_status_measurer_is_wired():
     assert goal_measures.KPI_MEASURERS["nova-kpi-false-status"] is \
         goal_measures.measure_nova_false_status
+
+
+def _running(started, running, age_minutes=20, error=None):
+    now = datetime(2026, 9, 16, 12, 30, tzinfo=timezone.utc)
+    start = (now - timedelta(minutes=age_minutes)).isoformat() if started else None
+    return goal_measures.false_running_statuses(
+        start=lambda: (start, error), now=now,
+        fetch=lambda url: ({"status": {"running": running}}, None))
+
+
+def test_a_live_cycle_shown_not_running_is_a_false_status():
+    labels, error = _running(True, False)
+    assert error is None and labels == ["shown not running 20 min into a live cycle"]
+    assert _running(True, True) == ([], None)
+
+
+def test_running_badge_is_uncompared_outside_a_cycle_and_inside_the_cache_grace():
+    assert _running(False, False) == (None, None)
+    assert _running(True, False, age_minutes=4) == (None, None)
+    labels, error = _running(True, False, error="agora down")
+    assert labels is None and error == "agora down"
+
+
+def test_own_cycle_start_only_answers_for_an_hourly_cycle_conversation():
+    from agora_runner.conversation_rotation import cycle_tag
+    listing = [{"id": "c1", "tags": [cycle_tag("hb")], "createdAt": "2026-09-16T12:00:00Z"},
+               {"id": "c2", "tags": ["weekly"], "createdAt": "2026-09-16T12:00:00Z"}]
+    start = goal_measures.own_cycle_start
+    assert start("c1", "hb", listing) == ("2026-09-16T12:00:00Z", None)
+    assert start("c2", "hb", listing) == (None, None)
+    assert start("nope", "hb", listing) == (None, None)
+    assert start("", "hb", listing) == (None, None)
+
+
+def test_false_status_counts_a_live_cycle_shown_not_running():
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=lambda: ([], None), board=lambda: ([], None),
+        kpi_rows=[], running=lambda: (["shown not running 20 min into a live cycle"], None))
+    assert value == 1 and "running badge shown not running" in detail
+    assert "a cycle shown running after it ended" in detail
