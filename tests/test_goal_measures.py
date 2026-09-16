@@ -1538,8 +1538,7 @@ def test_a_kpi_is_either_measured_or_says_why_never_both():
     an instrument that ships beside a stale "no instrument" line would print
     the measurement and leave the excuse in the map for the next reader."""
     assert set(goal_measures.KPI_NO_INSTRUMENT) == {
-        "nova-kpi-push-delivered", "nova-kpi-false-status",
-        "nova-kpi-owner-only-controls"}
+        "nova-kpi-false-status", "nova-kpi-owner-only-controls"}
     assert not set(goal_measures.KPI_NO_INSTRUMENT) & set(goal_measures.KPI_MEASURERS)
     for kpi_id, why in goal_measures.KPI_NO_INSTRUMENT.items():
         assert why.strip(), kpi_id

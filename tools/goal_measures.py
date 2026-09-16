@@ -4079,6 +4079,29 @@ def _every_journal_entry(site=SITE, limit=5000):
     return list(payload.get("entries") or []), None
 
 
+def measure_nova_push_delivered(since, until, runner=subprocess.run, tool=VAULT_TOOL):
+    """Share of asks in the last seven days that reached his phone. A share.
+
+    Read off `ask_push_log`, which `needs_input.ask` and `nudge_ask.nudge`
+    write one line to per post, from Agora's own answer. An ask counts when it
+    or a later post into the same thread went out, or when Agora held the push
+    because he had the thread on screen. The log starts on the day it was
+    built, so asks before it are not in the denominator at all. The window is
+    the seven days before now, not `since`..`until`, which are Oslo dates.
+    """
+    del since, until
+    from agora_runner import ask_push_log
+    try:
+        done = runner([sys.executable, tool, "get", ask_push_log.PATH],
+                      capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"could not read {ask_push_log.PATH}: {exc}"
+    if done.returncode != 0 or (done.stdout or "").startswith("[not found"):
+        return None, (f"could not read {ask_push_log.PATH} -- "
+                      f"{((done.stderr or '') + (done.stdout or '')).strip()[:200]}")
+    return ask_push_log.delivery_share(ask_push_log.parse(done.stdout))
+
+
 def measure_research_reused(since, until):
     """Share of research write-ups a later journal entry has cited. A share.
 
@@ -4676,6 +4699,7 @@ KPI_MEASURERS = {
     "agora-kpi-mcp-deprecated": measure_agora_mcp_current,
     "pm-kpi-pins-current": measure_maint_pins_current,
     "pm-kpi-research-reused": measure_research_reused,
+    "nova-kpi-push-delivered": measure_nova_push_delivered,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
@@ -4683,14 +4707,11 @@ KPI_MEASURERS = {
 #: says nothing about whether anyone tried, and three cycles re-deriving the
 #: same "there is no endpoint for this" is three cycles spent twice.
 #:
-#: The three entries are the must-be floors the owner's goal chain found for Nova
-#: the app on 2026-09-16 (Cycle 1689). Each is a floor he named and nothing
-#: here can read yet; delete an entry in the same change that adds its measurer.
+#: The entries are the must-be floors the owner's goal chain found for Nova the
+#: app on 2026-09-16 (Cycle 1689) that nothing here can read yet; the third,
+#: `nova-kpi-push-delivered`, got its measurer in Cycle 1690. Delete an entry in
+#: the same change that adds its measurer.
 KPI_NO_INSTRUMENT = {
-    "nova-kpi-push-delivered": (
-        "nothing records whether a push went out -- Agora says so in its answer "
-        "to each post (sent, or held for quiet hours, mute or watching), "
-        "needs_input prints it once, and the stored message carries no push field"),
     "nova-kpi-false-status": (
         "a false status needs a second source per kind of status (board row, "
         "heartbeat, running cycle, KPI now) and only board_done_drift compares "
