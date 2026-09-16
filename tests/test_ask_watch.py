@@ -4,6 +4,7 @@ import io
 from datetime import datetime, timezone
 
 from agora_runner import http_util
+from agora_runner import nudge_ask
 from tools import ask_watch
 
 
@@ -228,7 +229,7 @@ def test_quiet_hours_wraps_midnight_and_is_half_open():
 
 def test_nudge_is_offered_but_not_sent_without_the_flag(monkeypatch):
     sent = []
-    monkeypatch.setattr(ask_watch, "agora_internal",
+    monkeypatch.setattr(nudge_ask, "agora_internal",
                         lambda *a, **k: sent.append(a) or (200, {"status": "sent"}))
     code, text = _run(monkeypatch, [_row("c1")], {
         "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})})
@@ -239,6 +240,7 @@ def test_nudge_is_offered_but_not_sent_without_the_flag(monkeypatch):
 
 def _run_nudging(monkeypatch, listing, threads, now):
     monkeypatch.setattr(ask_watch, "agora_get", _fake_get(listing, threads))
+    monkeypatch.setattr(nudge_ask, "agora_get", _fake_get(listing, threads))
     out = io.StringIO()
     code = ask_watch.report(*ask_watch.check(now=now), out=out,
                             do_nudge=True, now=now)
@@ -252,7 +254,7 @@ def test_nudge_posts_the_re_announcement_when_it_is_audible(monkeypatch):
         calls.append((method, path, payload))
         return 200, {"status": "sent", "message": {"id": "m1"}}
 
-    monkeypatch.setattr(ask_watch, "agora_internal", fake)
+    monkeypatch.setattr(nudge_ask, "agora_internal", fake)
     code, text = _run_nudging(monkeypatch, [_row("c1")], {
         "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})}, NOW)
     assert calls == [("POST", "/conversations/c1/notify",
@@ -268,7 +270,7 @@ def test_nudge_does_not_post_during_quiet_hours(monkeypatch):
     would also move the newest message forward -- clearing the predicate
     without ever telling him."""
     calls = []
-    monkeypatch.setattr(ask_watch, "agora_internal",
+    monkeypatch.setattr(nudge_ask, "agora_internal",
                         lambda *a, **k: calls.append(a) or (200, {"status": "sent"}))
     quiet_now = datetime(2026, 9, 15, 1, 0, tzinfo=timezone.utc)  # 03:00 Oslo
     code, text = _run_nudging(monkeypatch, [_row("c1")], {
@@ -279,7 +281,7 @@ def test_nudge_does_not_post_during_quiet_hours(monkeypatch):
 
 
 def test_a_nudge_agora_withheld_again_is_not_reported_as_delivered(monkeypatch):
-    monkeypatch.setattr(ask_watch, "agora_internal",
+    monkeypatch.setattr(nudge_ask, "agora_internal",
                         lambda *a, **k: (200, {"status": "recorded", "muted": True}))
     code, text = _run_nudging(monkeypatch, [_row("c1")], {
         "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})}, NOW)
@@ -288,7 +290,7 @@ def test_a_nudge_agora_withheld_again_is_not_reported_as_delivered(monkeypatch):
 
 
 def test_a_failed_nudge_call_says_so(monkeypatch):
-    monkeypatch.setattr(ask_watch, "agora_internal", lambda *a, **k: (502, {}))
+    monkeypatch.setattr(nudge_ask, "agora_internal", lambda *a, **k: (502, {}))
     code, text = _run_nudging(monkeypatch, [_row("c1")], {
         "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})}, NOW)
     assert "COULD NOT re-announce" in text
@@ -492,6 +494,7 @@ status: discussing
 
 def _goal_run(monkeypatch, listing, threads, markdown=GOALS, **kw):
     monkeypatch.setattr(ask_watch, "agora_get", _fake_get(listing, threads))
+    monkeypatch.setattr(nudge_ask, "agora_get", _fake_get(listing, threads))
     out = io.StringIO()
     code = ask_watch.report(
         *ask_watch.check(now=NOW, goals_markdown=markdown, **kw),
@@ -637,9 +640,9 @@ def test_a_401_with_no_token_names_the_pod_rather_than_blaming_agora(monkeypatch
     bridge pod holds none -- the same two calls returned 200 from the runner
     pod minutes later. The status alone cannot tell those apart, so the
     message has to."""
-    monkeypatch.setattr(ask_watch, "agora_internal", lambda *a, **k: (401, {}))
+    monkeypatch.setattr(nudge_ask, "agora_internal", lambda *a, **k: (401, {}))
     monkeypatch.setattr(http_util, "AGORA_TOKEN", "")
-    ok, detail = ask_watch.nudge("c1")
+    ok, detail = ask_watch.nudge("c1", newest=_msg("Nova", ts=QUIET_TS))
     assert ok is False
     assert "HTTP 401" in detail
     assert "no AGORA_TOKEN" in detail
@@ -651,8 +654,8 @@ def test_a_401_with_a_token_present_is_a_real_refusal(monkeypatch):
     rather than the status alone: a credential that was sent and rejected is
     Agora's answer, and explaining it away as a missing token would point the
     next cycle at the wrong pod."""
-    monkeypatch.setattr(ask_watch, "agora_internal", lambda *a, **k: (401, {}))
+    monkeypatch.setattr(nudge_ask, "agora_internal", lambda *a, **k: (401, {}))
     monkeypatch.setattr(http_util, "AGORA_TOKEN", "a-real-token")
-    ok, detail = ask_watch.nudge("c1")
+    ok, detail = ask_watch.nudge("c1", newest=_msg("Nova", ts=QUIET_TS))
     assert ok is False
     assert detail == "notify returned HTTP 401"
