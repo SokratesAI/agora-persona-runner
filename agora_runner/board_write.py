@@ -77,9 +77,12 @@ what `_touch_row_updated` was doing as a second pass over the markdown.
 """
 
 import copy
+import subprocess
+import sys
 
 from agora_runner import (
-    board_document, board_records, board_store, nova_boards, rank_key)
+    board_document, board_records, board_store, nova_boards, project_goals,
+    rank_key)
 from agora_runner.nova_boards import NOTE_AUTHORS
 
 
@@ -134,6 +137,76 @@ def refuse_cell(value, flag, allow_blank=False):
     return None
 
 
+def seats_markdown(runner=None):
+    """`milestone-seats.md` out of the vault -> `(markdown, ok)`.
+
+    `ok` is False when the document could not be read at all, and the
+    caller treats that as *not checked* rather than as no seats. Refusing
+    every write because the vault client is missing would put an
+    unreadable vault between him and his own board -- the opposite trade
+    from the one the seat rule is worth. The Nova site runs on a pod with
+    no vault client at all, so this is the ordinary answer there, not an
+    edge case.
+
+    Injectable so the tests drive the refusal without a subprocess; the
+    real runner is `vault_tool.py`, which lives on the bridge pod only.
+
+    It lived in `tools.board_capture` until Cycle 1681 and moved here for
+    the same reason `refuse_cell` is here: the rule it feeds is now
+    enforced by `change_row`, and a primitive cannot import a CLI.
+    """
+    runner = runner or subprocess.run
+    try:
+        done = runner(
+            [sys.executable, "/app/bridge/vault_tool.py", "get",
+             nova_boards.MILESTONE_SEATS_PATH],
+            capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return "", False
+    if done.returncode != 0:
+        return "", False
+    # The vault client answers a missing document with this marker and
+    # exit 0. An absent seats file is unreadable for this purpose: it
+    # would seat nothing and refuse everything.
+    text = done.stdout
+    if "[not found]" in text[:200] or not text.strip():
+        return "", False
+    return text, True
+
+
+def refuse_unseated(project, milestone, seats=None):
+    """Why a row may not sit under `project / milestone`, or `None`.
+
+    `refuse_cell`'s argument one rule up. `project_goals.unseated_refusal`
+    was wired into `board_milestone`, `board_project` and `board_capture`
+    and into nothing here, so a caller writing the cell straight through
+    `change_row` walked past all three copies of it. That is not
+    hypothetical: on 2026-09-16 at 08:10 I boarded three rows under
+    `Nova` rather than `Nova the app` with a hand-rolled `change_row`,
+    and the next sweep printed three model problems on his board -- rows
+    that read as placed to every check downstream while serving no key
+    result (issue #227).
+
+    Only `change_row` calls this, because only `change_row` can produce
+    the defect: `add_row` mints every row with an empty `milestone` cell,
+    so a new row is `task_seat_orphans`' inventory and never an unseated
+    pair.
+
+    A seats file that cannot be read is not a refusal, and a row with no
+    project or no milestone is nothing to check -- both return `None`,
+    and neither pays for the vault read.
+    """
+    project = (project or "").strip()
+    milestone = (milestone or "").strip()
+    if not project or not milestone:
+        return None
+    markdown, read = (seats or seats_markdown)()
+    if not read:
+        return None
+    return project_goals.unseated_refusal(
+        project, milestone, nova_boards.parse_milestone_serves(markdown))
+
+
 def _differences(before, after, number, added=False):
     """Every way the board moved other than row `number`'s declared keys.
 
@@ -186,7 +259,7 @@ def _differences(before, after, number, added=False):
 
 
 def change_row(board, number, changes, detail=None, store=board_store,
-               expect=None):
+               expect=None, seats=None):
     """Change `changes` on row `number` of `board`, and check the whole board.
 
     `changes` is `{item key: new value}` in `parse_board`'s row vocabulary --
@@ -233,6 +306,17 @@ def change_row(board, number, changes, detail=None, store=board_store,
             f"a row carries {', '.join(sorted(held))}")
 
     wanted = dict(copy.deepcopy(held), **changes)
+    # The seat rule, on the pair the row would hold *after* the change --
+    # moving a row between projects unseats it exactly as renaming its
+    # milestone does, and the caller may be changing either. Asked only when
+    # one of the two cells is actually being written, so no other write pays
+    # for a vault read.
+    if "project" in changes or "milestone" in changes:
+        refusal = refuse_unseated(
+            wanted.get("project"), wanted.get("milestone"), seats=seats)
+        if refusal:
+            raise WriteRefused(refusal)
+
     # The compare-and-swap. `wanted` was built from the board read at the top of
     # this function, so if the row has moved since then the write would put the
     # older values back -- and the after-check could not see it, because it
@@ -405,7 +489,7 @@ def _note_line(note, dated, cycle, author):
 
 
 def append_note(board, number, note, dated, cycle=None, author=None,
-                changes=None, store=board_store):
+                changes=None, store=board_store, seats=None):
     """Add one dated line to the end of row `number`'s write-up, in one write.
 
     The records half of `nova_boards.append_detail_note`, and the thing four of
@@ -471,7 +555,8 @@ def append_note(board, number, note, dated, cycle=None, author=None,
     # An empty write-up has nothing to separate the note from, and a leading
     # blank line there renders as one.
     detail = "\n".join(lines + ["", line]) if lines else line
-    return change_row(board, number, changes, detail=detail, store=store)
+    return change_row(board, number, changes, detail=detail, store=store,
+                      seats=seats)
 
 
 class RowRefused(WriteRefused):

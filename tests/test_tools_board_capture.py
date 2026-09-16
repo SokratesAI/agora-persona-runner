@@ -441,10 +441,23 @@ def test_it_refuses_both_milestone_flags_at_once(store, capsys):
     assert store.calls == []
 
 
-def test_the_named_milestone_reaches_the_cell(store):
+# `board_write.change_row` asks the seats file itself now (Cycle 1681), so an
+# end-to-end run that writes a milestone cell answers it here rather than
+# reaching the real vault. `Nova` is `DEFAULT_PROJECT`, which is the project a
+# capture with no `#tag` lands under -- and the pair the tool's own pre-check
+# never asked about, because that check only runs when a tag was lifted.
+_SEATS_DEFAULT_PROJECT = (
+    "| Project | Milestone | Position | Updated | Serves | Keeps |\n"
+    "|---|---|---|---|---|---|\n"
+    "| Nova | Cost and quota | 1 | 09-16 | nova-kpi-cost-per-cycle |  |\n"
+)
+
+
+def test_the_named_milestone_reaches_the_cell(store, monkeypatch):
     """A row boarded with a milestone is placed, not merely announced: the
     print line and the cell are different claims and only the cell is read by
     `project_goals_check`."""
+    _seats_answer(monkeypatch, _SEATS_DEFAULT_PROJECT)
     assert _run("--index", "0", "--priority", "high",
                 "--milestone", "Cost and quota") == 0
     assert _rows(store)[105]["milestone"] == "Cost and quota"
@@ -472,11 +485,12 @@ def test_dry_run_with_a_milestone_writes_nothing(store, capsys):
     assert store.calls == []
 
 
-def test_the_milestone_is_written_after_the_bullet_is_cut(store):
+def test_the_milestone_is_written_after_the_bullet_is_cut(store, monkeypatch):
     """The pair above -- row written, bullet cut -- is what a re-run repairs,
     so a third write may not sit between them. Put it there and a refused
     regrouping leaves the bullet in the box, and the re-run boards the item a
     second time."""
+    _seats_answer(monkeypatch, _SEATS_DEFAULT_PROJECT)
     assert _run("--index", "0", "--priority", "high",
                 "--milestone", "Cost and quota") == 0
     names = [name for name, _ in store.calls]
@@ -657,9 +671,11 @@ def test_the_promoted_fields_survive_being_cut_into_tasks():
     assert all(one["priority"] == fields["priority"] for one in rows)
 
 
-def test_main_boards_two_rows_from_one_capture_and_cuts_the_bullet_once(store):
+def test_main_boards_two_rows_from_one_capture_and_cuts_the_bullet_once(
+        store, monkeypatch):
     """End to end: the rows really arrive on his board, and his one bullet
     leaves the box once rather than twice."""
+    _seats_answer(monkeypatch, _SEATS_DEFAULT_PROJECT)
     before = len(capture_pairs(_contents(store)))
     assert main(["--board", "idea", "--index", "1", "--dated", "09-14",
                  "--priority", "high", "--milestone", "Cost and quota",
@@ -674,9 +690,10 @@ def test_main_boards_two_rows_from_one_capture_and_cuts_the_bullet_once(store):
     assert len(capture_pairs(_contents(store))) == before - 1
 
 
-def test_both_task_rows_land_under_the_named_milestone(store):
+def test_both_task_rows_land_under_the_named_milestone(store, monkeypatch):
     """The second row is the one a loop over `rows[0]` would leave ungrouped,
     and an ungrouped row serves no key result (issue #227)."""
+    _seats_answer(monkeypatch, _SEATS_DEFAULT_PROJECT)
     assert main(["--board", "idea", "--index", "1", "--dated", "09-14",
                  "--priority", "high", "--milestone", "Cost and quota",
                  "--task", "First", "--done-when", "one done",
