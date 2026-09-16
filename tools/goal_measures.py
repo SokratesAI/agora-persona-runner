@@ -1326,6 +1326,149 @@ def measure_nova_trust_data_fresh(since, until):
         f"the app's journal view is dated by cycle {shown}; the newest entry "
         f"in the vault is cycle {written}, over {len(names)} file(s) listed")
 
+
+#: The three agent kinds his Control objective names, and the one Nova-app
+#: route each one's stop control would have to post to. `nova-kr-control-stop-
+#: coverage` is a share of these three, so the denominator is this table and
+#: the numerator is how many of them the app actually carries today.
+#:
+#: **Two of the three routes exist and one is a name for a thing nobody has
+#: built.** That is deliberate, and it is the difference between an instrument
+#: and a frozen digit: writing `None` for Marcus would make its column read 0
+#: forever, including on the day somebody ships the control. Naming the route
+#: this check looks for means a Marcus stop button shipped under exactly that
+#: path lifts the number by itself, and one shipped under a different path is
+#: a miss the detail line prints in full rather than swallowing.
+STOP_CONTROLS = {
+    "cycles": ("/api/conversations/cancel",
+               "the Stop button a running turn's Send button becomes"),
+    "heartbeats": ("/api/heartbeats/enabled",
+                   "the per-heartbeat on/off switch"),
+    "marcus": ("/api/marcus/stop",
+               "nothing in the Nova app reaches Marcus yet"),
+}
+
+#: The Nova app's browser bundle, and the module that serves it. A stop control
+#: is two things -- a route the server answers and a button the browser posts
+#: to it -- so both files are read and both halves are required.
+_SITE_MODULE = "agora_runner/nova_site.py"
+_APP_BUNDLE = "agora_runner/nova_public/app.js"
+
+#: Below this many POST routes, the allowlist parse below has found something
+#: that is not the allowlist. There are over thirty today; the number is a
+#: floor on "this is plainly the real tuple", not a target.
+_MIN_POST_ROUTES = 10
+
+
+def _repo_file(relative):
+    return _pathlib.Path(__file__).resolve().parents[1] / relative
+
+
+def post_routes(source):
+    """Every path `nova_site`'s `do_POST` will answer, from its own allowlist.
+
+    Parsed rather than grepped. `do_POST` refuses anything outside one literal
+    tuple of paths, so that tuple *is* the served set -- and a `grep` for a
+    path string would also match its handler's docstring, a comment, or the
+    GET table, which is the failure this whole check exists to avoid on the
+    browser side as well.
+    """
+    import ast
+
+    tree = ast.parse(source)
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Tuple, ast.List)):
+            continue
+        values = [e.value for e in node.elts
+                  if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        if len(values) != len(node.elts) or not values:
+            continue
+        if all(v.startswith("/api/") for v in values):
+            found.update(values)
+    return found
+
+
+def _bundle_posts_to(bundle_text, route):
+    """Does the browser bundle name this route as a string it calls?
+
+    The route has to appear in quotes. A path written in a comment -- and
+    `app.js` has thousands of lines of them -- is prose, and prose is exactly
+    what a bare substring search would count as a shipped button.
+    """
+    return (f'"{route}"' in bundle_text) or (f"'{route}'" in bundle_text)
+
+
+def measure_nova_control_stop_coverage(since, until):
+    """Share of his three agent kinds with a stop control in the Nova app.
+
+    A level -- what the app carries right now -- so it takes the window and
+    drops it, the same as every other measurer here.
+
+    **A stop control is two halves and both are checked separately**, because
+    either half alone is a plausible wrong answer. A route `do_POST` answers
+    with no button anywhere is a thing only a `curl` can reach, which is not a
+    control on his phone; a button posting at a path the server 404s is a
+    control that cannot succeed. So the route must be in `do_POST`'s own
+    allowlist *and* the browser bundle must name it in quotes.
+
+    **The failure this refuses to report is a dead scanner reading 0.** The
+    target here is 100 and up, so 0 is the worst value on the scale and would
+    outlive the fix -- and both halves fail silently in the same direction: an
+    allowlist this cannot parse yields no routes, a bundle it cannot read
+    contains no strings, and either one prints a confident, tidy 0%. So each
+    half has to be shown to match something live first: the allowlist has to
+    parse to a plausible number of routes, and the bundle has to post to at
+    least one route that allowlist actually serves. If either check comes back
+    empty the answer is no number, with the reason.
+    """
+    del since, until
+    try:
+        source = _repo_file(_SITE_MODULE).read_text()
+        bundle = _repo_file(_APP_BUNDLE).read_text()
+    except OSError as e:
+        return None, (f"could not read the app's own source ({e}), so nothing "
+                      "here knows which controls it carries")
+    try:
+        served = post_routes(source)
+    except SyntaxError as e:
+        return None, f"{_SITE_MODULE} did not parse ({e}), so no route list"
+    if len(served) < _MIN_POST_ROUTES:
+        return None, (f"{_SITE_MODULE} yielded only {len(served)} POST "
+                      f"route(s), under the {_MIN_POST_ROUTES} this expects -- "
+                      "that is the allowlist not being found, not the app "
+                      "having lost its routes")
+    wired = {r for r in served if _bundle_posts_to(bundle, r)}
+    if not wired:
+        return None, (f"{_APP_BUNDLE} names none of the {len(served)} served "
+                      "routes in quotes, so the browser half of this check "
+                      "read nothing -- every kind would score 0 whatever the "
+                      "app carries")
+
+    have, missing = [], []
+    for kind in sorted(STOP_CONTROLS):
+        route, what = STOP_CONTROLS[kind]
+        if route in served and route in wired:
+            have.append(f"{kind} ({route}, {what})")
+        elif route in served:
+            missing.append(f"{kind}: {route} is served but no button posts to it")
+        elif route in wired:
+            missing.append(f"{kind}: a button posts to {route} and do_POST 404s it")
+        else:
+            missing.append(f"{kind}: no {route} -- {what}")
+
+    share = round(100.0 * len(have) / len(STOP_CONTROLS), 1)
+    detail = (f"{len(have)} of {len(STOP_CONTROLS)} agent kinds have a stop "
+              f"control served by do_POST and posted to by the app: "
+              + "; ".join(have))
+    if missing:
+        detail += ". Missing: " + "; ".join(missing)
+    detail += (f" (read off {_SITE_MODULE}'s own POST allowlist, "
+               f"{len(served)} route(s), {len(wired)} of them named in "
+               f"{_APP_BUNDLE})")
+    return share, detail
+
+
 def measure_pm_deprecations(since, until):
     """Rows closed as `outdated` on either board in the last 30 days.
 
@@ -4317,6 +4460,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "demos-kr-opened": measure_demos_opened,
     "demos-kr-no-litter": measure_demos_no_litter,
     "nova-kr-trust-data-fresh": measure_nova_trust_data_fresh,
+    "nova-kr-control-stop-coverage": measure_nova_control_stop_coverage,
     "infra-kr-outlives-the-box": measure_infra_outlives_the_box,
     "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
     "docs-kr-sync-alive": measure_docs_sync_alive,

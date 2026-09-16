@@ -5129,3 +5129,148 @@ class TestNovaTrustDataFresh:
     def test_its_sibling_records_why_it_has_none(self):
         why = gm.KEY_RESULT_NO_INSTRUMENT["nova-kr-trust-cycles-shown"]
         assert "planned-vs-done view" in why
+
+
+class TestNovaControlStopCoverage:
+    """`nova-kr-control-stop-coverage` — how many agent kinds he can stop.
+
+    Both files are injected through `gm._repo_file`, so every test below states
+    a whole app: a `nova_site.py` with a `do_POST` allowlist in it and an
+    `app.js` naming some of those routes. Each was checked by breaking the
+    branch under it.
+    """
+
+    def _app(self, monkeypatch, routes, bundle_routes, *, bundle_prose=()):
+        listed = ", ".join(f'"{r}"' for r in routes)
+        site = (
+            "class H:\n"
+            "    def do_POST(self):\n"
+            f"        if path not in ({listed},):\n"
+            "            return 404\n"
+        )
+        bundle = "\n".join(
+            [f'  fetch("{r}", {{method: "POST"}});' for r in bundle_routes]
+            + [f"  /* mentions {r} in prose only */" for r in bundle_prose]
+        )
+        files = {gm._SITE_MODULE: site, gm._APP_BUNDLE: bundle}
+
+        class _F:
+            def __init__(self, text):
+                self._text = text
+
+            def read_text(self):
+                if self._text is None:
+                    raise OSError("no such file")
+                return self._text
+
+        monkeypatch.setattr(gm, "_repo_file",
+                            lambda rel: _F(files.get(rel)))
+
+    def _filler(self, n=12):
+        return [f"/api/filler/{i}" for i in range(n)]
+
+    def test_two_of_three_kinds_is_two_thirds(self, monkeypatch):
+        served = self._filler() + ["/api/conversations/cancel",
+                                   "/api/heartbeats/enabled"]
+        self._app(monkeypatch, served, served)
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value == 66.7
+        assert "2 of 3 agent kinds" in detail
+        assert "marcus: no /api/marcus/stop" in detail
+
+    def test_all_three_reads_a_hundred(self, monkeypatch):
+        # The positive result. Without it every other test here is compatible
+        # with a measurer that cannot count past two.
+        served = self._filler() + ["/api/conversations/cancel",
+                                   "/api/heartbeats/enabled",
+                                   "/api/marcus/stop"]
+        self._app(monkeypatch, served, served)
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value == 100.0
+        assert "3 of 3 agent kinds" in detail
+        assert "Missing" not in detail
+
+    def test_a_route_with_no_button_does_not_count(self, monkeypatch):
+        served = self._filler() + ["/api/conversations/cancel",
+                                   "/api/heartbeats/enabled"]
+        self._app(monkeypatch, served, self._filler())
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value == 0.0
+        assert "served but no button posts to it" in detail
+
+    def test_a_button_the_server_would_404_does_not_count(self, monkeypatch):
+        served = self._filler()
+        self._app(monkeypatch, served,
+                  served + ["/api/conversations/cancel"])
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value == 0.0
+        assert "no /api/conversations/cancel" in detail
+
+    def test_a_route_only_mentioned_in_a_comment_is_not_a_button(self, monkeypatch):
+        # `app.js` carries thousands of lines of prose about its own routes.
+        # A bare substring search would read that prose as a shipped control.
+        served = self._filler() + ["/api/conversations/cancel"]
+        self._app(monkeypatch, self._filler() + ["/api/conversations/cancel"],
+                  self._filler(),
+                  bundle_prose=["/api/conversations/cancel"])
+        del served
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value == 0.0
+        assert "served but no button posts to it" in detail
+
+    def test_an_unparsed_allowlist_is_no_number_not_nought(self, monkeypatch):
+        # 0 is this measure's worst value, so a scanner that read nothing must
+        # never publish one.
+        self._app(monkeypatch, ["/api/conversations/cancel"],
+                  ["/api/conversations/cancel"])
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value is None
+        assert "under the 10 this expects" in detail
+
+    def test_a_bundle_naming_no_served_route_is_no_number(self, monkeypatch):
+        self._app(monkeypatch, self._filler(), [])
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value is None
+        assert "browser half of this check read nothing" in detail
+
+    def test_an_unreadable_file_is_no_number(self, monkeypatch):
+        class _Missing:
+            def read_text(self):
+                raise OSError("no such file")
+
+        monkeypatch.setattr(gm, "_repo_file", lambda rel: _Missing())
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value is None
+        assert "could not read the app's own source" in detail
+
+    def test_a_site_module_that_does_not_parse_is_no_number(self, monkeypatch):
+        class _F:
+            def __init__(self, text):
+                self._text = text
+
+            def read_text(self):
+                return self._text
+
+        files = {gm._SITE_MODULE: "def do_POST(:\n", gm._APP_BUNDLE: ""}
+        monkeypatch.setattr(gm, "_repo_file", lambda rel: _F(files[rel]))
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value is None
+        assert "did not parse" in detail
+
+    def test_it_is_registered_as_that_key_results_instrument(self):
+        assert (gm.KEY_RESULT_FETCH_MEASURERS["nova-kr-control-stop-coverage"]
+                is gm.measure_nova_control_stop_coverage)
+        assert "nova-kr-control-stop-coverage" not in gm.KEY_RESULT_NO_INSTRUMENT
+
+    def test_the_live_app_answers_this_check(self):
+        # Against the real files, not a fixture: the constants above name real
+        # paths, and a renamed module would make every fixture test pass while
+        # the live reading went to None.
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value is not None, detail
+        assert "of 3 agent kinds" in detail
+
+    def test_marcus_is_named_rather_than_written_off(self):
+        # A `None` route would freeze Marcus at nought on the day it ships.
+        route, _what = gm.STOP_CONTROLS["marcus"]
+        assert route.startswith("/api/")
