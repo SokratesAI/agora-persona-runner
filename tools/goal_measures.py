@@ -1497,7 +1497,7 @@ BLOCK_PHRASES = (
 #: Deliberately **not** on the list above: `"needs input"`. It is the name of a
 #: section of the digest, not something a cycle says about itself, so it
 #: matched every entry that merely discussed that section -- and the section is
-#: one Edvard killed on 2026-09-13 (*"I still see the needs input boxes"*), so
+#: the owner killed on 2026-09-13 (*"I still see the needs input boxes"*), so
 #: the entries discussing it are mostly about retiring it. Measured over
 #: 2026-09-10..2026-09-16: four entries matched it and nothing else, all four
 #: were talking about the section, and none of them named an ask. It added 4 to
