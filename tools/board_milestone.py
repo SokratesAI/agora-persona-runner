@@ -203,8 +203,13 @@ def main(argv=None):
     # A seats file that cannot be READ is not a refusal -- not checked is not
     # the same as no seats, and refusing here would put an unreadable vault
     # between him and his own board.
+    # Handed to `change_row`/`append_note` below so the primitive's own copy
+    # of this rule (`board_write.refuse_unseated`) judges the same read rather
+    # than fetching the document a second time.
+    seats_read = None
     if milestone and (was.get("project") or "").strip():
         seats, read_seats = seats_markdown()
+        seats_read = (lambda: (seats, read_seats))
         if not read_seats:
             print(
                 "  WARNING: milestone-seats.md could not be read, so the "
@@ -235,12 +240,13 @@ def main(argv=None):
                 args.board, args.number, args.note, args.dated,
                 cycle=args.cycle, author="nova",
                 changes=milestone_changes(milestone), store=board_store,
+                seats=seats_read,
             )
         else:
             board_write.change_row(
                 args.board, args.number,
                 milestone_changes(milestone, dated=args.dated),
-                store=board_store,
+                store=board_store, seats=seats_read,
             )
     except (board_write.WriteRefused, board_write.BoardDamaged,
             board_records.RecordError) as problem:

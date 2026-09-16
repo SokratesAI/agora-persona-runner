@@ -562,33 +562,12 @@ def promote(text, priority, status, dated, title=None, project=None,
 def seats_markdown(runner=None):
     """`milestone-seats.md` out of the vault -> `(markdown, ok)`.
 
-    `ok` is False when the document could not be read at all, and the
-    caller treats that as *not checked* rather than as no seats. Refusing
-    every capture because the vault client is missing would put an
-    unreadable vault between him and his own board -- the opposite trade
-    from the one the seat rule is worth.
-
-    Injectable so the tests drive the refusal without a subprocess; the
-    real runner is `vault_tool.py`, which lives on the bridge pod only.
+    The body moved to `agora_runner.board_write` in Cycle 1681, when
+    `change_row` started enforcing the seat rule itself and a primitive
+    could not import this CLI. Kept as a name here because
+    `board_milestone` and `board_project` import it from this module.
     """
-    import subprocess
-    runner = runner or subprocess.run
-    try:
-        done = runner(
-            [sys.executable, "/app/bridge/vault_tool.py", "get",
-             MILESTONE_SEATS_PATH],
-            capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.SubprocessError):
-        return "", False
-    if done.returncode != 0:
-        return "", False
-    # The vault client answers a missing document with this marker and
-    # exit 0. An absent seats file is unreadable for this purpose: it
-    # would seat nothing and refuse everything.
-    text = done.stdout
-    if "[not found]" in text[:200] or not text.strip():
-        return "", False
-    return text, True
+    return board_write.seats_markdown(runner)
 
 
 def main(argv=None):
@@ -754,8 +733,17 @@ def main(argv=None):
     # A row with no project cannot be seated either way, so it is not
     # fetched for: `unseated_refusal` would answer None and the call
     # would be a vault read taken for nothing.
+    # Read at most once and handed to `change_row` below, whose own copy of
+    # this rule would otherwise fetch the same document again per row.
+    held = []
+
+    def seats_read():
+        if not held:
+            held.append(seats_markdown())
+        return held[0]
+
     if args.milestone and tag:
-        seats, read_seats = seats_markdown()
+        seats, read_seats = seats_read()
         if not read_seats:
             print(
                 "  WARNING: milestone-seats.md could not be read, so the "
@@ -875,7 +863,7 @@ def main(argv=None):
                 board_write.change_row(
                     args.board, one["number"],
                     {"milestone": args.milestone.strip()},
-                    store=board_store,
+                    store=board_store, seats=seats_read,
                 )
             except (board_write.WriteRefused, board_write.BoardDamaged,
                     board_records.RecordError) as problem:

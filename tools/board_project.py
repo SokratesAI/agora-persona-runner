@@ -118,7 +118,7 @@ def missing_rows(contents, numbers):
     return [number for number in numbers if number not in on_board]
 
 
-def unseated_by_the_move(was, numbers, project):
+def unseated_by_the_move(was, numbers, project, seats=None):
     """`[(number, why)]` for rows the new project would leave unseated.
 
     **This is the third door onto one defect and the last one open.** A row
@@ -143,10 +143,10 @@ def unseated_by_the_move(was, numbers, project):
     carrying = [n for n in numbers if (was[n].get("milestone") or "").strip()]
     if not carrying:
         return []
-    seats, read_seats = seats_markdown()
+    markdown, read_seats = (seats or seats_markdown)()
     if not read_seats:
         return None
-    serves = parse_milestone_serves(seats)
+    serves = parse_milestone_serves(markdown)
     found = []
     for number in carrying:
         refusal = unseated_refusal(project, was[number]["milestone"], serves)
@@ -198,7 +198,18 @@ def main(argv=None):
 
     was = {item["number"]: item for item in before["items"]}
 
-    refusals = unseated_by_the_move(was, args.number, project)
+    # Read at most once and shared with `change_row`, whose own copy of this
+    # rule would otherwise fetch the same document again for every row. Lazy,
+    # so a run where no row carries a milestone still never reaches the vault.
+    held = []
+
+    def seats_read():
+        if not held:
+            held.append(seats_markdown())
+        return held[0]
+
+    refusals = unseated_by_the_move(was, args.number, project,
+                                    seats=seats_read)
     if refusals is None:
         print(
             "  WARNING: milestone-seats.md could not be read, so the seats "
@@ -226,7 +237,7 @@ def main(argv=None):
     for number in args.number:
         try:
             board_write.change_row(args.board, number, {"project": project},
-                                   store=board_store)
+                                   store=board_store, seats=seats_read)
         except (board_write.WriteRefused, board_write.BoardDamaged,
                 board_records.RecordError) as problem:
             print(f"REFUSED: #{number}: {problem}", file=sys.stderr)

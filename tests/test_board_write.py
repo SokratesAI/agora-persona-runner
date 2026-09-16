@@ -1061,3 +1061,104 @@ def test_a_document_with_no_captureid_is_refused_as_a_capturerefused():
         board_write.change_capture_text("issue", doc, "rewritten", store=store)
     assert "captureId" in str(refused.value)
     assert store.calls == []
+
+
+# --- the seat behind the milestone, at the primitive (issue #227) ---------
+#
+# `project_goals.unseated_refusal` was wired into `board_milestone`,
+# `board_project` and `board_capture` and into nothing here, so a caller
+# writing the cell straight through `change_row` walked past all three. On
+# 2026-09-16 I did exactly that and three rows landed under `Nova` rather than
+# `Nova the app`; the next sweep printed three model problems on his board.
+
+_SEATS = (
+    "| Project | Milestone | Position | Updated | Serves | Keeps |\n"
+    "|---|---|---|---|---|---|\n"
+    "| Nova the app | Look and feel | 1 | 09-16 | nova-kr-in-the-app |  |\n"
+)
+
+
+def _seats(text=_SEATS, ok=True):
+    return lambda: (text, ok)
+
+
+def test_a_milestone_with_no_seat_is_refused_before_anything_is_written():
+    """The refusal a hand-rolled caller gets now and did not get before: the
+    row would read as placed to every check downstream while serving no key
+    result."""
+    _parsed, store = writable()
+    with pytest.raises(board_write.WriteRefused) as refused:
+        board_write.change_row("issue", 42, {"milestone": "Framework rewrite"},
+                               store=store, seats=_seats())
+    assert "no seat in milestone-seats.md" in str(refused.value)
+    assert store.calls == []
+
+
+def test_the_pair_judged_is_the_one_the_row_would_hold_afterwards():
+    """A row moving between projects keeps its milestone, so the unseated pair
+    is (the new project, the old milestone) -- the pair `store_item` mints,
+    not the pair the row holds now."""
+    _parsed, store = writable()
+    board_write.change_row(
+        "issue", 42, {"project": "Nova the app", "milestone": "Look and feel"},
+        store=store, seats=_seats())
+    with pytest.raises(board_write.WriteRefused) as refused:
+        board_write.change_row("issue", 42, {"project": "Marcus"},
+                               store=store, seats=_seats())
+    assert "Marcus / 'Look and feel'" in str(refused.value)
+
+
+def test_a_seated_pair_is_written():
+    """The guard has to let the good write through, or the test above passes
+    against a function that refuses everything."""
+    _parsed, store = writable()
+    _before, after = board_write.change_row(
+        "issue", 42, {"project": "Nova the app", "milestone": "Look and feel"},
+        store=store, seats=_seats())
+    assert after["milestone"] == "Look and feel"
+    assert after["project"] == "Nova the app"
+
+
+def test_an_unreadable_seats_file_writes_rather_than_refuses():
+    """Not checked is not the same as no seats. The Nova site runs on a pod
+    with no vault client, and refusing there would put an unreadable vault
+    between him and his own board."""
+    _parsed, store = writable()
+    _before, after = board_write.change_row(
+        "issue", 42, {"milestone": "Framework rewrite"},
+        store=store, seats=_seats("", ok=False))
+    assert after["milestone"] == "Framework rewrite"
+
+
+def test_a_change_set_naming_neither_cell_never_reaches_the_seats_file():
+    """Every other write on his board would otherwise pay for a vault read."""
+    def explode():
+        raise AssertionError("the seats file was fetched for a status change")
+
+    _parsed, store = writable()
+    board_write.change_row("issue", 42, _OPEN_FROM_BACKLOG, store=store,
+                           seats=explode)
+
+
+def test_clearing_the_milestone_cell_never_reaches_the_seats_file():
+    """`--milestone ''` puts the row back in `task_seat_orphans`' inventory,
+    which is a choice the caller made out loud, not a defect."""
+    def explode():
+        raise AssertionError("the seats file was fetched for an ungrouping")
+
+    _parsed, store = writable()
+    board_write.change_row("issue", 42, {"milestone": ""}, store=store,
+                           seats=explode)
+
+
+def test_a_note_carrying_a_milestone_is_refused_by_the_same_rule():
+    """`append_note` passes its change set straight through, so the seat rule
+    has to reach it too -- `board_milestone --note` writes the cell that way."""
+    _parsed, store = writable()
+    board_write.change_row("issue", 42, {}, detail="his words", store=store)
+    with pytest.raises(board_write.WriteRefused) as refused:
+        board_write.append_note(
+            "issue", 42, "moving it", "09-16", cycle=1681, author="nova",
+            changes={"milestone": "Framework rewrite"}, store=store,
+            seats=_seats())
+    assert "no seat in milestone-seats.md" in str(refused.value)
