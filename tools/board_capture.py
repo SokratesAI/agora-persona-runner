@@ -136,7 +136,6 @@ from agora_runner.board_store import StoreError  # noqa: E402
 from agora_runner.board_write import refuse_cell  # noqa: E402
 from agora_runner.project_goals import unseated_refusal  # noqa: E402
 from agora_runner.nova_boards import (  # noqa: E402
-    MILESTONE_SEATS_PATH,
     PRIORITY_LABELS,
     parse_milestone_serves,
     STATUS_LABELS,
@@ -733,11 +732,15 @@ def main(argv=None):
     # A row with no project cannot be seated either way, so it is not
     # fetched for: `unseated_refusal` would answer None and the call
     # would be a vault read taken for nothing.
-    # Read at most once and handed to `change_row` below, whose own copy of
-    # this rule would otherwise fetch the same document again per row.
     held = []
 
     def seats_read():
+        """The seats file, read at most once a run and never eagerly.
+
+        Handed to `change_row` below as well, whose own copy of this rule
+        (`board_write.refuse_unseated`) would otherwise fetch the same
+        document again for every row boarded.
+        """
         if not held:
             held.append(seats_markdown())
         return held[0]
