@@ -4397,6 +4397,11 @@ FALSE_STATUS_KPI_KIND = "a KPI's now"
 #: Printed as uncompared too when not measured from inside a live cycle.
 FALSE_STATUS_RUNNING_KIND = "a live cycle shown not running"
 
+#: How `measure_nova_false_status` opens its detail when every kind it could
+#: compare came back clean. Named because `_kpi_reading` reads it: that reading
+#: is not a 0, but it does end a count written earlier -- see `KPI_NONE_FOUND`.
+FALSE_STATUS_NONE_FOUND = "0 in the kinds I can compare"
+
 
 def measure_nova_false_status(since, until, heartbeats=false_heartbeat_statuses,
                               board=false_board_statuses, kpi_rows=None,
@@ -4437,7 +4442,7 @@ def measure_nova_false_status(since, until, heartbeats=false_heartbeat_statuses,
                             f"(not compared: {uncompared}){extra}")
     if errors:
         return None, "; ".join(errors)
-    return None, (f"0 in the kinds I can compare ({', '.join(compared)}) -- "
+    return None, (f"{FALSE_STATUS_NONE_FOUND} ({', '.join(compared)}) -- "
                   f"not a reading, because {uncompared} "
                   f"{'has' if len(not_compared) == 1 else 'have'} no second source yet")
 
@@ -5062,6 +5067,19 @@ KPI_MEASURERS = {
 #: its own. `kpi_rows` runs them last and hands them the rows it already took.
 KPI_MEASURERS_OVER_ROWS = frozenset({"nova-kpi-false-status"})
 
+#: A KPI whose measurer refuses to report its best value, mapped to the detail
+#: it opens with when it looked and found nothing. **Such a KPI latches.** The
+#: refusal is right -- 0 off a partial sweep is the best reading coming off the
+#: thinnest evidence -- but `write_back_kpis` skips a `None`, so a count
+#: written while a false status was showing stayed on `/plan` after the status
+#: cleared: `now: 1`, out of bounds, with nothing left to find. Measured Cycle
+#: 1724: the one false status was idea #193, and nothing would ever have
+#: written the 1 away. A found-nothing reading does not say 0, but it does say
+#: the written count is a breach that ended, so the row is marked `stale_now`,
+#: the write blanks `now` and `--exit-on-drift` counts it. An unreadable sweep
+#: opens with something else and leaves the written number alone.
+KPI_NONE_FOUND = {"nova-kpi-false-status": FALSE_STATUS_NONE_FOUND}
+
 #: A KPI with no instrument, and why. Written down here rather than left as a
 #: silent gap, for the reason `KEY_RESULT_NO_INSTRUMENT` exists: a blank `now`
 #: says nothing about whether anyone tried, and three cycles re-deriving the
@@ -5114,7 +5132,12 @@ def kpi_rows(sections, since=None, until=None):
 def _kpi_reading(row, reading):
     value, detail = reading
     if value is None:
-        return {**row, "value": None, "detail": f"not measured — {detail}"}
+        out = {**row, "value": None, "detail": f"not measured — {detail}"}
+        prefix = KPI_NONE_FOUND.get(row["id"])
+        if (prefix and str(detail).startswith(prefix)
+                and str(row["kpi"].get("now", "")).strip()):
+            out["stale_now"] = True
+        return out
     return {**row, "value": value, "detail": detail}
 
 
@@ -5125,6 +5148,9 @@ def render_kpis(rows, path):
         lines.append(f"  {row['project']} / {row['id']}")
         if row["value"] is None:
             lines.append(f"      {path} says now: {written or '(blank)'} — {row['detail']}")
+            if row.get("stale_now"):
+                lines.append(f"      <- the document says {written}, which this "
+                             "sweep no longer finds: a breach that ended")
             continue
         low = str(row["kpi"].get("low", "")).strip()
         high = str(row["kpi"].get("high", "")).strip()
@@ -5153,18 +5179,20 @@ def write_back_kpis(path, text, rows):
 
     lines, changed = [], 0
     for row in rows:
-        if row["value"] is None:
+        if row["value"] is None and not row.get("stale_now"):
             continue
         written = str(row["kpi"].get("now", "")).strip()
-        if _as_number(written) == _as_number(row["value"]):
+        if row["value"] is not None and _as_number(written) == _as_number(row["value"]):
             continue
-        amended = set_field_in_kpi(text, row["id"], "now", row["value"])
+        amended = set_field_in_kpi(text, row["id"], "now",
+                                   "" if row["value"] is None else row["value"])
         if amended is None:
             lines.append(f"  ! {row['id']}: could not edit that kpi fence, "
                          f"left at {written or '(blank)'}")
             continue
         text, changed = amended, changed + 1
-        lines.append(f"  {row['id']}  now: {written or '(blank)'} -> {row['value']}")
+        shown = "(blank)" if row["value"] is None else row["value"]
+        lines.append(f"  {row['id']}  now: {written or '(blank)'} -> {shown}")
     if not changed:
         head = ("WROTE NOTHING — every instrumented KPI already carries its "
                 "measured number" if not lines else "WROTE NOTHING")
@@ -5397,6 +5425,9 @@ def drift_status(rows, kr_rows, kpis, goals_name, project_goals_name=None):
             for row in kpis
             if has_drifted(row["kpi"].get("now", ""), row["value"])
             and kpi_drift_crosses_bounds(row["kpi"], row["value"])
+        ] + [
+            f"{row['project']} / {row['id']} in {pg_name}"
+            for row in kpis if row.get("stale_now")
         ]
         instrumented += [row for row in kr_rows + kpis
                          if row["value"] is not None]
@@ -5408,6 +5439,7 @@ def drift_status(rows, kr_rows, kpis, goals_name, project_goals_name=None):
             f"{row['project']} / {row['id']} in {pg_name}"
             for row in kpis
             if publishes_unconfirmed_number(row["kpi"].get("now", ""), row["value"])
+            and not row.get("stale_now")
         ]
     lines = ""
     for line in drifted:
