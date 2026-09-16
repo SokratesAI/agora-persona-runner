@@ -663,10 +663,8 @@ def kpi_drift_crosses_bounds(kpi, value):
     document is reporting a breach that has ended or missing one that has
     started, and that is a real finding.
 
-    **Key results are deliberately not given this carve-out.** They carry a
-    `target` rather than a range, and rule 7 reads a goal as *"target versus
-    current number"* -- there the digit IS the claim, so any drift stays a
-    defect.
+    Key results get the same treatment against their target rather than a
+    range -- see `kr_drift_crosses_target` for why.
 
     A written `now` that is not a number at all always crosses: a guardrail
     with no reading is not a guardrail, and that is the blank `has_drifted`
@@ -679,6 +677,39 @@ def kpi_drift_crosses_bounds(kpi, value):
     if _as_number(kpi.get("now", "")) is None:
         return True
     return bool(kpi_breach(kpi)) != bool(kpi_breach({**kpi, "now": str(value)}))
+
+
+def kr_drift_crosses_target(row, value):
+    """A key result or goal whose written number has drifted -- does the
+    drift change which side of its target it stands on?
+
+    Only ever asked of a row `has_drifted` already said yes to. Until
+    2026-09-17 key results had no carve-out, on the reasoning that a target
+    is read against the digit. But four of them read a rolling seven-day
+    window (G1 and planning's pull requests per closed row, the share of
+    blocked entries naming a thread, the share of PRs naming a row), so they
+    drifted within an hour of every repair and were hand-repaired four times
+    in two days (cycles 1710, 1715, 1718, 1720) with no instrument wrong.
+    Issue #227's rule 7 is *"monthly objectives, weekly check"*: the digit is
+    checked weekly, by the Monday goals run passing `goal_drift --repair`.
+    What cannot wait a week is a number reaching or leaving its target, and
+    that still counts here.
+
+    A written `now` that is not a number always crosses, the blank
+    `has_drifted` was built to fill. A row with no target or direction keeps
+    the strict comparison, because there is no side to be on.
+    Design: nova/resources/ideas/rolling-key-results-judged-weekly.md.
+    """
+    from agora_runner.project_goals import key_result_short
+
+    if value is None:
+        return False
+    if _as_number(row.get("now", "")) is None:
+        return True
+    before = key_result_short(row)
+    if before is None:
+        return True
+    return before != key_result_short({**row, "now": str(value)})
 
 
 def render(rows, since, until, problems):
@@ -696,7 +727,10 @@ def render(rows, since, until, problems):
         if has_drifted(written, value):
             drift = ("  <- goals.md carries no number"
                      if _as_number(written) is None
-                     else f"  <- goals.md says {written}, drifted")
+                     else f"  <- goals.md says {written}, drifted"
+                     if kr_drift_crosses_target(goal, value)
+                     else f"  <- goals.md says {written}, moved without "
+                          "crossing its target")
         lines.append(f"  {key}  {goal['name']}")
         lines.append(f"      measured {shown}{drift}")
         lines.append(f"      {detail}")
@@ -5218,8 +5252,12 @@ def render_key_results(kr_rows, path):
         if row["value"] is None:
             lines.append(f"      {path} says now: {written or '(blank)'} — {row['detail']}")
             continue
-        drift = (f"  <- the document says {written or '(blank)'}, drifted"
-                 if has_drifted(written, row["value"]) else "")
+        drift = ""
+        if has_drifted(written, row["value"]):
+            drift = (f"  <- the document says {written or '(blank)'}, drifted"
+                     if kr_drift_crosses_target(row["kr"], row["value"])
+                     else f"  <- the document says {written}, moved without "
+                          "crossing its target")
         lines.append(f"      measured {row['value']}{drift}")
         lines.append(f"      {row['detail']}")
     return "\n".join(lines)
@@ -5280,6 +5318,14 @@ def drift_status(rows, kr_rows, kpis, goals_name, project_goals_name=None):
     drifted = [
         f"{row['key']} in {goals_name}"
         for row in rows if has_drifted(row["goal"].get("now", ""), row["value"])
+        and kr_drift_crosses_target(row["goal"], row["value"])
+    ]
+    # A goal or key result that moved without crossing its target is named
+    # and not counted -- see `kr_drift_crosses_target`.
+    moved_kr = [
+        f"{row['key']} in {goals_name}"
+        for row in rows if has_drifted(row["goal"].get("now", ""), row["value"])
+        and not kr_drift_crosses_target(row["goal"], row["value"])
     ]
     instrumented = [row for row in rows if row["value"] is not None]
     unconfirmed = [
@@ -5294,6 +5340,13 @@ def drift_status(rows, kr_rows, kpis, goals_name, project_goals_name=None):
             f"{row['project']} / {row['id']} in {pg_name}"
             for row in kr_rows
             if has_drifted(row["kr"].get("now", ""), row["value"])
+            and kr_drift_crosses_target(row["kr"], row["value"])
+        ]
+        moved_kr += [
+            f"{row['project']} / {row['id']} in {pg_name}"
+            for row in kr_rows
+            if has_drifted(row["kr"].get("now", ""), row["value"])
+            and not kr_drift_crosses_target(row["kr"], row["value"])
         ]
         # A KPI that drifted without crossing a bound is reported and not
         # counted -- see `kpi_drift_crosses_bounds` for why the digit is
@@ -5329,6 +5382,9 @@ def drift_status(rows, kr_rows, kpis, goals_name, project_goals_name=None):
     for line in moved:
         lines += (f"\n  - {line} moved inside its own range -- reported, "
                   "not counted")
+    for line in moved_kr:
+        lines += (f"\n  - {line} moved without crossing its target -- "
+                  "reported, not counted until the weekly --repair")
     # Printed with its own marker and deliberately NOT counted as drift.
     # A number nothing could confirm is not a number that disagrees with its
     # instrument, and an instrument whose history is still empty is a thing
@@ -5348,6 +5404,9 @@ def drift_status(rows, kr_rows, kpis, goals_name, project_goals_name=None):
         + (f", and {len(moved)} KPI(s) moved without leaving their "
            "own range, which is a snapshot ageing rather than a finding"
            if moved else "")
+        + (f", and {len(moved_kr)} key result(s) moved without crossing "
+           "their target, which the weekly goals run writes back"
+           if moved_kr else "")
         + (f", and {len(unconfirmed)} published number(s) had no reading to "
            "confirm them at all"
            if unconfirmed else "") + ".")
