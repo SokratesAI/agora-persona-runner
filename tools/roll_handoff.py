@@ -40,7 +40,13 @@ from agora_runner.nova_handoff import (  # noqa: F401 -- re-exported for callers
     stamp_retired,
 )
 from agora_runner import rolling  # noqa: F401 -- callers reach through this module
-from agora_runner.rolling import RollError, plan, verify  # noqa: F401
+from agora_runner.rolling import (  # noqa: F401
+    STALE_AFTER_MINUTES,
+    RollError,
+    plan,
+    read_roll_input,
+    verify,
+)
 
 
 def _describe(items):
@@ -91,15 +97,21 @@ def main(argv=None):
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--max-age-minutes",
+        type=int,
+        default=STALE_AFTER_MINUTES,
+        help="refuse an input file older than this; 0 to read it anyway",
+    )
     args = parser.parse_args(argv)
 
     # Oslo, not the system clock -- same reason `roll_needs_edvard` gives:
     # the pod runs UTC and between 22:00 and 23:59 UTC the `**Retired
     # MM-DD**` stamp would be a day behind his calendar, every night.
     today = datetime.datetime.now(OSLO).date()
-    live = open(args.live).read()
+    live = read_roll_input(args.live, args.max_age_minutes)
     try:
-        archive = open(args.archive).read()
+        archive = read_roll_input(args.archive, args.max_age_minutes)
     except FileNotFoundError:
         archive = ""
 

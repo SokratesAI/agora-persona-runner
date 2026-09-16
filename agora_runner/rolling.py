@@ -34,7 +34,12 @@ whichever vault client that pod actually has.
 """
 
 import argparse
+import datetime
+import os
+import sys
+import time
 
+from agora_runner.config import OSLO
 from agora_runner.md_sections import section_bounds, split_at_heading
 
 
@@ -488,6 +493,57 @@ def verify(live, archive, new_live, new_archive, spec, ordered=True):
         spec.check_render(live, archive, kept, new_live, new_archive)
 
 
+# A roll input is only worth reading if this cycle fetched it. Nothing in
+# the file says so, which is the whole defect: `--live live.md` names a
+# path in the current directory, every cycle runs these tools from the
+# same runner checkout, and a copy some earlier cycle left there reads
+# exactly like a copy this one just wrote. Cycle 1673 rolled against a
+# `live.md` from 19:23 the previous evening and was told `nothing to
+# roll: live.md is already at or under 12 digest lines`, exit 0, while
+# the real digest was one line over -- a stale read and a genuine no-op
+# print the same sentence. So the mtime is checked and the path is said
+# out loud, because being unable to tell those two apart is what cost.
+#
+# An hour is derived rather than chosen: the fetch and the roll are two
+# lines of one `&&` chain in `prompt.md` step 7, so the intended gap is
+# seconds, and the outer bound on a cycle that fetches early and rolls
+# in its wrap-up is the 45-minute turn. Anything older than that was
+# written by a different cycle.
+STALE_AFTER_MINUTES = 60
+
+
+def read_roll_input(path, max_age_minutes=STALE_AFTER_MINUTES, now=None, out=None):
+    """Read a roll input, name it, and refuse one this cycle did not fetch.
+
+    `FileNotFoundError` is deliberately left to the caller: a missing
+    archive is a normal first roll, and a missing live file is a
+    different kind of wrong.
+    """
+    text = open(path).read()
+    mtime = os.stat(path).st_mtime
+    age = (time.time() if now is None else now) - mtime
+    # Oslo, not the pod's UTC: rule 7, and every other report in this loop
+    # stamps itself that way, so a UTC stamp here reads as an hour that
+    # has not happened yet.
+    stamp = datetime.datetime.fromtimestamp(mtime, OSLO).strftime(
+        "%Y-%m-%d %H:%M Oslo"
+    )
+    where = os.path.abspath(path)
+    print(
+        f"read {where} ({_utf8_len(text)} bytes, fetched {stamp}, "
+        f"{age / 60:.0f} min ago)",
+        file=sys.stdout if out is None else out,
+    )
+    if max_age_minutes and age > max_age_minutes * 60:
+        raise RollError(
+            f"refusing to roll: {where} was last written {stamp}, "
+            f"{age / 60:.0f} minutes ago, which is older than this cycle. "
+            "Re-fetch the live file and its archive from the vault and pass "
+            "those paths, or pass --max-age-minutes 0 if you meant this one."
+        )
+    return text
+
+
 def run(spec, argv=None, description=None):
     """The shared CLI: read both files, plan, verify, write archive first.
 
@@ -502,11 +558,17 @@ def run(spec, argv=None, description=None):
     parser.add_argument("--archive", default="archive.md")
     parser.add_argument("--keep", type=int, default=keep_default)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--max-age-minutes",
+        type=int,
+        default=STALE_AFTER_MINUTES,
+        help="refuse an input file older than this; 0 to read it anyway",
+    )
     args = parser.parse_args(argv)
 
-    live = open(args.live).read()
+    live = read_roll_input(args.live, args.max_age_minutes)
     try:
-        archive = open(args.archive).read()
+        archive = read_roll_input(args.archive, args.max_age_minutes)
     except FileNotFoundError:
         archive = ""
     if not isinstance(spec, RollSpec):
