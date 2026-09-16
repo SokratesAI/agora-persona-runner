@@ -3216,7 +3216,7 @@ def reset_cadence():
         _cadence_refreshing = False
 
 
-def _in_flight(written, last_run_at, last_result, now=None):
+def _in_flight(written, last_run_at, last_result, now=None, woke=""):
     """Is a cycle in flight right now, as a fact about Agora's own record.
 
     The same three-condition test `_running_now` has always made, minus the
@@ -3244,6 +3244,18 @@ def _in_flight(written, last_run_at, last_result, now=None):
     future is a clock disagreement, and the caller's second bound (silence
     no longer than one cadence plus one cycle) is what stops a stuck record
     from silencing the alarm, so this one does not have to.
+
+    **The newest entry can be an older run's, when cycles overlap.** `woke`
+    is that entry's wake stamp (`lastWokeDate` + `lastWokeTime`, the minute
+    its own conversation was created). Measured Cycle 1712, 2026-09-16: Agora
+    claimed the run at 20:48:00 Oslo and Cycle 1711, which woke at 20:24,
+    wrote its entry at 20:49 -- so `lastRunAt` was older than the newest entry
+    and the app showed no cycle running for the whole of 1712. An entry whose
+    run woke well before this claim cannot be this run's entry, so it does not
+    veto. The margin covers the same claim being stamped twice a few seconds
+    apart and truncated to the minute; two different runs are a cadence
+    apart. With no readable `woke` the old rule stands, which is the safe
+    direction.
     """
     from agora_runner.cycle_health import MAX_CYCLE_MINUTES
 
@@ -3258,13 +3270,30 @@ def _in_flight(written, last_run_at, last_result, now=None):
         ran = ran.replace(tzinfo=OSLO)
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=OSLO)
-    if ran <= stamp:
+    if ran <= stamp and not _woke_before(woke, ran):
         return False
     age = (now or datetime.now(OSLO)) - ran
     return age <= timedelta(minutes=MAX_CYCLE_MINUTES)
 
 
-def _running_now(written, last_run_at, last_result, stalled, now=None):
+# How much earlier than Agora's claim the newest entry's wake stamp has to
+# be before it counts as another run's. The wake is minute-truncated and
+# stamped seconds after the claim; runs are at least one cadence apart.
+WOKE_BEFORE_CLAIM_MINUTES = 2
+
+
+def _woke_before(woke, ran):
+    """True when `woke` (Oslo, `YYYY-MM-DD HH:MM`) is clearly before `ran`."""
+    try:
+        started = datetime.fromisoformat(woke)
+    except (TypeError, ValueError):
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=OSLO)
+    return started < ran - timedelta(minutes=WOKE_BEFORE_CLAIM_MINUTES)
+
+
+def _running_now(written, last_run_at, last_result, stalled, now=None, woke=""):
     """Is a cycle in flight right now -- measured, not inferred from the clock.
 
     The half of #72 that had no answer for 130 cycles. The owner: *"Nova is 1
@@ -3308,7 +3337,7 @@ def _running_now(written, last_run_at, last_result, stalled, now=None):
     """
     if stalled:
         return False
-    return _in_flight(written, last_run_at, last_result, now)
+    return _in_flight(written, last_run_at, last_result, now, woke)
 
 
 def _with_silence(status, now=None, minutes=None, record_age=None, heartbeat=None):
@@ -3419,7 +3448,8 @@ def _with_silence(status, now=None, minutes=None, record_age=None, heartbeat=Non
     #   from muting the alarm for good.
     from agora_runner.cycle_health import MAX_CYCLE_MINUTES
 
-    in_flight = _in_flight(written, heartbeat[0], heartbeat[1], now)
+    woke = " ".join(filter(None, (out.get("lastWokeDate"), out.get("lastWokeTime"))))
+    in_flight = _in_flight(written, heartbeat[0], heartbeat[1], now, woke)
     explained = (
         in_flight
         and silent_minutes is not None
@@ -3432,7 +3462,7 @@ def _with_silence(status, now=None, minutes=None, record_age=None, heartbeat=Non
         and not explained
     )
     out["running"] = not stale and _running_now(
-        written, heartbeat[0], heartbeat[1], out["stalled"], now
+        written, heartbeat[0], heartbeat[1], out["stalled"], now, woke
     )
     return out
 
