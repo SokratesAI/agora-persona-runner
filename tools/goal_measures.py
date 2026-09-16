@@ -1513,7 +1513,21 @@ _BLOCKS_ENTRIES = 400
 
 
 def _live_ask_ids():
-    """(ids, problem) -- every ask thread this loop has open, from the store.
+    """(ids, problem, blind) -- every thread this loop has open a question in.
+
+    Two kinds, because `ask_watch` learned the hard way that there are two
+    (runner#1157): a thread `needs_input` opened, tagged `nova:needs-input` or
+    named with its prefix, and a goal discussion `project_goal_thread` opened,
+    which carries neither and is known only because `project-goals.md` names it
+    against a project still `discussing`. Reading the tag alone left `0af15d7d`
+    -- the Cycles/Planning/Vault store goal thread, open and waiting on him --
+    out of the set, so a block naming only that thread would score as one with
+    nothing he could answer. Measured Cycle 1701 over 09-10..09-16: the one
+    block naming it also named `0256140f`, so no reading had moved yet.
+
+    `blind` is why the goal half was not read, or None. It is not a `problem`:
+    the tagged half still stands on its own and only reads low without the
+    other, so the share stays a floor and the detail names what went unread.
 
     Archived threads are outside `?active=true`, which is the same blindness
     `ask_watch` has and for the same reason: an archived ask is his "I am done
@@ -1524,16 +1538,38 @@ def _live_ask_ids():
 
     status, body = agora_get("/conversations?active=true")
     if status != 200:
-        return None, f"the conversation listing returned HTTP {status}"
-    ids = set()
+        return None, f"the conversation listing returned HTTP {status}", None
+    ids, listed = set(), set()
     for row in (body or {}).get("conversations") or []:
         cid = str(row.get("id") or "")
         if not cid:
             continue
+        listed.add(cid)
         tagged = NEEDS_INPUT_TAG in (row.get("tags") or [])
         named = str(row.get("name") or "").startswith(NAME_PREFIX)
         if tagged or named:
             ids.add(cid)
+    goal_ids, blind = _goal_thread_ids(listed)
+    return ids | goal_ids, None, blind
+
+
+def _goal_thread_ids(listed):
+    """(ids, blind) -- the listed threads `project-goals.md` argues a goal in.
+
+    Resolved with `match_thread_id`, the same resolver `ask_watch` uses, since
+    the document writes an id in full or as its first eight characters.
+    """
+    from agora_runner.project_goals import match_thread_id
+    from tools import ask_watch
+
+    markdown, problem, _here = ask_watch.read_goals()
+    if markdown is None:
+        return set(), problem
+    ids = set()
+    for _project, written, _pending in ask_watch.goal_discussions(markdown):
+        resolved = match_thread_id(written, listed)
+        if resolved is not None:
+            ids.add(resolved)
     return ids, None
 
 
@@ -1570,7 +1606,7 @@ def measure_nova_scale_blocks_recorded(since, until):
                       f"you, over {len(window)} entry/entries in the window -- "
                       "there is no share to take, and calling that 0% would "
                       "report the best week as the worst")
-    ids, problem = _live_ask_ids()
+    ids, problem, blind = _live_ask_ids()
     if problem:
         return None, (f"{problem}, so the recorded half read nothing and every "
                       "block would score unrecorded")
@@ -1606,6 +1642,9 @@ def measure_nova_scale_blocks_recorded(since, until):
             detail += f"; and {len(unrecorded) - 5} more"
     detail += (" -- a floor twice over: the phrases are a fixed list, and an "
                "ask he has archived is outside the listing this reads")
+    if blind:
+        detail += (f"; goal discussion threads were not read ({blind}), so a "
+                   "block naming one of those scored unrecorded")
     return share, detail
 
 
