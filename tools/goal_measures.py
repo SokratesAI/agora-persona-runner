@@ -2652,6 +2652,44 @@ def fetch_post_articles(site=NEWSPAPER):
     return [a for a in articles if isinstance(a, dict)], None
 
 
+def fetch_post_open_stats(site=NEWSPAPER):
+    """The Post's own article-open counter, or `(None, why)`.
+
+    The newspaper server counts a fetch of `/api/full-text/<id>` as one open --
+    the one event it sees when an article is actually read -- and has kept the
+    count in CouchDB since 2026-08-25 (idea #96). The live route wraps the
+    payload in `open_stats`; an unwrapped one is accepted too.
+    """
+    payload, error = _get_json(f"{site}/api/open-stats", timeout=60)
+    if error:
+        return None, error
+    if isinstance(payload, dict) and isinstance(payload.get("open_stats"), dict):
+        payload = payload["open_stats"]
+    if not isinstance(payload, dict) or not isinstance(payload.get("total_opens"), int):
+        return None, (f"{site}/api/open-stats carried no integer total_opens, "
+                      "so the open counter could not be read")
+    return payload, None
+
+
+def _post_opens_note():
+    """One clause on the open counter, for a readership detail line.
+
+    Opens carry no date, so they cannot add a day to a measure counted in days.
+    They are the only record of a read that needs no tap, though, and leaving
+    them out made the detail read as if reactions were all the Post keeps.
+    """
+    stats, error = fetch_post_open_stats()
+    if error:
+        return f"; the Post's open counter could not be read ({error})"
+    in_print = stats.get("opens_in_print")
+    articles = sum(c.get("articles_opened", 0)
+                   for c in (stats.get("categories") or {}).values()
+                   if isinstance(c, dict))
+    return (f"; separately the Post has counted {stats['total_opens']} article "
+            f"open(s) ever, {in_print} of them on {articles} article(s) still "
+            "in print -- undated, so they add no day here")
+
+
 def _post_field_set(articles):
     """The union of keys across every article, and the ones I have never seen."""
     seen = set()
@@ -2733,7 +2771,7 @@ def measure_post_readership(since, until):
     if not reacted:
         return 0, (f"no article of the {len(articles)} the Post serves carries "
                    f"any of {', '.join(_POST_REACTION_FIELDS)}, so it holds no "
-                   "record that anyone read one")
+                   "record that anyone reacted to one" + _post_opens_note())
     caveat = (f"; {undated} reacted article(s) carry no publication date and "
               "cannot be placed on a day" if undated else "")
     newest = f", newest {days[-1]}" if days else ""
@@ -2741,7 +2779,7 @@ def measure_post_readership(since, until):
                        f"reaction ({', '.join(_POST_REACTION_FIELDS)}), falling "
                        f"on {len(days)} distinct Oslo day(s) by publication "
                        f"date{newest}; the reaction itself is not "
-                       f"timestamped{caveat}")
+                       f"timestamped{caveat}{_post_opens_note()}")
 
 
 #: The project name `nas-kr-unattended` counts rows for, exactly as both
