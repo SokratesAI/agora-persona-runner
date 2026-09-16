@@ -120,6 +120,12 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.http_util import agora_get, agora_internal, unauthorized_hint
+from agora_runner.nudge_ask import (
+    NUDGE_TEXT as _NUDGE_TEXT,
+    in_quiet_hours as _in_quiet_hours,
+    nudge as _nudge,
+    parse_ts as _nudge_parse_ts,
+)
 from agora_runner.needs_input import (
     NAME_PREFIX, NEEDS_INPUT_TAG, SENDER, push_held)
 from agora_runner.project_goals import (
@@ -159,52 +165,14 @@ def _age_hours(ts, now):
 # ever opened comes close, and a thread past it degrades in the safe direction.
 WINDOW = 200
 
-# Agora's own defaults, from `agora`'s `src/config.ts`:
-# `QUIET_HOURS_START ?? "22:00"`, `QUIET_HOURS_END ?? "07:00"`,
-# `QUIET_HOURS_TZ ?? "Europe/Oslo"`. Copied rather than read because Agora
-# publishes no route that answers them; verified against the live cluster on
-# 2026-09-15 -- no container in `agents` sets any of the three, so the
-# defaults are what is running. If that ever changes there, change it here.
-QUIET_START_MINUTE = 22 * 60
-QUIET_END_MINUTE = 7 * 60
-QUIET_TZ = "Europe/Oslo"
-
-
-def _oslo_minutes(when):
-    """Minutes since local midnight in Oslo, DST included."""
-    return (when.astimezone(ZoneInfo(QUIET_TZ)).hour * 60
-            + when.astimezone(ZoneInfo(QUIET_TZ)).minute)
-
-
-def in_quiet_hours(when):
-    """Was `when` inside the window where Agora withholds the phone buzz?
-
-    Half-open on both ends, the same as Agora's `isQuiet`, so a message at
-    exactly 07:00 is audible and one at exactly 22:00 is not. The window wraps
-    midnight, which is why this is not a single comparison.
-    """
-    if when is None:
-        return False
-    minutes = _oslo_minutes(when)
-    return minutes >= QUIET_START_MINUTE or minutes < QUIET_END_MINUTE
-
-
-def _parse_ts(ts):
-    if not ts:
-        return None
-    try:
-        when = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
-
-
-NUDGE_TEXT = (
-    "**This question is still open and your phone never mentioned it** — I "
-    "posted it during quiet hours, so Agora filed the message and withheld the "
-    "buzz, and nothing retried it. Nothing above has changed; scroll up for the "
-    "ask itself. — Nova, re-announcing once."
-)
+# The quiet-hours window, the re-announcement text and the nudge primitive all
+# live in `agora_runner.nudge_ask` rather than here, because `tools/` is not
+# deployed to the runner pod and the bridge pod holds no `AGORA_TOKEN` -- so a
+# cycle that needs to nudge has to reach the primitive from `agora_runner`, and
+# a second copy of the window here would be a second thing to keep true.
+in_quiet_hours = _in_quiet_hours
+NUDGE_TEXT = _NUDGE_TEXT
+_parse_ts = _nudge_parse_ts
 
 
 def resolve(conversation_id, because, rows=None):
@@ -261,23 +229,19 @@ def resolve(conversation_id, because, rows=None):
     return True, "closed out and archived"
 
 
-def nudge(conversation_id, text=NUDGE_TEXT):
+def nudge(conversation_id, text=NUDGE_TEXT, newest=None):
     """Post the re-announcement, so the ask gets the one push it never got.
 
-    Returns (ok, detail). Deliberately a normal message rather than a
-    `system: true` one: a system notice is machinery talking and Nova's thread
-    filters those out of what it renders, which is the opposite of what an ask
-    he has not seen needs.
+    A thin pass-through to `agora_runner.nudge_ask.nudge`, which carries the
+    guard: it refuses a thread whose newest message is his, or mine and
+    audible. Called from `report`, that guard is redundant -- the `silenced`
+    list is built from the same predicate -- and that is the point. The
+    duplicate it prevents came from a cycle hand-rolling this call on the
+    runner pod because it could not run this tool there.
+
+    Returns (ok, detail).
     """
-    status, body = agora_internal(
-        "POST", f"/conversations/{conversation_id}/notify",
-        {"text": text, "sender": SENDER, "system": False})
-    if status not in (200, 201):
-        return False, f"notify returned HTTP {status}{unauthorized_hint(status)}"
-    held = push_held(body)
-    if held:
-        return False, f"posted but the push was withheld again ({held})"
-    return True, "his phone buzzed"
+    return _nudge(conversation_id, text=text, newest=newest)
 
 
 # His own name as Agora records it, the same literal `agora_runner/nova_ask.py`
