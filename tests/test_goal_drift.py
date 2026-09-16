@@ -130,6 +130,18 @@ def test_no_revision_is_recorded_when_it_is_only_watching(monkeypatch):
     assert revs and all(rev is None for rev in revs)
 
 
+def test_a_read_is_the_document_not_the_newline_print_adds(monkeypatch):
+    """A get-then-put round trip must be byte-identical, or every repair pads the file."""
+    document = "# goals\n\nnow: 1\n"
+
+    class Done:
+        returncode = 0
+        stdout = document + "\n"  # what `print(content)` in vault_tool.py emits
+
+    monkeypatch.setattr(goal_drift.subprocess, "run", lambda *a, **k: Done())
+    assert goal_drift.fetch("projects/x.md") == (document, True)
+
+
 def _repairing(monkeypatch, before, after, writer):
     """Drive `--repair` over one fake required document. Returns the exit code.
 

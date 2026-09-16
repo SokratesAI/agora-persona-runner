@@ -140,7 +140,15 @@ def fetch(path, rev_file=None):
         return "", False
     if done.returncode != 0 or "[not found]" in done.stdout[:200]:
         return "", False
-    return done.stdout, True
+    # `vault_tool.py get` hands the document to `print`, which adds one
+    # newline the document does not have. Kept, `--repair` wrote it back and
+    # every repair grew both goal documents by a blank line -- measured Cycle
+    # 1693: 22 and 30 trailing newlines, and the line-count tripwire could not
+    # see it because it compares against this same padded read.
+    text = done.stdout
+    if text.endswith("\n"):
+        text = text[:-1]
+    return text, True
 
 
 def put(path, local, rev_file):
