@@ -38,10 +38,6 @@ def _anthropic_content(message):
     return blocks
 
 
-class MeteredTurnCeilingReached(RuntimeError):
-    """A turn on the metered API billed more tokens than ANTHROPIC_TURN_TOKEN_CEILING."""
-
-
 def _billed_tokens(resp):
     usage = resp.get("usage") or {}
     return sum(int(usage.get(key) or 0) for key in (
@@ -163,12 +159,19 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
             messages.append({"role": "user", "content": results})
             billed += _billed_tokens(resp)
             if billed >= ANTHROPIC_TURN_TOKEN_CEILING:
-                raise MeteredTurnCeilingReached(
-                    f"refusing round {_round + 1} of a metered turn on model {model_id!r}: this turn has "
-                    f"already billed {billed:,} tokens against a ceiling of {ANTHROPIC_TURN_TOKEN_CEILING:,} "
-                    f"(ANTHROPIC_TURN_TOKEN_CEILING). Move the persona to 'claude-cli:{model_id}' to run "
-                    f"long tool loops without spending the prepaid balance."
+                # Ends the turn with a reply rather than raising: a raised turn
+                # is retried by conversations.py (3 at once, then ~15 a day),
+                # and every retry would bill up to the ceiling again.
+                notice = (
+                    f"Stopped before round {_round + 1}: this turn on the metered API has billed "
+                    f"{billed:,} tokens, past its ceiling of {ANTHROPIC_TURN_TOKEN_CEILING:,} "
+                    f"(ANTHROPIC_TURN_TOKEN_CEILING). Move this persona to 'claude-cli:{model_id}' "
+                    f"to run long tool loops without spending the prepaid balance."
                 )
+                log(f"anthropic turn ceiling: model={model_id} billed={billed} rounds={_round + 1}")
+                if on_text:
+                    on_text(notice, True)
+                return notice
             continue
 
         # Join every text block, not just the first — a server-side tool

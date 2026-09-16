@@ -9550,7 +9550,7 @@ def test_an_unclaimed_run_still_going_does_not_eat_the_next_slot(runner):
 # ---------------------------------------------------------------------------
 # idea #249: the metered guard is a boolean, so an attended `anthropic:` turn
 # was unlimited -- 100 tool rounds, each resending the whole conversation.
-# A turn is refused before the round that would start past its token ceiling.
+# A turn ends with a notice before the round that would start past its token ceiling.
 # ---------------------------------------------------------------------------
 
 def _tool_round(tokens):
@@ -9571,11 +9571,13 @@ def test_anthropic_turn_refused_before_the_round_past_its_token_ceiling(runner):
     with patch.object(runner.providers.anthropic, "ANTHROPIC_TURN_TOKEN_CEILING", 1000), \
          patch.object(runner.providers.anthropic, "execute_tool", return_value="ok"), \
          patch.object(runner.providers.anthropic, "http_json", side_effect=fake_http_json):
-        with pytest.raises(runner.providers.anthropic.MeteredTurnCeilingReached, match="1,200 tokens"):
-            runner.anthropic_generate(
-                "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
-                dict(runner.NO_CAPS), {"name": "Test", "id": "p1"}, "conv-1",
-            )
+        result = runner.anthropic_generate(
+            "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Test", "id": "p1"}, "conv-1",
+        )
+    # A reply, not a raise: conversations.py retries a raised turn, and each
+    # retry would bill up to the ceiling again.
+    assert "billed 1,200 tokens" in result
     assert len(calls) == 2
 
 
