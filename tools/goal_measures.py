@@ -4137,41 +4137,74 @@ def false_board_statuses(check=None):
     return [f"{board} #{number} ({status})" for board, number, status, _ in findings], None
 
 
+def false_kpi_statuses(rows):
+    """`(ids, error)` -- KPIs `/plan` shows on the wrong side of their own range.
+
+    `/plan` bolds *"Out of bounds"* off the written `now` alone. When the
+    instrument's reading sits on the other side of a bound, the page is
+    showing a breach that has ended or hiding one that has started -- which
+    is `kpi_drift_crosses_bounds`, the same test `goal_drift` raises on, so
+    the sweep and this count cannot disagree. A blank `now` shows "Not
+    measured yet" rather than a status, so it is not counted as a false one.
+
+    `rows` are the sweep's own KPI readings. `None` means this was asked
+    outside a sweep, where nothing was measured to compare with.
+    """
+    if rows is None:
+        return None, None
+    return [row["id"] for row in rows
+            if row.get("value") is not None
+            and _as_number(row["kpi"].get("now", "")) is not None
+            and kpi_drift_crosses_bounds(row["kpi"], row["value"])], None
+
+
 #: The kinds of status the app shows that have no second source to compare
-#: with yet. Printed beside every reading, because a count over two of four
+#: with yet. Printed beside every reading, because a count over some of the
 #: kinds is not a count over the app.
-FALSE_STATUS_NOT_COMPARED = ("whether a cycle is running", "a KPI's now")
+FALSE_STATUS_NOT_COMPARED = ("whether a cycle is running",)
+
+#: Printed as uncompared too when the KPI half had no sweep readings to use.
+FALSE_STATUS_KPI_KIND = "a KPI's now"
 
 
 def measure_nova_false_status(since, until, heartbeats=false_heartbeat_statuses,
-                              board=false_board_statuses):
+                              board=false_board_statuses, kpi_rows=None):
     """Known false statuses showing in the app right now. A count.
 
-    Two comparisons exist and both are summed: a heartbeat shown on that is
-    not firing, and a board row shown open that a cycle released as done.
-    **A zero is not reported.** The floor is 0 and two kinds of status have no
-    comparison at all, so "0 found" would print as in bounds while half the
-    app went unchecked -- the best reading of this KPI coming off the thinnest
-    evidence. Any count above zero is a true floor and is reported.
+    Three comparisons exist and all are summed: a heartbeat shown on that is
+    not firing, a board row shown open that a cycle released as done, and a
+    KPI `/plan` shows on the wrong side of its range. The KPI half reads the
+    readings the same sweep already took (`kpi_rows` hands them over), so no
+    instrument runs twice and this KPI never measures itself.
+    **A zero is not reported.** The floor is 0 and whether a cycle is running
+    has no comparison at all, so "0 found" would print as in bounds while part
+    of the app went unchecked -- the best reading of this KPI coming off the
+    thinnest evidence. Any count above zero is a true floor and is reported.
     """
     del since, until
     found, errors = [], []
-    for label, measure in (("heartbeat", heartbeats), ("board row", board)):
+    not_compared = list(FALSE_STATUS_NOT_COMPARED)
+    compared = []
+    for label, measure in (("heartbeat", heartbeats), ("board row", board),
+                           ("KPI", lambda: false_kpi_statuses(kpi_rows))):
         names, error = measure()
         if error:
             errors.append(f"could not compare {label} statuses -- {error}")
+        elif names is None:
+            not_compared.append(FALSE_STATUS_KPI_KIND)
         else:
+            compared.append(label)
             found.extend(f"{label} {name}" for name in names)
-    not_compared = " and ".join(FALSE_STATUS_NOT_COMPARED)
+    uncompared = " and ".join(not_compared)
     if found:
         extra = f"; {'; '.join(errors)}" if errors else ""
         return len(found), (f"at least {len(found)}: {', '.join(found)} "
-                            f"(not compared: {not_compared}){extra}")
+                            f"(not compared: {uncompared}){extra}")
     if errors:
         return None, "; ".join(errors)
-    return None, ("0 in the two kinds I can compare (heartbeats shown on, "
-                  "claimed board rows shown open) -- not a reading, because "
-                  f"{not_compared} have no second source yet")
+    return None, (f"0 in the kinds I can compare ({', '.join(compared)}) -- "
+                  f"not a reading, because {uncompared} "
+                  f"{'has' if len(not_compared) == 1 else 'have'} no second source yet")
 
 
 def measure_research_reused(since, until):
@@ -4775,6 +4808,10 @@ KPI_MEASURERS = {
     "nova-kpi-false-status": measure_nova_false_status,
 }
 
+#: KPIs whose measurer judges the other KPIs' readings rather than a source of
+#: its own. `kpi_rows` runs them last and hands them the rows it already took.
+KPI_MEASURERS_OVER_ROWS = frozenset({"nova-kpi-false-status"})
+
 #: A KPI with no instrument, and why. Written down here rather than left as a
 #: silent gap, for the reason `KEY_RESULT_NO_INSTRUMENT` exists: a blank `now`
 #: says nothing about whether anyone tried, and three cycles re-deriving the
@@ -4802,7 +4839,7 @@ def kpi_rows(sections, since=None, until=None):
     says a KPI may never be used as a key result. One function serving both
     would be the first place that distinction quietly stops being enforced.
     """
-    out = []
+    out, deferred = [], []
     for name, section in (sections or {}).items():
         for kpi in section.get("kpis") or []:
             kpi_id = (kpi.get("id") or "").strip()
@@ -4813,13 +4850,22 @@ def kpi_rows(sections, since=None, until=None):
                     kpi_id, "nothing here computes this measure")
                 out.append({**row, "value": None, "detail": f"no instrument — {why}"})
                 continue
-            value, detail = measurer(since, until)
-            if value is None:
-                out.append({**row, "value": None,
-                            "detail": f"not measured — {detail}"})
+            if kpi_id in KPI_MEASURERS_OVER_ROWS:
+                deferred.append((len(out), row, measurer))
+                out.append(row)
                 continue
-            out.append({**row, "value": value, "detail": detail})
+            out.append(_kpi_reading(row, measurer(since, until)))
+    measured = [r for r in out if "value" in r]
+    for index, row, measurer in deferred:
+        out[index] = _kpi_reading(row, measurer(since, until, kpi_rows=measured))
     return out
+
+
+def _kpi_reading(row, reading):
+    value, detail = reading
+    if value is None:
+        return {**row, "value": None, "detail": f"not measured — {detail}"}
+    return {**row, "value": value, "detail": detail}
 
 
 def render_kpis(rows, path):
