@@ -1018,6 +1018,12 @@ KEY_RESULT_NO_INSTRUMENT = {
                                   "journal view shows done only, so a share "
                                   "taken off it would read a confident 100% "
                                   "for a view he cannot open",
+    "nova-kr-control-stop-seconds": "is a median over five real attempts he "
+                                    "makes from his own phone -- a stopwatch "
+                                    "on his thumb, not a fact on this box; "
+                                    "the closest thing here would time a "
+                                    "`curl`, which is not what he agreed to "
+                                    "measure",
 }
 
 
@@ -1466,6 +1472,120 @@ def measure_nova_control_stop_coverage(since, until):
     detail += (f" (read off {_SITE_MODULE}'s own POST allowlist, "
                f"{len(served)} route(s), {len(wired)} of them named in "
                f"{_APP_BUNDLE})")
+    return share, detail
+
+
+#: First-person phrasings a cycle uses when it says, in its own journal entry,
+#: that it is blocked on the owner. Lowercased, matched against `entry_text`.
+#: **This is a floor and can never be a ceiling**, the same as G3's correction
+#: phrases: a cycle that was blocked and found a wording not on this list is
+#: counted in neither half, so it drops out of the measure entirely rather than
+#: landing in the unrecorded side. That is the safe direction -- it understates
+#: the denominator, never the numerator.
+BLOCK_PHRASES = (
+    "waiting on you",
+    "waiting on him",
+    "waiting for you",
+    "blocked on you",
+    "blocked on him",
+    "waits on you",
+    "waits on his",
+    "needs your",
+    "needs edvard",
+    "needs input",
+)
+
+#: How many journal entries `measure_nova_scale_blocks_recorded` asks for. The
+#: window is applied afterwards by `in_window`, so this only has to be deep
+#: enough that a `--days` window is fully inside it.
+_BLOCKS_ENTRIES = 400
+
+
+def _live_ask_ids():
+    """(ids, problem) -- every ask thread this loop has open, from the store.
+
+    Archived threads are outside `?active=true`, which is the same blindness
+    `ask_watch` has and for the same reason: an archived ask is his "I am done
+    with this". It biases this measure low, never high, and the detail says so.
+    """
+    from agora_runner.http_util import agora_get
+    from agora_runner.needs_input import NAME_PREFIX, NEEDS_INPUT_TAG
+
+    status, body = agora_get("/conversations?active=true")
+    if status != 200:
+        return None, f"the conversation listing returned HTTP {status}"
+    ids = set()
+    for row in (body or {}).get("conversations") or []:
+        cid = str(row.get("id") or "")
+        if not cid:
+            continue
+        tagged = NEEDS_INPUT_TAG in (row.get("tags") or [])
+        named = str(row.get("name") or "").startswith(NAME_PREFIX)
+        if tagged or named:
+            ids.add(cid)
+    return ids, None
+
+
+def measure_nova_scale_blocks_recorded(since, until):
+    """Share of the cycles that said they were blocked on him which named an ask.
+
+    A block is only *recorded* if there is something he can answer. The record
+    is an Agora ask thread -- `agora_runner.needs_input` opens one, names it
+    after the question and buzzes his phone -- and the thing that ties a block
+    to its record is the thread id written into the journal entry.
+
+    **The two halves come from two different stores on purpose.** The
+    denominator is prose the site serves; the numerator is a thread id that has
+    to exist in Agora. A cycle writing "waiting on you" and no id counts
+    against itself, which is the whole point of the key result: a block nobody
+    can answer is not on record.
+
+    **Both halves are proved to match something live before any share is
+    taken**, because each of them fails silently toward 0 and 0 is the worst
+    value on a target-100 measure. An empty phrase match is no number rather
+    than a denominator of zero, and a store with no ask thread in it at all is
+    no number rather than a numerator of zero -- a listing that came back
+    without the tag, or a token this pod does not hold, would otherwise publish
+    a confident 0% that outlives the fix.
+    """
+    entries, problem = fetch_entries(_BLOCKS_ENTRIES)
+    if problem:
+        return None, f"could not read the journal ({problem}), so no block list"
+    window = in_window(entries, since, until)
+    blocked = [e for e in window
+               if any(p in entry_text(e) for p in BLOCK_PHRASES)]
+    if not blocked:
+        return None, (f"no entry in {since}..{until} says it was blocked on "
+                      f"you, over {len(window)} entry/entries in the window -- "
+                      "there is no share to take, and calling that 0% would "
+                      "report the best week as the worst")
+    ids, problem = _live_ask_ids()
+    if problem:
+        return None, (f"{problem}, so the recorded half read nothing and every "
+                      "block would score unrecorded")
+    if not ids:
+        return None, ("the conversation listing holds no ask thread at all, "
+                      "which is the tag or the name not being found rather "
+                      "than every block going unrecorded")
+    prefixes = {cid[:8] for cid in ids}
+    recorded, unrecorded = [], []
+    for entry in blocked:
+        text = entry_text(entry)
+        hit = next((cid for cid in sorted(ids)
+                    if cid in text or cid[:8] in text), None)
+        title = str(entry.get("title") or entry.get("date") or "an entry")
+        (recorded if hit else unrecorded).append(title)
+    share = round(100.0 * len(recorded) / len(blocked), 1)
+    detail = (f"{len(recorded)} of {len(blocked)} entry/entries in "
+              f"{since}..{until} that say they are blocked on you name a live "
+              f"ask thread, out of {len(window)} in the window and "
+              f"{len(ids)} open ask(s) ({', '.join(sorted(prefixes))})")
+    if unrecorded:
+        detail += ". Not on record: " + "; ".join(unrecorded[:5])
+        if len(unrecorded) > 5:
+            detail += f"; and {len(unrecorded) - 5} more"
+    detail += (" -- a floor twice over: the phrases are a fixed list, and an "
+               "ask he has archived is outside the listing this reads")
     return share, detail
 
 
@@ -4461,6 +4581,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "demos-kr-no-litter": measure_demos_no_litter,
     "nova-kr-trust-data-fresh": measure_nova_trust_data_fresh,
     "nova-kr-control-stop-coverage": measure_nova_control_stop_coverage,
+    "nova-kr-scale-blocks-recorded": measure_nova_scale_blocks_recorded,
     "infra-kr-outlives-the-box": measure_infra_outlives_the_box,
     "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
     "docs-kr-sync-alive": measure_docs_sync_alive,
