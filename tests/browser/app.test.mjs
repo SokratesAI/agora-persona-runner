@@ -18108,3 +18108,103 @@ describe("the journal's comment filter", () => {
       /No journal card carries a comment/);
   });
 });
+
+/* A clock time on every chat bubble.
+ *
+ * His capture, `issues.md` 2026-09-16: *"I want to estamps on the chat
+ * messages. A small 24h timestamp in the top left of each bubble. #nova"*
+ *
+ * The thread has always carried `createdAt` on every message -- `visible_rows`
+ * in `nova_conversations.py` has read Agora's `ts` into it since Cycle 441 --
+ * and nothing drew it. So this is a renderer change with no server side, and
+ * these tests drive the renderer rather than reading the source, because the
+ * thing that can actually be wrong is the formatting and the position.
+ *
+ * `askMessage` is the one renderer behind the dock, a conversation thread and
+ * the journal card's ask, so asserting on the dock asserts on all three.
+ */
+describe("the time on a chat message", () => {
+  const dated = {
+    ask: {
+      conversationId: "c-when",
+      waiting: false,
+      messages: [
+        { id: "1", sender: "Edvard", text: "how many pods?",
+          createdAt: "2026-09-16T05:07:00Z" },
+        { id: "2", sender: "Nova Answers", text: "Seven.",
+          createdAt: "2026-09-16T17:42:30Z" },
+      ],
+    },
+  };
+
+  function stamps(window) {
+    return [...window.document.querySelectorAll("#chat-thread .ask-msg")]
+      .map((row) => {
+        const when = row.querySelector(".ask-when");
+        return when ? when.textContent : null;
+      });
+  }
+
+  test("both bubbles carry one, in 24-hour time", async () => {
+    const window = await loadAskDock(dated);
+    /* UTC in the fixture and UTC in jsdom, so these are the wall-clock
+     * digits the browser is handed. The afternoon one is the whole point:
+     * a 12-hour clock renders it "05:42 PM", and he asked for 24h. */
+    assert.deepEqual(stamps(window), ["05:07", "17:42"]);
+  });
+
+  test("it is the first thing in the bubble, ahead of the speaker", async () => {
+    /* "In the top left" is a position, and the only part of it jsdom can
+     * judge is document order -- it computes no layout. The stamp being
+     * child 0 of `.ask-who`, which is child 0 of the bubble, is that
+     * position expressed as something a test can actually see. */
+    const window = await loadAskDock(dated);
+    const row = window.document.querySelector("#chat-thread .ask-msg");
+    assert.equal(row.children[0].className.split(" ")[0], "ask-who");
+    const who = [...row.children[0].children].map((n) => n.className);
+    assert.deepEqual(who, ["ask-when", "ask-who-name"]);
+  });
+
+  test("the speaker is still its own element and still says who", async () => {
+    const window = await loadAskDock(dated);
+    const names = [...window.document.querySelectorAll("#chat-thread .ask-who-name")]
+      .map((n) => n.textContent);
+    assert.deepEqual(names, ["You", "Nova Answers"]);
+  });
+
+  test("an undated message gets no stamp rather than a broken one", async () => {
+    /* The folded `stepsOnly` rows are built with an empty `createdAt`, and an
+     * older payload carries none at all. A bubble reading `--:--` would say a
+     * clock is broken when nothing is. */
+    const window = await loadAskDock({
+      ask: { conversationId: "c-when", waiting: false,
+             messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }] },
+    });
+    assert.deepEqual(stamps(window), [null]);
+  });
+
+  test("an unparseable date gets no stamp either", async () => {
+    const window = await loadAskDock({
+      ask: { conversationId: "c-when", waiting: false,
+             messages: [{ id: "1", sender: "Nova Answers", text: "Seven.",
+                          createdAt: "not a date" }] },
+    });
+    assert.deepEqual(stamps(window), [null]);
+  });
+
+  test("his own message is stamped the moment it is painted", async () => {
+    /* The optimistic bubble is drawn from a literal built in the browser, not
+     * from anything the server echoed, so it is dated there or it is the one
+     * bubble in the thread with no stamp -- and the bubble with no stamp
+     * would be the newest one, every time he sends. */
+    const window = await loadAskDock();
+    const box = window.document.querySelector("#chat-box");
+    box.value = "why is the loop slow?";
+    window.document.querySelector("#chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    /* The pending bubble is painted after his, says nothing yet and is
+     * deliberately undated, so this asks for his own one by name. */
+    const sent = window.document.querySelector("#chat-thread .ask-msg.ask-mine");
+    assert.match(sent.querySelector(".ask-when").textContent, /^\d\d:\d\d$/);
+  });
+});

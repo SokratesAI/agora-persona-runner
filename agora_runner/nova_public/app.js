@@ -11485,7 +11485,8 @@
    * that something is coming. Without this the thread sits unchanged for up
    * to a poll interval and the tap reads as having done nothing. */
   function askPaintSent(container, text) {
-    container.appendChild(askMessage({ sender: OWNER_RECORD, text: text }));
+    container.appendChild(askMessage({ sender: OWNER_RECORD, text: text,
+      createdAt: new Date().toISOString() }));
     // The same loader the poll's own bubble draws, rather than a second way
     // of saying the same thing -- this is the one he sees first, in the
     // moment between the tap and the first poll.
@@ -12218,6 +12219,27 @@
     return line;
   }
 
+  /* A message's clock time as `HH:MM`, or "" when the server did not date it.
+   *
+   * 24-hour explicitly rather than by locale: he asked for 24h, and
+   * `toLocaleTimeString` with no `hourCycle` answers whatever the phone's
+   * locale happens to say, which is a guess that is right until it is not.
+   * No seconds -- `stepTime` in the step drawer carries them because six
+   * tool calls inside one minute is the ordinary case there, and two chat
+   * messages inside one minute is not.
+   *
+   * An undated message gets no stamp at all rather than a placeholder: the
+   * folded `stepsOnly` rows carry an empty `createdAt` by construction, and
+   * a bubble reading `--:--` says a clock is broken when nothing is. */
+  function chatTime(at) {
+    if (!at) return "";
+    var ms = Date.parse(at);
+    if (isNaN(ms)) return "";
+    return new Date(ms).toLocaleTimeString(undefined, {
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    });
+  }
+
   /* `conversationId` is what the drawer's detail view asks the server with.
    * It is threaded through rather than read off a module variable because
    * three surfaces render this -- the dock, a conversation thread and the
@@ -12236,7 +12258,18 @@
     var mine = message.sender === OWNER_RECORD;
     var row = el("div", "ask-msg " + (mine ? "ask-mine" : "ask-theirs")
       + (message.partial ? " ask-partial" : ""));
-    row.appendChild(el("div", "ask-who", mine ? "You" : message.sender || "Nova Answers"));
+    var who = el("div", "ask-who");
+    /* The clock time first, so it is the top left of the bubble -- his
+     * capture, `issues.md` 2026-09-16: *"I want to estamps on the chat
+     * messages. A small 24h timestamp in the top left of each bubble."*
+     * It shares the name's one line rather than taking a row of its own:
+     * a phone thread is mostly vertical space and a second dim line per
+     * bubble would cost more of it than the stamp is worth. */
+    var when = chatTime(message.createdAt);
+    if (when) who.appendChild(el("span", "ask-when", when));
+    who.appendChild(el("span", "ask-who-name",
+      mine ? "You" : message.sender || "Nova Answers"));
+    row.appendChild(who);
     /* Above the prose, the way Claude mobile puts it above the paragraph the
      * tool call led to -- and the way it happened. */
     if (steps) row.appendChild(steps);
@@ -17823,7 +17856,8 @@
           // Paint his question straight away rather than waiting a poll for
           // the server to echo it, for `pollConv`'s reason: a box that has
           // gone blank with nothing to show for it reads as a lost message.
-          thread.appendChild(askMessage({ sender: OWNER_RECORD, text: body }));
+          thread.appendChild(askMessage({ sender: OWNER_RECORD, text: body,
+            createdAt: new Date().toISOString() }));
           // The dock's own optimistic bubble, and the third place this app
           // painted the word. Same loader as the other two -- missing this
           // one shipped "Thinking…" to the surface he actually uses while
