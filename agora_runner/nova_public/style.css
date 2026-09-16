@@ -2890,6 +2890,19 @@ body.has-full-chart { overflow: hidden; }
   margin-bottom: 0.25rem;
 }
 
+/* The clock time, at the top left of the bubble ahead of the speaker --
+ * his capture, 2026-09-16. `tabular-nums` so a column of stamps lines up
+ * digit under digit instead of shifting with every `1`. It is deliberately
+ * the same `--dim` as the name rather than a shade fainter: `--dim` on
+ * `--card` is already the quietest text this page has that still clears
+ * WCAG AA, and an `opacity` under it would composite toward the background
+ * and drop it below 4.5:1 -- quieter than the name is not worth unreadable
+ * in daylight. */
+.ask-when {
+  margin-right: 0.45rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /* `pre-wrap`, not markdown. The answers come back as plain text from the
  * model and nothing on this path parses them, so honouring the line breaks
  * it wrote is the whole formatting story -- see nova_ask.thread(). */
