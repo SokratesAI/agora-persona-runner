@@ -4802,7 +4802,7 @@ def test_self_service_ignores_an_entry_outside_the_window(monkeypatch):
     ])
     value, detail = goal_measures.measure_infra_self_service(
         "2026-09-08", "2026-09-14")
-    assert value == 100.0
+    assert value is None
     assert "1 of 1 recorded change(s)" in detail
     assert "By hand" not in detail
 
@@ -4821,7 +4821,7 @@ def test_self_service_still_reports_the_out_of_window_manual_count(monkeypatch):
     ])
     value, detail = goal_measures.measure_infra_self_service(
         "2026-09-08", "2026-09-14")
-    assert value == 100.0
+    assert value is None
     assert "2 manual entry/entries exist on these objects in total" in detail
 
 
@@ -4841,11 +4841,35 @@ def test_self_service_skips_an_entry_with_no_timestamp(monkeypatch):
     _self_service_kubectl(monkeypatch, [
         _managed("agora", [("argocd-controller", "2026-09-10T10:00:00Z")]),
         _managed("hand", [("kubectl-edit", None)]),
+        _managed("other", [("kubectl-edit", "2026-09-11T10:00:00Z")]),
     ])
     value, detail = goal_measures.measure_infra_self_service(
         "2026-09-08", "2026-09-14")
-    assert value == 100.0
-    assert "1 of 1 recorded change(s)" in detail
+    assert value == 50.0
+    assert "1 of 2 recorded change(s)" in detail
+
+
+def test_self_service_reports_no_number_when_nothing_in_the_window_was_by_hand(monkeypatch):
+    """A hand deletion erases the manual half, so 100 cannot be told from blind.
+
+    Measured 2026-09-16: 13 Argo CD entries and 3 by hand on the marcus-test
+    objects read 81.2; a `kubectl delete` removed those objects and their
+    managedFields, and the next sweep read 14 of 14 -- the target -- with no
+    change having moved into git. The same week before and after the deletion.
+    """
+    gitops = [_managed(f"app{i}", [("argocd-controller", "2026-09-12T10:00:00Z")])
+              for i in range(13)]
+    by_hand = [_managed(name, [("kubectl-client-side-apply", "2026-09-11T08:31:21Z")],
+                        namespace="test") for name in ("marcus-test",) * 3]
+    _self_service_kubectl(monkeypatch, gitops + by_hand)
+    before, _ = goal_measures.measure_infra_self_service("2026-09-10", "2026-09-16")
+    assert before == 81.2
+    _self_service_kubectl(monkeypatch, gitops)
+    after, detail = goal_measures.measure_infra_self_service("2026-09-10", "2026-09-16")
+    assert after is None
+    assert "13 of 13 recorded change(s)" in detail
+    assert "not a reading" in detail
+    assert "hand deletion" in detail
 
 
 def test_self_service_reports_no_number_when_the_window_is_empty(monkeypatch):
@@ -4948,11 +4972,12 @@ def test_self_service_ignores_an_entry_newer_than_the_window(monkeypatch):
     _self_service_kubectl(monkeypatch, [
         _managed("agora", [("argocd-controller", "2026-09-10T10:00:00Z")]),
         _managed("hand", [("kubectl-edit", "2026-09-20T10:00:00Z")]),
+        _managed("other", [("kubectl-edit", "2026-09-11T10:00:00Z")]),
     ])
     value, detail = goal_measures.measure_infra_self_service(
         "2026-09-08", "2026-09-14")
-    assert value == 100.0
-    assert "1 of 1 recorded change(s)" in detail
+    assert value == 50.0
+    assert "1 of 2 recorded change(s)" in detail
 
 
 def _g_row(key, now, value):

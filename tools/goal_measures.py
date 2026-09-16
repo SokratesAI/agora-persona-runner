@@ -4655,6 +4655,16 @@ def measure_infra_self_service(since, until):
     answer is 100, and a week in which nothing changed would produce it out of a
     zero denominator. An unreadable cluster, a cluster reporting no objects, and
     a window with no classified entry in it all return no number and say why.
+
+    **And no reading when nothing in the window was by hand.** A hand deletion
+    takes the object and its managedFields with it, so it is never counted, and
+    it wipes the manual entries of whatever it deleted. Measured 2026-09-16:
+    this read 81.2 in the morning, the three by-hand entries were the
+    `marcus-test` objects, a cycle deleted them with `kubectl delete` at 14:45,
+    and the next sweep read 14 of 14 -- the target -- off a week in which no
+    change had moved into git. So 100 is what this shows whether or not a change
+    bypassed git, and a share only counts when a manual entry proves the manual
+    half was visible at all.
     """
     try:
         done = subprocess.run(["kubectl", "get", SELF_SERVICE_KINDS,
@@ -4713,8 +4723,12 @@ def measure_infra_self_service(since, until):
               f"no operator identity, so a manual change of yours counts the "
               f"same as one of mine ({seen_manual_ever} manual entry/entries "
               f"exist on these objects in total, in and out of window)")
-    if manual:
-        detail += ". By hand: " + ", ".join(sorted(manual)[:8])
+    if not manual:
+        return None, (detail + " -- not a reading: nothing in the window was by "
+                      "hand, and a hand deletion removes the object's "
+                      "managedFields with it, so 100 is what this shows whether "
+                      "or not a change bypassed git")
+    detail += ". By hand: " + ", ".join(sorted(manual)[:8])
     return round(100.0 * len(gitops) / total, 1), detail
 
 
