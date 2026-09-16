@@ -870,6 +870,51 @@ def test_a_run_older_than_the_newest_entry_is_not_running():
     assert status["running"] is False
 
 
+def _overlap(woke, claimed, written, now):
+    """Cycle 1712's shape, 2026-09-16: the run it replaced wrote after it began."""
+    status = {"lastWokeDate": woke.date().isoformat(),
+              "lastWokeTime": woke.strftime("%H:%M"),
+              "lastWrittenAt": written.isoformat()}
+    return _with_silence(status, now=now, minutes=24,
+                         heartbeat=(claimed.isoformat(), "running"))
+
+
+def test_a_run_claimed_before_an_older_cycle_wrote_is_still_running():
+    """Agora claimed 1712 at 20:48:00, 1711 (woke 20:24) wrote at 20:49, and
+    the badge said no cycle was running for the whole of 1712. The newest
+    entry woke a cadence before the claim, so it is not this run's entry."""
+    claimed = datetime(2026, 9, 16, 20, 48, 0, 776000, tzinfo=OSLO)
+    status = _overlap(woke=datetime(2026, 9, 16, 20, 24, tzinfo=OSLO),
+                      claimed=claimed,
+                      written=datetime(2026, 9, 16, 20, 49, tzinfo=OSLO),
+                      now=claimed + timedelta(minutes=13))
+    assert status["running"] is True
+    assert status["stalled"] is False
+
+
+def test_a_run_that_wrote_its_own_entry_is_not_running_whatever_its_wake_stamp():
+    """The veto still holds for the run's own entry: its wake is the claim
+    minute, truncated, so it must not read as an older run's."""
+    claimed = datetime(2026, 9, 16, 20, 48, 0, 776000, tzinfo=OSLO)
+    for woke_minute in (47, 48, 49):
+        status = _overlap(
+            woke=datetime(2026, 9, 16, 20, woke_minute, tzinfo=OSLO),
+            claimed=claimed,
+            written=datetime(2026, 9, 16, 21, 10, tzinfo=OSLO),
+            now=datetime(2026, 9, 16, 21, 12, tzinfo=OSLO))
+        assert status["running"] is False, woke_minute
+
+
+def test_an_unreadable_wake_stamp_keeps_the_old_veto():
+    claimed = datetime(2026, 9, 16, 20, 48, tzinfo=OSLO)
+    status = _with_silence(
+        {"lastWokeDate": "", "lastWokeTime": "20:24",
+         "lastWrittenAt": datetime(2026, 9, 16, 20, 49, tzinfo=OSLO).isoformat()},
+        now=claimed + timedelta(minutes=13), minutes=24,
+        heartbeat=(claimed.isoformat(), "running"))
+    assert status["running"] is False
+
+
 def test_a_killed_cycle_stuck_on_running_reads_as_stalled_not_running():
     """The one case the badge would be lying about. A cycle that is killed
     never writes its closing PATCH, so `lastResult` stays "running"
