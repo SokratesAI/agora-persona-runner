@@ -889,10 +889,9 @@ def test_kpi_rows_says_a_kpi_with_no_measurer_is_uninstrumented():
 
 
 def test_kpi_rows_prints_the_written_reason_when_there_is_one(monkeypatch):
-    """`KPI_NO_INSTRUMENT` is empty in production now that every KPI has a
-    measurer, and the mechanism still has to work for the next one added
-    without one: a blank `now` says nothing about whether anyone tried, which
-    is how three cycles come to re-derive the same gap."""
+    """A blank `now` says nothing about whether anyone tried, which is how
+    three cycles come to re-derive the same gap, so a written reason is what
+    prints."""
     monkeypatch.setitem(goal_measures.KPI_NO_INSTRUMENT,
                         "nova-kpi-invented-for-this-fixture",
                         "nothing on this box records it")
@@ -1534,12 +1533,16 @@ def test_coach_latency_is_wired_into_the_kpi_map():
     assert "marcus-kpi-coach-latency" not in goal_measures.KPI_NO_INSTRUMENT
 
 
-def test_every_kpi_in_the_document_now_has_a_measurer():
-    """The state this cycle left behind: `KPI_NO_INSTRUMENT` is empty because
-    every KPI has an instrument, not because the mechanism was deleted. If a
-    later cycle adds a KPI with no measurer, it belongs in that map with its
-    reason and this test says so."""
-    assert goal_measures.KPI_NO_INSTRUMENT == {}
+def test_a_kpi_is_either_measured_or_says_why_never_both():
+    """Every KPI with no measurer carries a reason, and none carries both --
+    an instrument that ships beside a stale "no instrument" line would print
+    the measurement and leave the excuse in the map for the next reader."""
+    assert set(goal_measures.KPI_NO_INSTRUMENT) == {
+        "nova-kpi-push-delivered", "nova-kpi-false-status",
+        "nova-kpi-owner-only-controls"}
+    assert not set(goal_measures.KPI_NO_INSTRUMENT) & set(goal_measures.KPI_MEASURERS)
+    for kpi_id, why in goal_measures.KPI_NO_INSTRUMENT.items():
+        assert why.strip(), kpi_id
 
 
 def _no_outcomes(monkeypatch):

@@ -4683,11 +4683,23 @@ KPI_MEASURERS = {
 #: says nothing about whether anyone tried, and three cycles re-deriving the
 #: same "there is no endpoint for this" is three cycles spent twice.
 #:
-#: Empty, and that is a real state rather than a gap in this file: every KPI in
-#: `project-goals.md` has a measurer above. It stays because the mechanism is
-#: what matters -- the next KPI added without one belongs here with its reason,
-#: not with a silent blank.
-KPI_NO_INSTRUMENT = {}
+#: The three entries are the must-be floors the owner's goal chain found for Nova
+#: the app on 2026-09-16 (Cycle 1689). Each is a floor he named and nothing
+#: here can read yet; delete an entry in the same change that adds its measurer.
+KPI_NO_INSTRUMENT = {
+    "nova-kpi-push-delivered": (
+        "nothing records whether a push went out -- Agora says so in its answer "
+        "to each post (sent, or held for quiet hours, mute or watching), "
+        "needs_input prints it once, and the stored message carries no push field"),
+    "nova-kpi-false-status": (
+        "a false status needs a second source per kind of status (board row, "
+        "heartbeat, running cycle, KPI now) and only board_done_drift compares "
+        "one, for claimed rows only"),
+    "nova-kpi-owner-only-controls": (
+        "the app has no login of its own -- the tailnet is the only identity "
+        "check and the in-cluster port answers without one -- so who counts as "
+        "the owner has to be decided before a control can be counted"),
+}
 
 
 def kpi_rows(sections, since=None, until=None):
