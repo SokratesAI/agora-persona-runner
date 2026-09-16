@@ -614,7 +614,12 @@ def cmd_reap(args):
     """
     registry, rev = _read_registry()
     here = pod_ip()
-    archive_orphans(registry)
+    try:
+        archive_orphans(registry)
+    except OSError as e:
+        # Litter is the smaller problem; a port held by a dead demo is the
+        # one this command exists for, so a failed move must not stop it.
+        print(f"could not move orphan demo directories: {e}", file=sys.stderr)
     # Revive before judging. A `POD_GONE` row is the one case where the demo
     # is not actually gone -- only the process is -- so it gets a restart
     # here before anything collects it, and only the ones that cannot be
