@@ -17,7 +17,9 @@ from agora_runner.nova_handoff import (
     live_items,
     count_items,
     newest_cycle,
+    newest_digest_cycle,
     select_slugs,
+    stamp_unseen,
     split_items,
 )
 from agora_runner.rolling import RollError
@@ -560,11 +562,20 @@ def test_the_cli_prints_the_bucket_breakdown_when_nothing_rolls(tmp_path, capsys
     said = capsys.readouterr().out
     assert code == 0
     assert "nothing to roll: of 6 handoff item(s)" in said
-    assert "5 cite(s) cycle 600 or later" in said
-    assert "1 cite(s) no cycle at all" in said
+    # 5 before the change: the sixth cited nothing and was reported as an
+    # item the rule could not date. Stamping runs first, so the bucket it
+    # used to sit in is empty and the count is the whole section.
+    assert "6 cite(s) cycle 600 or later" in said
+    assert "no cycle at all" not in said
     assert "no slug" not in said
     assert "asked out of sequence" not in said
-    assert live.read_text() == before
+    # Nothing rolled, but the one undated item is now dated: that is the
+    # whole point of stamping before selecting, and the file is written
+    # for it. Everything else is byte-identical.
+    assert "stamped 1 undated item(s)" in said
+    after = live.read_text()
+    assert after != before
+    assert after.replace(" <!-- first seen: cycle 671 -->", "") == before
 
 
 def test_a_bad_reason_is_reported_before_a_bad_slug():
@@ -588,3 +599,78 @@ def test_an_index_passed_twice_is_stamped_and_reported_once():
     )
     assert len(moved) == 1
     assert new_archive.count("**Retired") == 1
+
+
+def test_stamping_dates_an_item_that_cites_no_cycle():
+    # The failure this exists for: `select_older_than` can only move an
+    # item it can date, and on 2026-09-16 not one of the 140 items in the
+    # live section carried a cycle number, so the age roll was selecting
+    # from an empty set while the section grew 56KB -> 166KB in 3 days.
+    undated = [i for i in live_items(AGED) if newest_cycle(i) is None]
+    assert len(undated) == 1
+    stamped, count = stamp_unseen(AGED, 671)
+    assert count == 1
+    assert [i for i in live_items(stamped) if newest_cycle(i) is None] == []
+    dated = [i for i in live_items(stamped) if item_slug(i) == item_slug(undated[0])]
+    assert newest_cycle(dated[0]) == 671
+
+
+def test_stamping_is_idempotent():
+    # A stamped item is datable, so the second pass has nothing to do.
+    # Without this the marker would be appended once per roll forever.
+    once, first = stamp_unseen(AGED, 671)
+    twice, second = stamp_unseen(once, 680)
+    assert (first, second) == (1, 0)
+    assert twice == once
+
+
+def test_stamping_leaves_a_dated_item_exactly_alone():
+    # An item whose prose cites a cycle is already datable and must not
+    # be re-dated: `newest_cycle` takes the maximum, so a stamp newer
+    # than the prose would quietly hold an old item open.
+    dated = [i for i in live_items(AGED) if newest_cycle(i) is not None]
+    assert dated
+    stamped, _ = stamp_unseen(AGED, 9999)
+    for item in live_items(stamped):
+        if newest_cycle(item) is not None and "first seen" not in item:
+            assert item in AGED
+    assert "9999" not in "".join(
+        i for i in live_items(stamped) if item_slug(i) in
+        [item_slug(d) for d in dated]
+    )
+
+
+def test_the_stamp_is_the_newest_cycle_in_the_window_not_the_cut():
+    # Stamping with the cutoff would retire the item on the same run that
+    # dated it. The newest cycle is the latest date the item could
+    # honestly have, so it gets a full window before it ages out.
+    assert newest_digest_cycle(AGED) == 671
+    stamped, _ = stamp_unseen(AGED, newest_digest_cycle(AGED))
+    fresh = [i for i in live_items(stamped) if "first seen" in i]
+    assert len(fresh) == 1
+    assert newest_cycle(fresh[0]) == 671
+    assert roll_handoff.select_older_than(live_items(stamped), 671) == [
+        i for i, item in enumerate(live_items(stamped))
+        if newest_cycle(item) < 671
+    ]
+    assert "first seen" not in "".join(
+        live_items(stamped)[i]
+        for i in roll_handoff.select_older_than(live_items(stamped), 671)
+    )
+
+
+def test_a_stamped_item_retires_once_the_window_moves_past_it():
+    # The end the change is for: the same item nothing could select is
+    # selected one window later, and lands in the archive whole.
+    stamped, _ = stamp_unseen(AGED, 671)
+    items = live_items(stamped)
+    fresh = [i for i, item in enumerate(items) if "first seen" in item]
+    assert fresh == [i for i in roll_handoff.select_older_than(items, 672)
+                     if "first seen" in items[i]]
+    assert fresh
+
+
+def test_newest_digest_cycle_is_none_when_the_section_cannot_be_dated():
+    # Same contract `oldest_digest_cycle` has, and the CLI leans on it:
+    # no window, no stamp, rather than a stamp off a guessed number.
+    assert newest_digest_cycle(LIVE.replace("## Digest", "## Nothing")) is None
