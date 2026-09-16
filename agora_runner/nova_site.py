@@ -3246,8 +3246,12 @@ def _in_flight(written, last_run_at, last_result, now=None, woke=""):
     from silencing the alarm, so this one does not have to.
 
     **The newest entry can be an older run's, when cycles overlap.** `woke`
-    is that entry's wake stamp (`lastWokeDate` + `lastWokeTime`, the minute
-    its own conversation was created). Measured Cycle 1712, 2026-09-16: Agora
+    is the wake stamp of the highest-numbered cycle's entry (`lastWokeDate` +
+    `lastWokeTime`, the minute its own conversation was created), which is
+    not always the document `written` dates: a weekly run's entry carries no
+    cycle number, so after one writes, the badge can read running for the
+    minutes until that run's outcome is recorded. The run is still in its
+    turn then, so that is early rather than false. Measured Cycle 1712, 2026-09-16: Agora
     claimed the run at 20:48:00 Oslo and Cycle 1711, which woke at 20:24,
     wrote its entry at 20:49 -- so `lastRunAt` was older than the newest entry
     and the app showed no cycle running for the whole of 1712. An entry whose
