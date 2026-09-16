@@ -5418,6 +5418,49 @@ class TestNovaScaleBlocksRecorded:
         assert value is None
         assert "could not read the journal" in detail
 
+    def test_talking_about_the_needs_input_section_is_not_a_block(
+            self, monkeypatch):
+        # The denominator is entries that say *they* are blocked. An entry
+        # discussing the `## Needs input` section of the digest -- which is
+        # what four of the 53 live matches in 2026-09-10..2026-09-16 were, and
+        # none of them named an ask -- is not one, and counting it inflates the
+        # denominator, which is the one direction the floor cannot go.
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you", f"asked in {self.ASK}"),
+            self._entry("2026-09-12", "The needs input section is retired",
+                        "his capture: drop the needs input boxes"),
+        ])
+        self._store(monkeypatch, self._asks(self.ASK))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 100.0
+        assert "1 of 1 entry/entries" in detail
+        assert "Not on record" not in detail
+
+    def test_the_phrase_is_gone_from_the_list_itself(self):
+        # Belt and braces: the test above passes for a measurer that simply
+        # never reaches the phrase list, and the constant is what `goal_drift`
+        # and every future reader actually consult.
+        assert "needs input" not in gm.BLOCK_PHRASES
+        assert "waiting on you" in gm.BLOCK_PHRASES
+
+    def test_two_entries_sharing_a_title_stay_tellable_apart(
+            self, monkeypatch):
+        # Journal titles repeat across cycles; the live list printed the same
+        # sentence twice with nothing to say which two entries it meant.
+        # And the same day does not separate them: the two live ones are
+        # cycles 1649 and 1650, both dated 2026-09-15.
+        first = self._entry("2026-09-15", "Goals still waiting on you")
+        second = dict(first, cycle="1650")
+        first["cycle"] = "1649"
+        self._journal(monkeypatch, [first, second])
+        self._store(monkeypatch, self._asks(self.ASK))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 0.0
+        assert "Goals still waiting on you (cycle 1649)" in detail
+        assert "Goals still waiting on you (cycle 1650)" in detail
+
     def test_it_is_the_registered_measurer(self):
         assert (gm.KEY_RESULT_FETCH_MEASURERS["nova-kr-scale-blocks-recorded"]
                 is gm.measure_nova_scale_blocks_recorded)
