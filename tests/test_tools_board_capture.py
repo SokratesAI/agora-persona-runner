@@ -497,6 +497,44 @@ def test_the_milestone_is_written_after_the_bullet_is_cut(store, monkeypatch):
     last_row_write = max(i for i, name in enumerate(names) if name == "write_row")
     assert names.index("delete_capture") < last_row_write
 
+
+# --- the remedy after a refused regrouping has to work on this row ------
+#
+# `board_milestone` refuses a finished row on purpose, so a `--status done`
+# capture whose milestone write is refused used to be handed a command that
+# is refused by construction (issue #242, 2026-09-16).
+
+_SEATS_NO_SEAT = (
+    "| Project | Milestone | Position | Updated | Serves | Keeps |\n"
+    "|---|---|---|---|---|---|\n"
+    "| Marcus | Something else | 1 | 09-16 | marcus-kpi-x |  |\n"
+)
+
+
+def test_a_refused_regrouping_on_a_finished_row_does_not_name_board_milestone(
+        store, monkeypatch, capsys):
+    """The row is on his board and ungrouped either way; what may not happen
+    is pointing the reader at a tool that will refuse this row."""
+    _seats_answer(monkeypatch, _SEATS_NO_SEAT)
+    assert _run("--index", "1", "--priority", "high",
+                "--milestone", "Cost and quota", "--status", "done") == 1
+    err = capsys.readouterr().err
+    assert "is finished" in err
+    # The tool is named -- to say it will refuse -- but never as a command
+    # to run, which is the whole defect.
+    assert "python3 -m tools.board_milestone" not in err
+
+
+def test_a_refused_regrouping_on_an_open_row_still_names_board_milestone(
+        store, monkeypatch, capsys):
+    """The other half: an open row has a working remedy and keeps it."""
+    _seats_answer(monkeypatch, _SEATS_NO_SEAT)
+    assert _run("--index", "1", "--priority", "high",
+                "--milestone", "Cost and quota") == 1
+    err = capsys.readouterr().err
+    assert "python3 -m tools.board_milestone" in err
+    assert "is finished" not in err
+
 # --- issue #212: a task carries a checkable definition of done ----------
 
 

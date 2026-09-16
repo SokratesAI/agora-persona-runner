@@ -870,11 +870,32 @@ def main(argv=None):
                 )
             except (board_write.WriteRefused, board_write.BoardDamaged,
                     board_records.RecordError) as problem:
+                # **The remedy has to be one that works on this row.**
+                # `board_milestone` refuses a finished row on purpose -- a
+                # closed row carries no milestone, because the ranking that
+                # reads the cell only ranks open rows -- so telling the
+                # caller to run it against a row this tool just boarded
+                # `✅ Done` prints a command that is refused by
+                # construction. That happened on issue #242 and cost a cycle
+                # two calls plus a moment of believing the board was damaged.
+                # This tool writes the cell on a done row quite happily when
+                # the write succeeds, which is the disagreement worth naming
+                # rather than papering over: it is only the *recovery* path
+                # that has no door.
+                remedy = (
+                    f"Run: python3 -m tools.board_milestone --board "
+                    f"{args.board} --number {one['number']} --milestone "
+                    f"{args.milestone!r}")
+                if one.get("done"):
+                    remedy = (
+                        f"#{one['number']} is finished, so "
+                        "`tools.board_milestone` will refuse to place it -- "
+                        "a closed row deliberately carries no milestone. "
+                        "Fix what refused the write above and re-board, or "
+                        "leave it ungrouped.")
                 print(
                     f"boarded #{one['number']}, but it is still ungrouped: "
-                    f"{problem}. Run: python3 -m tools.board_milestone --board "
-                    f"{args.board} --number {one['number']} --milestone "
-                    f"{args.milestone!r}",
+                    f"{problem}. {remedy}",
                     file=sys.stderr,
                 )
                 return 1
