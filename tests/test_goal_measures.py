@@ -4163,6 +4163,12 @@ class TestMeasurePostEditorAndReadership:
         def fake(site=None):
             return (None, error) if error else (articles, None)
         monkeypatch.setattr(gm, "fetch_post_articles", fake)
+        self._opens(monkeypatch, None, error="open counter not faked")
+
+    def _opens(self, monkeypatch, payload, error=None):
+        def fake(site=None):
+            return (None, error) if error else (payload, None)
+        monkeypatch.setattr(gm, "fetch_post_open_stats", fake)
 
     def _article(self, **extra):
         base = {"_id": "art-1", "title_en": "t", "published_at": "2026-07-19T12:00:00Z"}
@@ -4241,7 +4247,7 @@ class TestMeasurePostEditorAndReadership:
                                      self._article(_id="art-2", dismissed="False")])
         value, detail = gm.measure_post_readership(None, None)
         assert value == 0, detail
-        assert "no record that anyone read one" in detail
+        assert "no record that anyone reacted to one" in detail
 
     def test_readership_zero_is_real_and_unreadable_is_not(self, monkeypatch):
         self._articles(monkeypatch, [self._article()])
@@ -4257,6 +4263,39 @@ class TestMeasurePostEditorAndReadership:
         value, detail = gm.measure_post_readership(None, None)
         assert value == 0, detail
         assert "cannot be placed on a day" in detail
+
+    def test_readership_names_the_open_counter_without_adding_a_day(self, monkeypatch):
+        self._articles(monkeypatch, [self._article(feedback="up")])
+        self._opens(monkeypatch, {"total_opens": 7, "opens_in_print": 3, "categories": {
+            "Sport": {"articles_opened": 1}, "Global": {"articles_opened": 1}}})
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 1, detail
+        assert "counted 7 article open(s) ever, 3 of them on 2 article(s)" in detail
+
+    def test_opens_are_named_even_when_nothing_carries_a_reaction(self, monkeypatch):
+        self._articles(monkeypatch, [self._article()])
+        self._opens(monkeypatch, {"total_opens": 7, "opens_in_print": 3, "categories": {}})
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 0, detail
+        assert "counted 7 article open(s)" in detail
+
+    def test_an_unreadable_open_counter_leaves_the_reading_alone(self, monkeypatch):
+        self._articles(monkeypatch, [self._article(feedback="up")])
+        self._opens(monkeypatch, None, error="could not reach the Post: refused")
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 1, detail
+        assert "open counter could not be read (could not reach the Post: refused)" in detail
+
+    def test_open_stats_unwraps_the_live_envelope(self, monkeypatch):
+        monkeypatch.setattr(gm, "_get_json", lambda url, timeout=60: (
+            {"open_stats": {"total_opens": 7, "opens_in_print": 3, "categories": {}}}, None))
+        stats, error = gm.fetch_post_open_stats("http://post")
+        assert error is None and stats["total_opens"] == 7
+
+    def test_open_stats_without_a_count_is_unreadable(self, monkeypatch):
+        monkeypatch.setattr(gm, "_get_json", lambda url, timeout=60: ({"open_stats": {}}, None))
+        stats, error = gm.fetch_post_open_stats("http://post")
+        assert stats is None and "total_opens" in error
 
     def test_both_key_results_are_registered(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["post-kr-editor"] is gm.measure_post_editor
