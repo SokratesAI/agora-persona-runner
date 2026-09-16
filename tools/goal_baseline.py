@@ -47,6 +47,7 @@ document to stdout and leaves the file alone.
 import argparse
 import re
 import sys
+from difflib import SequenceMatcher
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
@@ -118,21 +119,35 @@ def apply(markdown, writes, date):
 def verify(before, after, expected):
     """`None` when `after` is `before` plus exactly `expected` new baselines.
 
-    The whole safety of this tool. Strip every line matching the dated shape
-    it writes and the document has to come back byte for byte -- which catches
+    The whole safety of this tool: the only difference between the two
+    documents may be inserted lines, every one of them a dated `baseline:`,
+    and there must be exactly as many as the run said it wrote. That catches
     a rewritten `now`, a lost fence and a re-indent alike, none of which a
     line count would notice.
+
+    Diffed rather than stripped, and the difference matters the second time
+    this runs: a strip would take out the baselines written on an earlier day
+    too, so a document that already carries 26 of them would refuse a run
+    that correctly wrote none.
     """
-    lines = after.split("\n")
-    kept = [line for line in lines if not _INSERTED_RE.match(line)]
-    added = len(lines) - len(kept)
+    old, new = before.split("\n"), after.split("\n")
+    added = 0
+    for tag, i1, i2, j1, j2 in SequenceMatcher(
+            a=old, b=new, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if tag != "insert":
+            return (f"the repaired copy {tag}s line(s) {i1 + 1}-{i2} of the "
+                    f"document that was read -- something other than a "
+                    f"baseline changed")
+        for line in new[j1:j2]:
+            if not _INSERTED_RE.match(line):
+                return (f"the repaired copy inserts {line.strip()!r}, which "
+                        f"is not a dated baseline line")
+        added += j2 - j1
     if added != expected:
         return (f"the repaired copy carries {added} inserted baseline "
                 f"line(s) against the {expected} measured")
-    if "\n".join(kept) != before:
-        return ("stripping the inserted baselines did not reproduce the "
-                "document that was read -- something other than a baseline "
-                "changed")
     return None
 
 

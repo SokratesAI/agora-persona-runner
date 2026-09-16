@@ -64,7 +64,8 @@ def test_verify_refuses_when_anything_but_a_baseline_moved():
     after, _ = gb.apply(before, writes, "2026-09-16")
     assert gb.verify(before, after, 1) is None
     tampered = after.replace("now: 3", "now: 0")
-    assert "did not reproduce" in gb.verify(tampered, after, 1)
+    assert "something other than a baseline changed" in gb.verify(
+        tampered, after, 1)
     assert "against the" in gb.verify(before, after, 2)
 
 
@@ -110,3 +111,23 @@ def test_print_leaves_the_file_alone(tmp_path, capsys):
                     "--print"]) == 0
     assert "baseline" not in path.read_text(encoding="utf-8")
     assert "baseline: 3 (2026-09-16)" in capsys.readouterr().out
+
+
+def test_a_second_run_over_a_document_this_tool_already_baselined():
+    # The strip-based check refused here: it took out the baselines written
+    # on an earlier day as well, so a correct run that wrote nothing looked
+    # like 26 unexplained insertions.
+    first = _doc(_kr("a-kr", now="3"))
+    writes, _ = gb.pending(parse_project_goals(first))
+    after, _ = gb.apply(first, writes, "2026-09-16")
+    assert gb.verify(first, after, len(writes)) is None
+    again, skips = gb.pending(parse_project_goals(after))
+    assert (again, skips) == ([], [])
+    assert gb.verify(after, after, 0) is None
+
+
+def test_a_deleted_line_is_refused_and_named():
+    before = _doc(_kr("a-kr", now="3"))
+    after = before.replace("measure: things\n", "")
+    assert "something other than a baseline changed" in gb.verify(
+        before, after, 0)
