@@ -164,6 +164,10 @@ def test_registered_in_preflight():
 
 
 def test_main_returns_the_report_code(monkeypatch):
+    # The goals read is stubbed so this test says the same thing on the
+    # bridge pod, which has a vault client, and on the runner pod, which
+    # does not.
+    monkeypatch.setattr(ask_watch, "read_goals", lambda path=None: (None, None, True))
     monkeypatch.setattr(ask_watch, "agora_get", _fake_get(
         [_row("c1")], {"c1": (200, {"messages": [_msg("Edvard", "no")]})}))
     assert ask_watch.main([]) == 2
@@ -456,3 +460,170 @@ def test_resolve_does_not_run_the_sweep(monkeypatch):
     monkeypatch.setattr(ask_watch, "messages", lambda cid: ([_msg("Nova")], None))
     monkeypatch.setattr(ask_watch, "agora_internal", _fake_internal([], [200, 200]))
     assert ask_watch.main(["--resolve", "c1", "--because", "answered in chat"]) == 0
+
+
+# --- a goal discussion is a question waiting on him ----------------------
+# 2026-09-16: this printed `0 open ask(s) still waiting on him` while
+# `project_goals_check` printed eleven of eleven projects still discussing.
+# A goal thread is not tagged `nova:needs-input`, so `_is_ask` was false for
+# every one of them.
+
+GOALS = """# Project goals
+
+## Cycles
+
+```objective
+statement: A cycle lands a real change.
+status: discussing
+conversation: 0af15d7d
+```
+
+```key-result
+id: c-kr-one
+name: one
+measure: a thing
+now: 1
+target: 2
+status: discussing
+```
+"""
+
+
+def _goal_run(monkeypatch, listing, threads, markdown=GOALS, **kw):
+    monkeypatch.setattr(ask_watch, "agora_get", _fake_get(listing, threads))
+    out = io.StringIO()
+    code = ask_watch.report(
+        *ask_watch.check(now=NOW, goals_markdown=markdown, **kw),
+        out=out, now=NOW)
+    return code, out.getvalue()
+
+
+def _plain(cid, name="Manual feedback & improvements"):
+    return {"id": cid, "name": name, "tags": [], "archived": False}
+
+
+def test_an_untagged_goal_thread_is_counted_as_waiting(monkeypatch):
+    code, text = _goal_run(
+        monkeypatch, [_plain("0af15d7d-0000-0000-0000-000000000000")],
+        {"0af15d7d-0000-0000-0000-000000000000": (
+            200, {"messages": [_msg("Nova", "here are the key results",
+                                    "2026-09-16T08:00:00.000Z")]})})
+    assert code == 0
+    assert "waiting on him — Manual feedback & improvements — goals: Cycles" in text
+    assert "Of 1 project(s) still discussing their goals, 1 thread(s) were judged" in text
+
+
+def test_the_count_is_on_the_clean_line_too(monkeypatch):
+    """A count printed only when it is interesting is one nobody can trust."""
+    code, text = _goal_run(monkeypatch, [], {}, markdown=None)
+    assert code == 0
+    assert "still discussing their goals" not in text
+
+
+def test_a_goal_thread_he_answered_raises(monkeypatch):
+    code, text = _goal_run(
+        monkeypatch, [_plain("0af15d7d-0000-0000-0000-000000000000")],
+        {"0af15d7d-0000-0000-0000-000000000000": (
+            200, {"messages": [_msg("Nova"),
+                               _msg("Edvard", "drop the second one",
+                                    "2026-09-16T08:00:00.000Z")]})})
+    assert code == 2
+    assert "ANSWERED — Manual feedback & improvements — goals: Cycles" in text
+    assert "drop the second one" in text
+
+
+def test_a_goal_thread_i_replied_in_is_still_waiting_not_settled(monkeypatch):
+    """The difference from an ask: only the document closes a goal.
+
+    An ask is finished when he answers and a cycle replies. A goal is
+    finished when its status reads `agreed` or `struck`, so a thread where
+    both of us have spoken still has an undecided objective hanging off it.
+    Reading it as settled is what produced the 0.
+    """
+    code, text = _goal_run(
+        monkeypatch, [_plain("0af15d7d-0000-0000-0000-000000000000")],
+        {"0af15d7d-0000-0000-0000-000000000000": (
+            200, {"messages": [_msg("Nova"), _msg("Edvard", "ok"),
+                               _msg("Nova", "noted",
+                                    "2026-09-16T08:00:00.000Z")]})})
+    assert code == 0
+    assert "waiting on him — Manual feedback & improvements — goals: Cycles" in text
+    assert "answered and closed out" in text
+    assert "1 thread(s) were judged" in text
+
+
+def test_a_goal_thread_posted_in_quiet_hours_never_reached_his_phone(monkeypatch):
+    code, text = _goal_run(
+        monkeypatch, [_plain("0af15d7d-0000-0000-0000-000000000000")],
+        {"0af15d7d-0000-0000-0000-000000000000": (
+            200, {"messages": [_msg("Nova", "the batch",
+                                    "2026-09-16T03:28:00.000Z")]})})
+    assert code == 2
+    assert "NEVER REACHED HIS PHONE — Manual feedback & improvements — goals: Cycles" in text
+
+
+def test_a_thread_the_listing_does_not_carry_is_no_instrument(monkeypatch):
+    """Archived, deleted or renamed away — the one thing that must not read 0."""
+    code, text = _goal_run(monkeypatch, [_plain("ffffffff-0000-0000-0000-000000000000")],
+                           {"ffffffff-0000-0000-0000-000000000000": (
+                               200, {"messages": [_msg("Nova")]})})
+    assert code == 1
+    assert "CANNOT SEE THE THREAD — Cycles" in text
+    assert "0af15d7d" in text
+
+
+def test_a_project_arguing_nowhere_is_named_but_does_not_raise(monkeypatch):
+    markdown = GOALS.replace("conversation: 0af15d7d", "")
+    code, text = _goal_run(monkeypatch, [], {}, markdown=markdown)
+    assert code == 0
+    assert "ARGUED NOWHERE — Cycles" in text
+    assert "1 are argued nowhere" in text
+
+
+def test_a_tagged_ask_that_is_also_a_goal_thread_is_judged_once(monkeypatch):
+    """Two of the three live goal threads ARE tagged asks.
+
+    Judged in both branches, the same thread reads as `settled` under the ask
+    predicate (he wrote, I wrote back) and as waiting under the goal one, so
+    the summary would count it twice and one of the two counts would be the
+    wrong one. The goal predicate is the stricter of the two and wins.
+    """
+    cid = "0af15d7d-0000-0000-0000-000000000000"
+    code, text = _goal_run(
+        monkeypatch,
+        [_row(cid, name="Nova needs you — the twelve objectives")],
+        {cid: (200, {"messages": [_msg("Nova"), _msg("Edvard", "ok"),
+                                  _msg("Nova", "noted",
+                                       "2026-09-16T08:00:00.000Z")]})})
+    assert code == 0
+    assert text.count(cid) == 1
+    assert "0 answered and closed out" in text
+    assert "1 open ask(s) still waiting on him" in text
+
+
+def test_no_vault_client_says_so_and_does_not_raise(monkeypatch):
+    """`nas_health`'s call: no pull request fixes running on the wrong pod."""
+    code, text = _goal_run(monkeypatch, [], {}, markdown=None,
+                           goals_problem="no vault client on this pod")
+    assert code == 0
+    assert "CANNOT SEE THE GOALS — no vault client on this pod" in text
+
+
+def test_an_unreadable_goals_document_is_no_instrument(monkeypatch):
+    code, text = _goal_run(monkeypatch, [], {}, markdown=None,
+                           goals_unreadable="vault_tool.py exited 1")
+    assert code == 1
+    assert "COULD NOT READ THE GOALS — vault_tool.py exited 1" in text
+
+
+def test_read_goals_from_a_local_path(tmp_path):
+    path = tmp_path / "goals.md"
+    path.write_text(GOALS)
+    markdown, problem, from_this_pod = ask_watch.read_goals(str(path))
+    assert problem is None and from_this_pod
+    assert ask_watch.goal_discussions(markdown) == [("Cycles", "0af15d7d", 1)]
+
+
+def test_read_goals_from_a_missing_local_path(tmp_path):
+    markdown, problem, from_this_pod = ask_watch.read_goals(str(tmp_path / "nope.md"))
+    assert markdown is None and from_this_pod and "nope.md" in problem
