@@ -22,13 +22,9 @@ renderer: `kpi_drift_crosses_bounds`. A KPI is a range rather than a target,
 every instrumented one here reads a rolling window, and two of them drifted
 again within an hour of Cycle 1576 repairing them -- so a KPI that moved
 without leaving its own range is printed as having moved and is not counted.
-Since 2026-09-17 key results and goals get the same treatment against their
-target, `kr_drift_crosses_target`: four of them read a rolling week and were
-hand-repaired four times in two days with nothing wrong. Rule 7 says *weekly
-check*, so the Monday goals run passes `--repair`, and only a number reaching
-or leaving its target counts here in between. The report still names every
-move, so the two can never disagree about what was seen, only about what is
-worth acting on.
+Key results keep the strict comparison, because a target is read against the
+digit. The report still names both, so the two can never disagree about what
+was seen, only about what is worth acting on.
 
     python3 -m tools.goal_drift            # the watcher: report, never write
     python3 -m tools.goal_drift --repair   # the repairer: write the vault back
@@ -46,8 +42,8 @@ assembled that read-modify-write by hand. The rest left it, because it is
 six commands and the standing instruction was something else. That is the
 exact shape of the failure this module was built to end: a number a human
 has to retype is a number that goes stale. So the six commands are one
-flag now. Nothing in `tools.preflight` passes it; the one scheduled caller is
-the Monday `Nova — goals & reprioritise` run, which is rule 7's weekly check.
+flag now, and what stays a cycle's decision is *typing the flag*: nothing
+in `tools.preflight` passes it, and it is not wired to a heartbeat.
 
 Two guards sit on the write, because it touches documents the owner edits
 from his phone:

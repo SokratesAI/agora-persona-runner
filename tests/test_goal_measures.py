@@ -500,7 +500,7 @@ def test_render_key_results_marks_drift_and_prints_the_written_number():
     out = goal_measures.render_key_results(
         goal_measures.key_result_rows(_pg_sections(), rows), "project-goals.md")
     assert "measured 3.9" in out
-    assert "the document says 6.8, moved without crossing its target" in out
+    assert "the document says 6.8, drifted" in out
     assert "254 PRs / 65 rows" in out
 
 

@@ -590,24 +590,6 @@ def unworked_breaches(sections, keeps, rows):
     return out
 
 
-def key_result_short(row):
-    """`True` if a key result stands short of its target, `False` if it has
-    reached it, `None` if the row cannot be judged.
-
-    The one-row half of `short_key_results`, pulled out so
-    `tools.goal_measures.kr_drift_crosses_target` asks the same question the
-    shortfall list does rather than a second copy of it. `None` covers the
-    same rows that function skips for having no comparison: a `now` or
-    `target` that is not one number, or no `direction`.
-    """
-    now = _number(row.get("now"))
-    target = _number(row.get("target"))
-    direction = row.get("direction", "").strip().lower()
-    if now is None or target is None or direction not in ("up", "down"):
-        return None
-    return not (now <= target if direction == "down" else now >= target)
-
-
 def short_key_results(sections):
     """`(project, label, lowercased id, shortfall sentence)` for each key
     result standing short of its own target.
@@ -631,9 +613,13 @@ def short_key_results(sections):
         for row in section.get("keyResults", ()):
             if row.get("status", "").strip().lower() == "struck":
                 continue
-            if key_result_short(row) is not True:
-                continue
+            now = _number(row.get("now"))
+            target = _number(row.get("target"))
             direction = row.get("direction", "").strip().lower()
+            if now is None or target is None or direction not in ("up", "down"):
+                continue
+            if now <= target if direction == "down" else now >= target:
+                continue
             identifier = row.get("id", "").strip()
             label = identifier or row.get("name", "").strip()
             unit = row.get("unit", "").strip()
