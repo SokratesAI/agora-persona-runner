@@ -2892,23 +2892,41 @@ def fetch_post_open_stats(site=NEWSPAPER):
     return payload, None
 
 
-def _post_opens_note():
+def _post_open_days(stats):
+    """The Oslo days the Post recorded at least one article open on.
+
+    `opens_by_day` exists since platform-config#763 (idea #311, 2026-09-17);
+    the opens counted before it carry no date and add no day. A server that
+    predates the field, or an unreadable counter, gives the empty set.
+    """
+    by_day = (stats or {}).get("opens_by_day")
+    if not isinstance(by_day, dict):
+        return set()
+    return {day for day, count in by_day.items()
+            if isinstance(count, int) and count > 0
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day))}
+
+
+def _post_opens_note(stats, error):
     """One clause on the open counter, for a readership detail line.
 
-    Opens carry no date, so they cannot add a day to a measure counted in days.
-    They are the only record of a read that needs no tap, though, and leaving
-    them out made the detail read as if reactions were all the Post keeps.
+    Only the dated opens add a day; the running total is named beside them
+    because it is the only record of a read that needs no tap, and leaving it
+    out made the detail read as if reactions were all the Post keeps.
     """
-    stats, error = fetch_post_open_stats()
     if error:
         return f"; the Post's open counter could not be read ({error})"
     in_print = stats.get("opens_in_print")
     articles = sum(c.get("articles_opened", 0)
                    for c in (stats.get("categories") or {}).values()
                    if isinstance(c, dict))
+    open_days = _post_open_days(stats)
+    dated = (f"; {len(open_days)} Oslo day(s) carry a dated open, newest "
+             f"{max(open_days)}" if open_days else
+             "; no open carries a date yet, so they add no day here")
     return (f"; separately the Post has counted {stats['total_opens']} article "
             f"open(s) ever, {in_print} of them on {articles} article(s) still "
-            "in print -- undated, so they add no day here")
+            f"in print{dated}")
 
 
 def _post_field_set(articles):
@@ -2970,9 +2988,10 @@ def measure_post_editor(since, until):
 def measure_post_readership(since, until):
     """Distinct days the Post holds any record that a human read an article.
 
-    A reaction carries no timestamp of its own, so a day here is the *publication*
-    day of a reacted article. That is a proxy and the detail says so; it is the
-    only date the Post stores, and the alternative was leaving this hand-typed.
+    A reaction carries no timestamp of its own, so a day from a reaction is the
+    *publication* day of a reacted article. That is a proxy and the detail says
+    so. Since idea #311 an article open is also filed under the Oslo day it
+    happened, and those days count as they are -- the one real reading date.
 
     Zero is real -- it means no article carries a reaction. `None` is the
     unreadable case, and the split matters more here than usual: the target is
@@ -2983,24 +3002,30 @@ def measure_post_readership(since, until):
     articles, error = fetch_post_articles()
     if error:
         return None, error
+    stats, open_error = fetch_post_open_stats()
+    open_days = set() if open_error else _post_open_days(stats)
+    note = _post_opens_note(stats, open_error)
     reacted = [a for a in articles
                if any(_has_value(a, f) for f in _POST_REACTION_FIELDS)]
-    days = sorted({d for d in (_oslo_day(str(a.get("published_at") or ""))
-                               for a in reacted) if d})
+    reaction_days = {d for d in (_oslo_day(str(a.get("published_at") or ""))
+                                 for a in reacted) if d}
+    days = sorted(reaction_days | open_days)
     undated = len(reacted) - sum(
         1 for a in reacted if _oslo_day(str(a.get("published_at") or "")))
     if not reacted:
-        return 0, (f"no article of the {len(articles)} the Post serves carries "
-                   f"any of {', '.join(_POST_REACTION_FIELDS)}, so it holds no "
-                   "record that anyone reacted to one" + _post_opens_note())
+        return len(days), (f"no article of the {len(articles)} the Post serves "
+                           f"carries any of {', '.join(_POST_REACTION_FIELDS)}, "
+                           "so it holds no record that anyone reacted to one"
+                           + note)
     caveat = (f"; {undated} reacted article(s) carry no publication date and "
               "cannot be placed on a day" if undated else "")
     newest = f", newest {days[-1]}" if days else ""
     return len(days), (f"{len(reacted)} of {len(articles)} article(s) carry a "
                        f"reaction ({', '.join(_POST_REACTION_FIELDS)}), falling "
-                       f"on {len(days)} distinct Oslo day(s) by publication "
-                       f"date{newest}; the reaction itself is not "
-                       f"timestamped{caveat}{_post_opens_note()}")
+                       f"on {len(reaction_days)} distinct Oslo day(s) by "
+                       f"publication date; {len(days)} day(s) with reading "
+                       f"counting dated opens too{newest}; the reaction itself "
+                       f"is not timestamped{caveat}{note}")
 
 
 #: The project name `nas-kr-unattended` counts rows for, exactly as both
