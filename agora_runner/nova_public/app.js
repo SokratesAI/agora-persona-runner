@@ -17322,13 +17322,15 @@
       // `fresh` means something just changed the list, and a cache written
       // before that change must not be drawn over the top of it.
       if (!listCache && !fresh) listCache = loadCachedList();
-      // Open, shut, open leaves two fetches in flight, and without this the
-      // older one could land second and become the cache -- which used to
-      // cost one wrong repaint and would now cost every later open too.
+      // Open, shut, open leaves two fetches in flight; the older one must
+      // not land second and become the cache.
       var token = ++listToken;
+      // Under Preact a refresh keeps a drawn list up (issue #233, step 7).
+      var drawn = fresh && window.novaThread && listEl.novaThreadRows
+        && listEl.novaThreadRows.length > 1;
       if (listCache) {
         renderList(listCache);
-      } else {
+      } else if (!drawn) {
         renderShell();
         listEl.appendChild(el("p", "empty", "loading…"));
       }
@@ -17350,10 +17352,8 @@
               rememberSource();
             }
           }
-          // He can hold a row and open its editor while the refresh is in
-          // flight now, which was impossible when the list was empty until
-          // the fetch landed. Repainting would throw away what he is typing;
-          // the cache is already updated, so the next open shows it.
+          // An editor he opened mid-refresh is not repainted away; the
+          // cache is updated, so the next open shows it.
           if (listEl.querySelector(".chat-row-edit")) return;
           renderList(payload);
         })
@@ -17373,20 +17373,12 @@
     /* The two rows that are there whatever the listing says. */
     function renderShell() {
       listEl.textContent = "";
+      listEl.novaThreadRows = null;
       // The label is the button's own text, not a `.chat-list-name` child:
       // that class means "a conversation is called this", and anything
       // reading the list -- a stylesheet, a test, a future feature counting
       // threads -- would be right to treat a node carrying it as a thread.
-      /* Starting a thread is one tap on a floating button now -- his ask,
-       * 2026-09-07, against a screenshot of Claude's list: a round `+` in
-       * the bottom-right corner, and no form.
-       *
-       * `newForm` asked for an optional name first. That question had one
-       * good answer -- leave it blank -- because the thread renames itself
-       * from his first message anyway (`autotitle`), so the form was a step
-       * between him and typing, to collect something he had no reason to
-       * fill in. Nothing called it, so it is gone.
-       */
+      // One tap on a floating `+` -- his ask, 2026-09-07.
       var start = el("button", "chat-list-fab", "+");
       start.setAttribute("type", "button");
       start.title = "New conversation";
@@ -17420,28 +17412,12 @@
           .then(function () { start.disabled = false; });
       });
       listEl.appendChild(start);
-      /* No "Ask Nova" row -- his ask, 2026-09-07. It was the last thing
-       * pointing at the legacy single thread the deleted `/ask` page used to
-       * own, sitting above every real conversation as if it were the first
-       * of them.
-       *
-       * `kind: "ask"` is deliberately still handled everywhere else: a
-       * device whose remembered source is that thread still opens on it and
-       * still reads it, and the server route is untouched. What is gone is
-       * the row that offered it as somewhere to go. */
+      // No "Ask Nova" row (his ask, 09-07); `kind: "ask"` still opens.
     }
 
-    /* "New chat", or the first free "New chat - N".
-     *
-     * Server-side `starting_name` already defaults an empty name to "New
-     * chat"; this only picks the suffix, from the listing the switcher is
-     * already holding. Both spellings stay untitled as far as `autotitle`
-     * is concerned (`is_untitled`), so a numbered one still renames itself
-     * from his first message.
-     *
-     * Best-effort by design: with no listing cached yet it sends the bare
-     * default and two threads called "New chat" is a cosmetic collision,
-     * not a broken one. */
+    /* "New chat", or the first free "New chat - N". Only the suffix: the
+     * server defaults an empty name, and `autotitle` renames either
+     * spelling. Best-effort: with no listing cached it sends the default. */
     var UNTITLED_LABEL = "New chat";
 
     function nextUntitledName() {
@@ -17457,14 +17433,28 @@
     }
 
     function renderList(payload) {
-      renderShell();
       var folders = payload.folders || [];
       var models = payload.models || [];
       var rows = (payload.conversations || []).filter(function (row) {
         return (row.tags || []).indexOf("nova-ask") === -1;
       });
+      // Under Preact the folds go through `thread.js` (issue #233, step 7):
+      // an unchanged fold keeps its node and the open or shut he gave it.
+      var drawn = window.novaThread ? [] : null;
+      if (drawn) {
+        var fab = listEl.novaListFab;
+        if (!fab) {
+          renderShell();
+          fab = listEl.novaListFab = listEl.firstChild;
+        }
+        drawn.push({ node: fab, key: "fab", sig: "fab" });
+      } else {
+        renderShell();
+      }
       if (!rows.length) {
-        listEl.appendChild(el("p", "empty", "No other conversations yet."));
+        var none = el("p", "empty", "No other conversations yet.");
+        if (drawn) window.novaThread.render(listEl, drawn.concat([{ node: none, key: "empty", sig: NaN }]));
+        else listEl.appendChild(none);
         return;
       }
       // `cycleThread` is `nova_conversations.conversations()`'s own flag
@@ -17491,14 +17481,17 @@
           holdToEdit(node, function () {
             if (listEl.querySelector(".chat-row-edit")) return;
             var editor = rowEditor(row, folders, models, function (changed) {
-              if (changed) loadList(true);
-              else if (editor.parentNode) editor.parentNode.replaceChild(node, editor);
+              if (changed) {
+                // Out first, or the repaint is refused for an open editor.
+                if (editor.parentNode) editor.parentNode.removeChild(editor);
+                loadList(true);
+              } else if (editor.parentNode) editor.parentNode.replaceChild(node, editor);
             });
             body.replaceChild(editor, node);
           });
           body.appendChild(node);
         });
-        listEl.appendChild(fold);
+        return fold;
       }
 
       /* His folders, each as its own fold.
@@ -17562,9 +17555,20 @@
       }
 
       folds.sort(function (a, b) { return foldRank(b.group) - foldRank(a.group); });
+      var here = source.kind === "conv" ? source.id : "";
       folds.forEach(function (fold) {
-        fill(listFold(fold.name, fold.group.length, fold.open), fold.group);
+        if (!drawn) {
+          listEl.appendChild(fill(listFold(fold.name, fold.group.length, fold.open), fold.group));
+          return;
+        }
+        var sig = JSON.stringify([fold.open, here, folders, models, fold.group]);
+        var kept = (listEl.novaThreadRows || []).filter(function (r) {
+          return r.key === "fold:" + fold.name && r.sig === sig;
+        })[0];
+        drawn.push({ key: "fold:" + fold.name, sig: sig,
+          node: kept ? kept.node : fill(listFold(fold.name, fold.group.length, fold.open), fold.group) });
       });
+      if (drawn) window.novaThread.render(listEl, drawn);
     }
 
     /* The close animation has to finish before `hidden` lands, because

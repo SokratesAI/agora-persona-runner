@@ -13367,6 +13367,56 @@ describe("holding a conversation in the switcher opens edit options", () => {
     assert.equal(window.document.getElementById("chat-title").textContent, "New roof");
   });
 
+  /* Issue #233, step 7: with Preact loaded the folds go through thread.js.
+   * A rename used to blank the whole list to "loading…" and rebuild every
+   * fold -- the full-list flash he reported. Now the list stays up while
+   * the refresh is in flight, and only the fold the rename touched is
+   * redrawn: the other fold is the same node, still open or shut the way
+   * he left it. */
+  test("with Preact, a rename redraws only its own fold and never blanks the list", async () => {
+    let calls = 0;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const renamed = {
+      ...LIST,
+      conversations: LIST.conversations.map((c) => (c.id === "c-1" ? { ...c, name: "New roof" } : c)),
+    };
+    const window = await openSwitcher({
+      convList: () => { calls += 1; return calls === 1 ? LIST : held; },
+      install: (w) => {
+        for (const file of ["vendor/preact-htm.js", "message.js", "thread.js"]) {
+          w.eval(readFileSync(join(publicDir, file), "utf8"));
+        }
+      },
+    });
+    assert.ok(window.novaThread, "Preact did not load into the page");
+    const fold = (name) => [...window.document.querySelectorAll("#chat-list .chat-list-fold")]
+      .find((f) => f.querySelector(".chat-list-group-name").textContent === name);
+    const loose = fold("Conversations");
+    assert.ok(loose && loose.parentNode.classList.contains("thread-slot"), "the folds were hand-built");
+    // He shuts the loose fold by hand; a rebuilt fold would come back open.
+    loose.removeAttribute("open");
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    editor.querySelector(".chat-row-edit-name").value = "New roof";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    assert.equal(window.posted.length, 1, "the rename was not posted, so this proves nothing");
+    assert.ok(calls >= 2, "the rename did not refresh the list");
+    // The refresh is in flight: the list is still up, not "loading…".
+    assert.doesNotMatch(window.document.getElementById("chat-list").textContent, /loading…/);
+    assert.equal(fold("Conversations"), loose, "the list was blanked while the refresh ran");
+    release(res(renamed));
+    await tick();
+    await tick();
+    assert.equal(fold("House").querySelector(".chat-list-name").textContent, "New roof");
+    assert.equal(window.document.querySelector("#chat-list .chat-row-edit"), null);
+    assert.equal(fold("Conversations"), loose, "an untouched fold was rebuilt");
+    assert.equal(loose.hasAttribute("open"), false, "the fold he shut was reopened");
+    assert.equal(window.document.querySelectorAll("#chat-list .chat-list-fab").length, 1);
+  });
+
   test("an unchanged name and folder post nothing at all", async () => {
     const window = await openSwitcher();
     await hold(window, rowNamed(window, "Roofing"));
