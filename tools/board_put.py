@@ -51,15 +51,10 @@ from agora_runner import ticket_docs  # noqa: E402
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
 
-def strip_the_print_newline(stdout):
-    """`vault_tool.py get` prints the document, so its stdout is one byte long.
-
-    The bridge's vault client ends in `print(content)`, and `print` appends
-    a newline the vault does not hold (runner#673). Removing exactly one is
-    lossless rather than a heuristic: `print` always adds exactly one, so a
-    document that genuinely ends in four blank lines still has four.
-    """
-    return stdout[:-1] if stdout.endswith("\n") else stdout
+#: What `vault_tool.py get` prints, exit 0, for a document it does not hold:
+#: `[not found: <path>]`. Matched as a prefix, because a check for the bare
+#: `[not found]` never matches it and reads a missing board as its content.
+NOT_FOUND = "[not found"
 
 
 def vault_put(path, local_file, if_rev_file=None):
@@ -100,9 +95,12 @@ def vault_get(path):
     """`(board text, its revision)` as the vault holds it, or `(None, None)`.
 
     `--append` needs the text: the local file it sent was a fragment, and
-    the store holds whole boards. `vault_tool.py get` ends in `print`, so
-    its stdout is the document plus one newline and that byte has to come
-    back off -- storing it is exactly the false drift runner#673 fixed.
+    the store holds whole boards. Since agora-claude-bridge#118 `get` writes
+    the document byte for byte. This used to take one newline back off, for
+    the `print` pad runner#673 fixed; once the pad was gone that cut the
+    board's own last newline, so `board_publish --publish` read every view
+    it had just written as different and never stamped the records
+    (measured Cycle 1734 on ideas.md).
 
     Every path needs the revision now -- see `main`. `--rev-file` is the
     only way this program reports one; there is no `rev` subcommand, so
@@ -115,7 +113,7 @@ def vault_get(path):
         done = subprocess.run(
             [sys.executable, VAULT_TOOL, "get", path, "--rev-file", rev_file],
             capture_output=True, text=True, timeout=180)
-        if done.returncode != 0 or done.stdout.strip() == "[not found]":
+        if done.returncode != 0 or done.stdout.startswith(NOT_FOUND):
             return None, None
         try:
             rev = open(rev_file, encoding="utf-8").read().strip()
@@ -126,7 +124,7 @@ def vault_get(path):
         # nothing at all. Both mean "no stamp", which is the honest answer.
         if not rev or rev.startswith("["):
             rev = None
-        return strip_the_print_newline(done.stdout), rev
+        return done.stdout, rev
     finally:
         try:
             os.unlink(rev_file)

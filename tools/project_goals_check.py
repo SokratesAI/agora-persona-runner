@@ -371,7 +371,7 @@ def _fetch(path):
     # The vault client answers a missing document with this marker and exit
     # 0. Absent is a real, legitimate state here (nothing written yet), so it
     # is read as an empty document rather than as an unreadable one.
-    return ("" if "[not found]" in text[:200] else text), True
+    return ("" if "[not found" in text[:200] else text), True
 
 
 def _rows_from_store():
