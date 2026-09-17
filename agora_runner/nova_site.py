@@ -307,6 +307,9 @@ STATIC_ROUTES = {
     # The chat dock, moved out of `app.js` for issue #233. It loads before
     # `app.js`, which calls it -- see the comment on the call site there.
     "/chat-dock.js": "chat-dock.js",
+    # The costs and retrospective pages and the ECharts layer under them,
+    # moved out of `app.js` for issue #233. Loads before `app.js` too.
+    "/charts.js": "charts.js",
     "/style.css": "style.css",
     "/manifest.webmanifest": "manifest.webmanifest",
     "/sw.js": "sw.js",
@@ -363,6 +366,7 @@ SW_BUILD_INPUTS = (
     "index.html",
     "app.js",
     "chat-dock.js",
+    "charts.js",
     "thread.js",
     "message.js",
     "mermaid.js",
