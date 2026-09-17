@@ -8440,6 +8440,54 @@ describe("the notes page", () => {
     assert.equal(wider[wider.length - 1], "Note number 30", "revealing older ones lost the newest");
   });
 
+  /* Issue #233, step 6: with Preact loaded the notes go through thread.js,
+   * so revealing older notes adds them above and leaves the ones on screen
+   * as the same nodes -- an Edit he had open is not rebuilt shut. */
+  test("with Preact, scrolling up keeps the notes already on screen", async () => {
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: (() => {
+        const payload = manyNotes(30);
+        payload.notes[29] = note("Note number 30", { waiting: true, index: 0 });
+        return payload;
+      })(),
+      install: (w) => {
+        spy.install(w);
+        w.scrollTo = () => {};
+        for (const file of ["vendor/preact-htm.js", "message.js", "thread.js"]) {
+          w.eval(readFileSync(join(publicDir, file), "utf8"));
+        }
+      },
+    });
+    assert.ok(window.novaThread, "Preact did not load into the page");
+    const before = [...window.document.querySelectorAll(".note-msg")];
+    assert.equal(before.length, 12, "the fixture did not render");
+    assert.ok(before[0].parentNode.classList.contains("thread-slot"), "the notes were hand-built");
+    // An Edit he has open on the newest, waiting note, with the cursor in it.
+    click(window, actNamed(await holdNote(window, 11), "Edit"));
+    const editor = before[11].querySelector(".note-acts .capture-input");
+    assert.ok(editor, "Edit opened no text box, so this test proves nothing");
+    editor.focus();
+    assert.equal(window.document.activeElement, editor);
+    const thread = window.document.querySelector(".note-thread");
+    const pager = window.document.querySelector(".note-older");
+    pager.click();
+    const after = [...window.document.querySelectorAll(".note-msg")];
+    assert.equal(after.length, 24);
+    assert.equal(after[0].querySelector(".note-msg-body").textContent, "Note number 7");
+    after.slice(12).forEach((node, i) => {
+      assert.ok(node === before[i], "revealing older notes rebuilt note " + (19 + i));
+    });
+    assert.ok(before[11].querySelector(".note-acts .capture-input") === editor, "the open Edit was rebuilt shut");
+    assert.ok(window.document.querySelector(".note-thread") === thread, "the thread was rebuilt");
+    assert.ok(window.document.activeElement === editor, "the Edit box lost the cursor");
+    const newPager = window.document.querySelector(".note-older");
+    assert.notEqual(newPager, pager, "the pager is the one already clicked");
+    assert.ok(spy.watching.some((one) => one.node === newPager), "the new pager is not watched");
+    assert.equal(window.document.querySelectorAll(".note-older").length, 1);
+    assert.equal(window.document.getElementById("feed").lastElementChild, window.document.getElementById("capture"));
+  });
+
   test("scrolling up does not destroy the composer", async () => {
     /* The bug the reviewer caught after this shipped, and the reason it
      * is a separate test from the navigation one above: `captureHome()`

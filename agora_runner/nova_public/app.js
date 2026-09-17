@@ -10889,6 +10889,7 @@
   var NOTES_PAGE = 12;
   var notesShown = NOTES_PAGE;
   var notesPayload = null;
+  var notesThread = null;
 
   function renderNoteMessage(note) {
     var msg = el("article", "note-msg note-msg-mine" + (note.waiting ? " note-msg-waiting" : ""));
@@ -11109,15 +11110,35 @@
      * is worth stating once: **the composer is outside the feed whenever
      * the feed is cleared, without exception.** */
     captureHome();
-    feed.textContent = "";
+    /* Under Preact the kept thread stays attached: taking it out of the
+     * document and putting it back would blur an Edit box he is typing in
+     * and close his keyboard, even though the box itself survives. */
+    var kept = window.novaThread && notes.length && notesThread && notesThread.parentNode === feed
+      ? notesThread : null;
+    Array.prototype.slice.call(feed.childNodes).forEach(function (n) {
+      if (n !== kept) feed.removeChild(n);
+    });
     if (!notes.length) {
       feed.appendChild(el("p", "empty", "No notes yet. Type below and tap Note."));
       moveCaptureInto(feed);
       return;
     }
     if (notesShown > notes.length) notesShown = notes.length;
-    var window_ = notes.slice(notes.length - notesShown);
-    var thread = el("div", "note-thread");
+    var first = notes.length - notesShown;
+    var window_ = notes.slice(first);
+    /* Under Preact the thread is one element kept for the life of the page,
+     * and its rows go through `thread.js` (issue #233, step 6): a note whose
+     * content did not change keeps the node already on screen, so "Load
+     * older notes" adds the older ones above instead of rebuilding every
+     * note -- and an Edit he had open stays open. A note is keyed by its
+     * place in the whole list, which the older ones do not shift. */
+    var rows = window.novaThread ? [] : null;
+    var thread = rows && notesThread ? notesThread : el("div", "note-thread");
+    if (rows) notesThread = thread;
+    var add = function (node, key, sig) {
+      if (rows) rows.push({ node: node, key: key, sig: sig });
+      else thread.appendChild(node);
+    };
     if (notesShown < notes.length) {
       /* The scroll-up handle. A button as well as a scroll trigger, on
        * purpose: an IntersectionObserver that fires on its own is the
@@ -11127,15 +11148,21 @@
       var older = el("button", "more note-older", "Load older notes");
       older.type = "button";
       older.addEventListener("click", showOlderNotes);
-      thread.appendChild(older);
+      // NaN never equals itself, so the pager is always the fresh one and
+      // the watcher below is never pointed at a node that is not drawn.
+      add(older, "older", NaN);
       watchForOlderNotes(older);
     } else {
-      thread.appendChild(el("p", "note-start", "The beginning of our notes."));
+      add(el("p", "note-start", "The beginning of our notes."), "start", NaN);
     }
-    window_.forEach(function (note) {
-      renderNoteMessage(note).forEach(function (node) { thread.appendChild(node); });
+    window_.forEach(function (note, i) {
+      var sig = JSON.stringify(note);
+      renderNoteMessage(note).forEach(function (node, part) {
+        add(node, "n" + (first + i) + "." + part, sig);
+      });
     });
-    feed.appendChild(thread);
+    if (rows) window.novaThread.render(thread, rows);
+    if (thread.parentNode !== feed) feed.appendChild(thread);
     moveCaptureInto(feed);
     // Opening at the bottom is the point of the whole page -- "it should
     // not start at the top and i have to scroll all the way down". Not on
