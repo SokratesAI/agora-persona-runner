@@ -4442,6 +4442,8 @@ def measure_nova_false_status(since, until, heartbeats=false_heartbeat_statuses,
                             f"(not compared: {uncompared}){extra}")
     if errors:
         return None, "; ".join(errors)
+    if not compared:
+        return None, f"nothing compared -- {uncompared} had no second source"
     return None, (f"{FALSE_STATUS_NONE_FOUND} ({', '.join(compared)}) -- "
                   f"not a reading, because {uncompared} "
                   f"{'has' if len(not_compared) == 1 else 'have'} no second source yet")
@@ -5430,7 +5432,7 @@ def drift_status(rows, kr_rows, kpis, goals_name, project_goals_name=None):
             for row in kpis if row.get("stale_now")
         ]
         instrumented += [row for row in kr_rows + kpis
-                         if row["value"] is not None]
+                         if row["value"] is not None or row.get("stale_now")]
         unconfirmed += [
             f"{row['project']} / {row['id']} in {pg_name}"
             for row in kr_rows

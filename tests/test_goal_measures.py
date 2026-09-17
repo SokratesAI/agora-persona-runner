@@ -5902,6 +5902,7 @@ def test_a_false_status_count_that_is_no_longer_found_is_written_away(monkeypatc
     lines, drifted = goal_measures.drift_status([], [], rows, "goals.md",
                                                 "project-goals.md")
     assert drifted == ["nova the app / nova-kpi-false-status in project-goals.md"]
+    assert "DRIFT — 1 of 1 instrumented" in lines
     assert "publishes a number no instrument could confirm" not in lines
     assert "a breach that ended" in goal_measures.render_kpis(rows, "project-goals.md")
 
@@ -5927,7 +5928,16 @@ def test_a_blank_false_status_with_nothing_found_stays_quiet(monkeypatch):
     assert drifted == []
 
 
-def test_a_false_status_still_found_is_written_as_a_count(monkeypatch):
+def test_a_false_status_still_found_is_read_as_a_count_not_a_stale_one(monkeypatch):
     rows = _false_status_rows(monkeypatch, FALSE_STATUS_DOC,
                               board=lambda: (["ideas #193 (Backlog)"], None))
     assert rows[0]["value"] == 1 and not rows[0].get("stale_now")
+
+
+def test_a_false_status_sweep_that_compared_nothing_does_not_clear_the_count():
+    """No errors and no comparisons is not "found nothing": it looked at nothing."""
+    none = lambda: (None, None)
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=none, board=none, running=none)
+    assert value is None
+    assert not detail.startswith(goal_measures.FALSE_STATUS_NONE_FOUND)
