@@ -18578,3 +18578,98 @@ describe("with Preact, a board keeps the rows already on screen", () => {
     });
   });
 });
+
+/* Issue #233, step 10 -- the project page. Every tab press calls
+ * `renderProject` again with the payload already in hand, and it emptied
+ * `feed` first, so the conversation box was rebuilt and anything half-typed
+ * into it went with it. The sections now go through thread.js, each one
+ * signed with the single payload field it draws. */
+describe("with Preact, a project page keeps the sections a tab press does not touch", () => {
+  const withPreact = (w) => {
+    for (const file of ["vendor/preact-htm.js", "message.js", "thread.js"]) {
+      w.eval(readFileSync(join(publicDir, file), "utf8"));
+    }
+  };
+
+  const TALKED = {
+    projects: ["Nova", "Agora"],
+    name: "Nova",
+    asked: "Nova",
+    boards: {
+      issues: {
+        total: 1,
+        columns: [
+          { key: "backlog", label: "⚪ Backlog", items: [
+            { number: 2, title: "Two", priority: "", priorityKey: "" },
+          ] },
+        ],
+      },
+      ideas: { total: 0, columns: [] },
+    },
+    comments: [
+      { author: "Edvard", stamp: "2026-08-28 10:40",
+        blocks: [{ kind: "p", text: "Is the pool refilling?" }] },
+    ],
+  };
+
+  const press = (window, key) =>
+    window.document.querySelector('.project-tab[data-tab="' + key + '"]').click();
+  const box = (window) =>
+    window.document.querySelector(".project-thread .item-comment-box");
+
+  test("a tab press keeps the comment box, and what he had typed into it", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED, install: withPreact });
+    assert.ok(window.novaThread, "Preact did not load into the page");
+    const before = box(window);
+    assert.ok(before, "the fixture drew no comment box, so this proves nothing");
+    assert.ok(before.closest(".thread-slot"), "the project page is still hand-built");
+    before.value = "half a thought";
+    // Away from the conversation and back: the box is not even on screen in
+    // between, so this also pins that a section skipped on one render stays
+    // in the cache rather than being rebuilt on the next one.
+    press(window, "issues");
+    press(window, "all");
+    const after = box(window);
+    assert.ok(after === before, "the comment box was rebuilt by a tab press");
+    assert.equal(after.value, "half a thought", "what he typed went with the redraw");
+  });
+
+  test("a tab press keeps the cards above the strip", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED, install: withPreact });
+    const trl = window.document.querySelector(".project-trl");
+    assert.ok(trl, "the readiness meter is missing, so this proves nothing");
+    press(window, "issues");
+    assert.ok(window.document.querySelector(".project-trl") === trl,
+      "the readiness meter was rebuilt by a tab press that cannot change it");
+  });
+
+  test("a comment redraws the conversation and leaves the rest alone", async () => {
+    const answered = {
+      ...TALKED,
+      comments: TALKED.comments.concat([
+        { author: "Nova", stamp: "2026-08-28 10:55",
+          blocks: [{ kind: "p", text: "Three times a week." }] },
+      ]),
+    };
+    // The same project answered twice: posting a comment refetches it, and
+    // the second answer is the one carrying the reply.
+    let call = 0;
+    const window = await loadSite("/project/Nova", {
+      project: () => (call++ === 0 ? TALKED : answered),
+      install: withPreact,
+    });
+    const trl = window.document.querySelector(".project-trl");
+    const thread = window.document.querySelector(".project-thread");
+    box(window).value = "any news?";
+    window.document.querySelector(".project-thread .item-comment-send").click();
+    await new Promise((r) => window.setTimeout(r, 0));
+    const said = [...window.document.querySelectorAll(".project-thread .note-msg-name")]
+      .map((el) => el.textContent);
+    assert.deepEqual(said, ["Nova", "You"], "the refetched reply is not on screen");
+    assert.ok(window.document.querySelector(".project-thread") !== thread,
+      "the conversation kept its node even though its messages changed");
+    assert.ok(window.document.querySelector(".project-trl") === trl,
+      "the readiness meter was rebuilt by a comment that cannot change it");
+  });
+
+});

@@ -10065,53 +10065,32 @@
   }
 
   /* Where this project sits in the order I actually work in -- idea #228,
-   * the roadmap half.
-   *
-   * The list under this is ordered by rating; that is what to take next
-   * *within* the project. It cannot say whether the project itself is
-   * ahead of anything else, and that is the question a roadmap answers.
-   * `roadmap.md` has held that order since Cycle 226 and he already reads
-   * it at the top of `/plan`; every ranked item there names the rows it is
-   * about, so this is the same order, filtered to the rows filed here.
-   *
-   * The rank number is the roadmap's own and is deliberately not
-   * renumbered per project -- "3 of the five things I would do next" is the
-   * fact, and a page that renumbered it to 1 would be claiming this project
-   * leads the whole roadmap.
-   *
-   * Nothing is drawn when no ranked item touches this project, except the
-   * one line saying how many name no row at all. That line is the
-   * complement of the list: without it, "no roadmap items here" and "the
-   * roadmap names no rows anywhere" read identically and mean different
-   * things.
-   */
-  /* This project's milestones, in the order the picker takes them, with
-   * the two buttons that pin one somewhere else.
-   *
-   * Milestone M4 of idea #260, and the half that had no screen. A pin has
-   * been settable since `tools.milestone_pin` and `POST
-   * /api/milestone/pin` shipped, and the ordering it overrides was drawn
-   * nowhere -- so the only way to know what he was pinning inside was to
-   * run a terminal he does not have. The list is the dial the control was
-   * missing.
-   *
-   * Two buttons *and* a grip, the same pair `projectMoveControls` draws
-   * one section up. The buttons are not the fallback and the drag is not
-   * the upgrade: a drag has no keyboard and nothing a screen reader can
-   * operate, so deleting the arrows would take the ordering away from
-   * every input except a finger. Both write through `sendMilestonePin`,
-   * so a pin cannot mean two things depending on which control set it.
-   *
-   * The gesture is `attachRowDrag`, the same function the standings use
-   * -- HTML5 `draggable` fires nothing on a touch screen, and a phone is
-   * the screen he reads this page on.
-   *
-   * A pinned milestone says so and can be unpinned. `0` is what the route
-   * takes for "back to the computed order" -- deliberately legal there
-   * and illegal on `/api/project/order`, because a project is always
-   * somewhere in his list and a milestone is pinned or it is not -- so
-   * the way back is a button and not a hand edit of a vault file.
-   */
+   * the roadmap half. The list under this is ordered by rating, which is
+   * what to take next *within* the project; it cannot say whether the
+   * project is ahead of anything else, and that is what a roadmap answers.
+   * `roadmap.md` has held that order since Cycle 226 and every ranked item
+   * names the rows it is about, so this is the same order filtered to the
+   * rows filed here. The rank is the roadmap's own and deliberately not
+   * renumbered per project -- renumbering "3 of five" to 1 would claim this
+   * project leads the roadmap. Nothing is drawn when no ranked item touches
+   * the project, except the line saying how many name no row at all:
+   * without it, "no roadmap items here" and "the roadmap names no rows
+   * anywhere" read identically and mean different things. */
+  /* This project's milestones, in the order the picker takes them, with the
+   * two buttons that pin one somewhere else. Milestone M4 of idea #260, and
+   * the half that had no screen: a pin has been settable since
+   * `tools.milestone_pin` shipped and the ordering it overrides was drawn
+   * nowhere, so the only way to see what he was pinning inside was a
+   * terminal he does not have. Two buttons *and* a grip, the pair
+   * `projectMoveControls` draws one section up -- a drag has no keyboard
+   * and nothing a screen reader can operate, so deleting the arrows would
+   * take the ordering away from every input except a finger, and both write
+   * through `sendMilestonePin` so a pin cannot mean two things. The gesture
+   * is `attachRowDrag`: HTML5 `draggable` fires nothing on a touch screen,
+   * and a phone is where he reads this. A pinned milestone says so and can
+   * be unpinned -- `0` is "back to the computed order", legal here and
+   * illegal on `/api/project/order`, because a project is always somewhere
+   * in his list and a milestone is pinned or it is not. */
   function renderProjectMilestones(name, payload) {
     var items = (payload && payload.milestones) || [];
     // Nothing to order. One milestone is still drawn: it says what the
@@ -10470,9 +10449,8 @@
    */
   function renderProjectThread(name, payload) {
     var section = el("section", "project-thread");
-    // Its own class rather than `project-board-head`: that one means "a
-    // board section is here", and a test that counts board sections was
-    // already reading it.
+    // Its own class, not `project-board-head`: that one means "a board
+    // section is here" and a test already counts on it.
     section.appendChild(el("h2", "project-thread-head", "Conversation"));
     var messages = (payload && payload.comments) || [];
 
@@ -10511,9 +10489,9 @@
           }
           box.value = "";
           busy(false);
-          // Refetched rather than appended locally, for the same reason the
-          // board row drops its cached write-up: the page must show what the
-          // file actually holds, not what this tab believes it sent.
+          // Refetched rather than appended locally, like the board row
+          // dropping its cached write-up: the page must show what the file
+          // holds, not what this tab believes it sent.
           loadProject(name);
         })
         .catch(function (err) {
@@ -10528,13 +10506,11 @@
     actions.appendChild(status);
     actions.appendChild(send);
     wrap.appendChild(actions);
-    // The box goes above the thread and the newest reply goes to the top of
-    // it. The owner, idea #166: *"The input field is at the top and the
-    // comments are below it with the newest reply at the top (basicly
-    // inverted for everything else we have)."* Inverted is the word -- the
-    // notes page and every row thread read oldest-first, and he wants this
-    // one the other way round, because a project conversation is something
-    // he checks rather than something he reads through.
+    // The box above the thread, newest reply at its top. The owner, idea
+    // #166: *"The input field is at the top and the comments are below it
+    // with the newest reply at the top (basicly inverted for everything
+    // else we have)."* A project conversation is something he checks rather
+    // than reads through.
     section.appendChild(wrap);
     if (!messages.length) {
       section.appendChild(el("p", "empty",
@@ -10550,22 +10526,14 @@
     return section;
   }
 
-  /* Which part of a project is on screen -- idea #166.
-   *
-   * The owner: *"Maybe the best is to have \"tabs\"/buttons that say issues,
-   * ideas, conversation. When one of them is pressed the relevant items are
-   * displayed and the others are hidden."* He described tabs and I answered
-   * on the row suggesting chips that hide rather than switch; he did not
-   * press for either, so this builds what he asked for. `All` is the fourth
-   * one and it is the default, because the page he has today is the
-   * combined view and a tab strip that can only take things away is a
-   * regression for anyone who liked it.
-   *
-   * Held in a variable rather than in the URL. A tab is a view of a page,
-   * not a page -- and `loadProject` refetches after every comment, so this
-   * has to survive a re-render either way. The cost is that a tab is not
-   * linkable, which is worth one line here if he ever asks for it.
-   */
+  /* Which part of a project is on screen -- idea #166. The owner: *"tabs/
+   * buttons that say issues, ideas, conversation. When one of them is
+   * pressed the relevant items are displayed and the others are hidden."*
+   * `All` is the fourth and the default: the page he has today is the
+   * combined view, and a tab strip that can only take things away is a
+   * regression. Held in a variable rather than the URL -- a tab is a view
+   * of a page, not a page, and it has to survive `loadProject` refetching
+   * after every comment. The cost is that a tab is not linkable. */
   var projectTab = "all";
   var projectTabFor = "";
 
@@ -10619,9 +10587,8 @@
       chip.setAttribute("data-tab", tab.key);
       chip.addEventListener("click", function () {
         projectTab = tab.key;
-        // Redrawn from the payload already in hand rather than refetched:
-        // switching tab shows him rows the page is holding, and a round
-        // trip would blank them first.
+        // Redrawn from the payload in hand, not refetched: a round trip
+        // would blank the rows the page is already holding.
         redraw();
       });
       row.appendChild(chip);
@@ -10629,73 +10596,10 @@
     return row;
   }
 
-  function renderProject(payload) {
-    stopPolling();
-    markNav();
-    var name = (payload && payload.name) || "";
-    var asked = (payload && payload.asked) || "";
-    statusEl.textContent = "";
-    statusEl.appendChild(wordmark());
-    statusEl.appendChild(el("p", "status-line",
-      name ? name : "Projects"));
-    feed.textContent = "";
-
-    if (!asked) {
-      // The index is where he decides which project to open, so it shows
-      // where each one stands rather than telling him to pick one blind.
-      var standings = renderProjectStandings(payload);
-      if (standings) feed.appendChild(standings);
-      else feed.appendChild(el("p", "empty", "Pick a project."));
-      return;
-    }
-    // Asked for a name no row carries. Said plainly rather than 404'd:
-    // he types the project into a board cell, so a name with nothing
-    // under it is a project he has not filed anything to yet, which is
-    // not the same thing as a broken link.
-    if (!name) {
-      feed.appendChild(el("p", "empty",
-        "Nothing is filed under “" + asked + "” yet."));
-      return;
-    }
-    feed.appendChild(renderProjectTrl(name, payload));
-    feed.appendChild(renderProjectSatisfaction(name, payload));
-    feed.appendChild(renderProjectLifecycle(name, payload));
-    var summary = renderProjectSummary(payload);
-    if (summary) feed.appendChild(summary);
-    // Directly under the bar: the bar says how far along the project is
-    // and this says what it is broken into, which is the next question.
-    var milestones = renderProjectMilestones(name, payload);
-    if (milestones) feed.appendChild(milestones);
-    // Under the bar and above the tabs: the bar says how far along the
-    // project is, this says what to do about it, and both belong before he
-    // has chosen which board to look at.
-    // Above the ordered list on purpose: the roadmap says whether this
-    // project is ahead of the others, the list below says what to take
-    // next inside it, and the first question comes first.
-    var roadmap = renderProjectRoadmap(payload);
-    if (roadmap) feed.appendChild(roadmap);
-    var backlog = renderProjectBacklog(payload);
-    if (backlog) feed.appendChild(backlog);
-    var tabs = projectTabs(payload);
-    var tab = projectTabState(name, tabs);
-    var tabRow = renderProjectTabs(tabs, function () { renderProject(payload); });
-    if (tabRow) feed.appendChild(tabRow);
-    // Built before the boards so the jump under the pills can point at it,
-    // appended after them so the reading order does not change.
-    var thread = renderProjectThread(name, payload);
-    // Only in the combined view. On the conversation tab the thread is the
-    // whole page, so a button that scrolls to it has nowhere to go.
-    if (tab === "all") feed.appendChild(projectThreadJump(thread, payload));
-    var boards = (payload && payload.boards) || {};
-    var drew = false;
-    var names = { issues: "Issues", ideas: "Ideas" };
-    var order = ["issues", "ideas"];
-    for (var b = 0; b < order.length; b++) {
-      var key = order[b];
-      if (tab !== "all" && tab !== key) continue;
-      var board = boards[key];
-      if (!board || !board.total) continue;
-      drew = true;
+  /* One board section, as a builder so the loop below can cache it. */
+  function projectBoardBuilder(key, board) {
+    return function () {
+      var names = { issues: "Issues", ideas: "Ideas" };
       var section = el("section", "project-board");
       var head = el("h2", "project-board-head", names[key] + " · " + board.total);
       var link = el("a", "project-board-link", "open board");
@@ -10707,36 +10611,143 @@
         cols.appendChild(renderProjectColumn(key, board.columns[c]));
       }
       section.appendChild(cols);
-      feed.appendChild(section);
-    }
-    // Only when he is looking at rows. On the conversation tab there are no
-    // rows on screen by his own choice, and saying nothing is filed would
-    // be the page arguing with the button he just pressed.
-    if (!drew && tab !== "conversation") {
-      feed.appendChild(el("p", "empty",
-        "Nothing is filed under “" + name + "” yet."));
-    }
-    // Below the boards on purpose: the rows are what the project *is* and
-    // the conversation is what has been said about them, which is the same
-    // order a board row puts its write-up above its thread.
-    if (tab === "all" || tab === "conversation") feed.appendChild(thread);
+      return section;
+    };
   }
 
-  /* The jump from the top of a project page to its conversation.
+  /* The project page's sections keep their nodes (issue #233, step 10).
    *
-   * The owner, comments board 2026-08-28, on the first time he opened this
-   * page: *"I see that the comment box is at the bottom making me scroll
-   * all the way down. Not great ui."* The order below it is still right --
-   * the rows are what the project is -- so the fix is a way down, not a
-   * reshuffle. This sits under the project pills, where he already is when
-   * the page paints.
-   *
-   * Its count is the reason it is a button rather than an anchor with a
-   * label: "Conversation · 3" says there is something down there to read,
-   * and "Conversation" alone says the box is empty and he is the first to
-   * say anything. Focusing the box after the scroll is the point -- landing
-   * next to it and still having to tap it is the same complaint one step
-   * smaller. */
+   * A tab press calls this again with the payload in hand, and it used to
+   * empty `feed` first -- so the conversation box was rebuilt and anything
+   * half-typed into it went with it. Each section below reads exactly one
+   * field of the payload, so signing on that field is precise: a tab press
+   * keeps every section the tab does not choose, and the refetch after a
+   * comment redraws the conversation and nothing else. The cache hangs off
+   * `feed` under the project's name, so a different project starts empty,
+   * and a section not drawn this pass stays in it -- that is what carries
+   * a half-typed comment across all -> ideas -> all. */
+  function renderProject(payload) {
+    stopPolling();
+    markNav();
+    var name = (payload && payload.name) || "";
+    var asked = (payload && payload.asked) || "";
+    statusEl.textContent = "";
+    statusEl.appendChild(wordmark());
+    statusEl.appendChild(el("p", "status-line",
+      name ? name : "Projects"));
+
+    if (!asked) {
+      // The index is where he decides which project to open, so it shows
+      // where each one stands rather than telling him to pick one blind.
+      feed.textContent = "";
+      feed.novaProjectCards = null;
+      var standings = renderProjectStandings(payload);
+      if (standings) feed.appendChild(standings);
+      else feed.appendChild(el("p", "empty", "Pick a project."));
+      return;
+    }
+    // Asked for a name no row carries. Said plainly rather than 404'd: he
+    // types the project into a board cell, so a name with nothing under it
+    // is one he has not filed anything to yet, not a broken link.
+    if (!name) {
+      feed.textContent = "";
+      feed.novaProjectCards = null;
+      feed.appendChild(el("p", "empty",
+        "Nothing is filed under “" + asked + "” yet."));
+      return;
+    }
+
+    var cache = feed.novaProjectCards;
+    if (!cache || cache.name !== name) {
+      cache = feed.novaProjectCards = { name: name, nodes: {} };
+    }
+    var nodes = cache.nodes;
+    var rows = [];
+    function sigOf(field) {
+      return name + " " + JSON.stringify(
+        payload[field] === undefined ? null : payload[field]);
+    }
+    function section(key, sig, build) {
+      var was = nodes[key];
+      var node = was && was.sig === sig ? was.node : build();
+      if (!node) { delete nodes[key]; return null; }
+      nodes[key] = { node: node, sig: sig };
+      rows.push({ node: node, key: key, sig: sig });
+      return node;
+    }
+
+    // All three bars read one field, so they move together.
+    var bars = sigOf("projectPriority");
+    section("trl", bars, function () { return renderProjectTrl(name, payload); });
+    section("satisfaction", bars, function () { return renderProjectSatisfaction(name, payload); });
+    section("lifecycle", bars, function () { return renderProjectLifecycle(name, payload); });
+    section("summary", sigOf("summary"), function () { return renderProjectSummary(payload); });
+    // Directly under the bar: the bar says how far along the project is,
+    // this says what it is broken into, which is the next question.
+    section("milestones", sigOf("milestones"), function () { return renderProjectMilestones(name, payload); });
+    // Above the ordered list: the roadmap says whether this project is
+    // ahead of the others, the list below says what to take next inside it,
+    // and the first question comes first.
+    section("roadmap", sigOf("roadmap"), function () { return renderProjectRoadmap(payload); });
+    section("backlog", sigOf("backlog"), function () { return renderProjectBacklog(payload); });
+
+    var tabs = projectTabs(payload);
+    var tab = projectTabState(name, tabs);
+    section("tabs", name + " " + tab + " " + JSON.stringify(tabs), function () {
+      return renderProjectTabs(tabs, function () { renderProject(payload); });
+    });
+
+    // Built before the boards so the jump can point at it, pushed after
+    // them so the reading order does not change.
+    var threadSig = sigOf("comments");
+    var thread = null;
+    if (tab === "all" || tab === "conversation") {
+      var had = nodes.thread;
+      thread = had && had.sig === threadSig ? had.node : renderProjectThread(name, payload);
+      nodes.thread = { node: thread, sig: threadSig };
+    }
+    // Only in the combined view. On the conversation tab the thread is the
+    // whole page, so a button that scrolls to it has nowhere to go.
+    if (tab === "all") {
+      section("jump", threadSig, function () { return projectThreadJump(thread, payload); });
+    }
+
+    var boards = (payload && payload.boards) || {};
+    var drew = false;
+    var order = ["issues", "ideas"];
+    for (var b = 0; b < order.length; b++) {
+      var key = order[b];
+      if (tab !== "all" && tab !== key) continue;
+      var board = boards[key];
+      if (!board || !board.total) continue;
+      drew = true;
+      section("board-" + key, name + " " + JSON.stringify(board),
+        projectBoardBuilder(key, board));
+    }
+    // Only when he is looking at rows. On the conversation tab there are
+    // none by his own choice, and saying nothing is filed would be the page
+    // arguing with the button he just pressed.
+    if (!drew && tab !== "conversation") {
+      var none = "Nothing is filed under “" + name + "” yet.";
+      section("empty", none, function () { return el("p", "empty", none); });
+    }
+    // Below the boards on purpose: the rows are what the project *is* and
+    // the conversation is what has been said about them -- the order a
+    // board row puts its write-up above its thread.
+    if (thread) rows.push({ node: thread, key: "thread", sig: threadSig });
+
+    if (window.novaThread) return window.novaThread.render(feed, rows);
+    feed.textContent = "";
+    rows.forEach(function (r) { feed.appendChild(r.node); });
+  }
+
+  /* The jump from the top of a project page to its conversation. The owner,
+   * comments board 2026-08-28: *"I see that the comment box is at the
+   * bottom making me scroll all the way down. Not great ui."* The order
+   * below it is right -- the rows are what the project is -- so the fix is
+   * a way down, not a reshuffle. Its count is why it is a button and not an
+   * anchor: "Conversation · 3" says there is something to read. Focusing
+   * the box after the scroll is the point. */
   function projectThreadJump(thread, payload) {
     var count = ((payload && payload.comments) || []).length;
     var wrap = el("div", "project-jump-row");
