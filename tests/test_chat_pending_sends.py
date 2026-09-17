@@ -95,4 +95,7 @@ def test_the_dock_wires_the_merge_into_send_paint_and_poll():
     assert "if (merged.unconfirmed) {\n        messages = merged.messages;" in paint
     poll = extract_function(source[source.index("    function pollChat("):], "pollChat")
     assert "(pendingSends[sourceKey()] || []).length" in poll
-    assert "{ text: body, sentAt: Date.now() }" in source
+    # One clock reading for the pending send and the bubble, so they share a key.
+    assert "var sentAt = Date.now();" in source
+    assert "{ text: body, sentAt: sentAt }" in source
+    assert "askPaintSent(thread, body, sentAt);" in source
