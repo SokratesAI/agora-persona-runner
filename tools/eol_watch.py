@@ -104,11 +104,13 @@ import argparse
 import datetime as dt
 import json
 import re
+import subprocess
 import sys
 import urllib.request
 
 from tools.pin_drift import _tree, read_file
-from tools.running_images import classify, normalise, read_workloads, split_ref
+from tools.running_images import (_run, classify, normalise, read_workloads,
+                                  split_ref)
 from tools.security_alerts import _repos_to_sweep
 
 CATALOGUE = "https://endoflife.date/api/v1/products/full"
@@ -558,6 +560,44 @@ def cluster_images(reader=read_workloads):
     return pins, problems
 
 
+#: `v1.34.4+k3s1` -> `1.34.4`. The `+k3s1` is k3s's own packaging revision
+#: of that Kubernetes release, not a second line to judge.
+KUBELET_VERSION_RE = re.compile(r"\Av?(\d+\.\d+(?:\.\d+)?)(?:[-+].*)?\Z")
+
+
+def node_versions(runner=subprocess.run):
+    """`(pins, problems)` -- the Kubernetes release every node runs.
+
+    Idea #322: both nodes reported `v1.34.4+k3s1` three weeks after 1.34's
+    standard support ended on 2026-08-27, and nothing here said so, because
+    every source above is an image or a pin in a file and the cluster's own
+    version is neither. It is read off each node's kubelet, which is the
+    version actually running rather than the one an install script asked
+    for, and judged against endoflife.date's `kubernetes` product exactly
+    like a `FROM` line -- one `judge`, one report.
+    """
+    body, why = _run(runner, ["kubectl", "get", "nodes", "-o", "json"])
+    if why:
+        return [], [f"could not read nodes: {why}"]
+    pins, problems = [], []
+    for item in body.get("items") or []:
+        name = (item.get("metadata") or {}).get("name", "?")
+        kubelet = ((item.get("status") or {}).get("nodeInfo") or {}).get(
+            "kubeletVersion") or ""
+        match = KUBELET_VERSION_RE.match(kubelet)
+        if not match:
+            problems.append(f"node {name} reports kubelet version "
+                            f"`{kubelet}`, which names no Kubernetes release")
+            continue
+        pins.append({"repo": "live cluster", "path": f"node {name}",
+                     "image": "kubernetes", "tag": match.group(1),
+                     "kubelet": kubelet, "kind": "node"})
+    if not pins and not problems:
+        problems.append("kubectl listed no nodes, which is no instrument "
+                        "rather than no cluster")
+    return pins, problems
+
+
 def sweep(repos, products, today, within_days, run=None):
     """`(judged, not_judged, problems)` across every repo given."""
     mapping, ambiguous = image_map(products)
@@ -631,6 +671,8 @@ def _pin(image):
     """
     if image.get("kind") == "toolchain":
         return "%s-version: %s" % (image["image"], image["tag"])
+    if image.get("kind") == "node":
+        return "kubelet %s" % image.get("kubelet", image["tag"])
     return "%s:%s" % (image["image"], image["tag"] or "")
 
 
@@ -691,13 +733,16 @@ def format_report(judged, not_judged, problems, notes, within_days):
     out.extend(notes)
     steps = sum(1 for i in judged if i.get("kind") == "toolchain")
     running = sum(1 for i in judged if i.get("kind") == "running")
-    froms = len(judged) - steps - running
+    nodes = sum(1 for i in judged if i.get("kind") == "node")
+    froms = len(judged) - steps - running - nodes
     out.append("Judged %d distinct runtime line(s) across %d FROM line(s), %d "
-               "workflow version pin(s) and %d running container image(s) "
+               "workflow version pin(s), %d running container image(s) and "
+               "%d node Kubernetes version(s) "
                "against endoflife.date, notice window %d day(s); %d not "
                "judged. A tag variant such as `-alpine` or `-slim` is a "
                "second line this cannot read and is never judged."
-               % (len(group(judged)), froms, steps, running, within_days,
+               % (len(group(judged)), froms, steps, running, nodes,
+                  within_days,
                   len(group(not_judged))))
     out.append("Of those, %d distinct `FROM` line(s) name no release at all."
                % len(group([i for i in not_judged if i.get("floating")])))
@@ -819,6 +864,9 @@ def main(argv=None):
     mapping, ambiguous = image_map(products)
     pins, cluster_problems = cluster_images()
     problems.extend(cluster_problems)
+    node_pins, node_problems = node_versions()
+    pins.extend(node_pins)
+    problems.extend(node_problems)
     for image in pins:
         where = judge(image, products, mapping, today, args.within_days,
                       ambiguous)

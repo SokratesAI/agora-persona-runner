@@ -2589,6 +2589,9 @@ class _EolStub:
     def cluster_images(self):
         return [], []
 
+    def node_versions(self):
+        return [], []
+
     def judge(self, *a, **k):
         raise AssertionError("no cluster image was handed in")
 
@@ -2636,6 +2639,26 @@ def test_maint_supported_counts_a_line_going_dead_soon(monkeypatch):
          _eol_image("node", "22", "supported")], []))
     value, _ = goal_measures.measure_maint_supported(None, None)
     assert value == 2
+
+
+def test_maint_supported_counts_the_nodes_kubernetes_line(monkeypatch):
+    """Idea #322: both nodes ran Kubernetes 1.34 past its end of standard
+    support and the key result could not see it, because the cluster's own
+    version is neither an image nor a pin in a file."""
+    class NodeStub(_EolStub):
+        def node_versions(self):
+            return [{"repo": "live cluster", "path": "node server1",
+                     "image": "kubernetes", "tag": "1.34.4",
+                     "kind": "node"}], []
+
+        def judge(self, image, *a, **k):
+            image["verdict"] = "soon"
+            return "judged"
+
+    _eol_stub(monkeypatch, NodeStub([_eol_image("node", "22", "supported")], []))
+    value, detail = goal_measures.measure_maint_supported(None, None)
+    assert value == 1
+    assert "kubernetes:1.34.4" in detail
 
 
 def test_maint_supported_does_not_count_a_line_nothing_could_judge(monkeypatch):

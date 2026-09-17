@@ -8,6 +8,7 @@ whole difference between "up to date" and "still supported".
 
 import base64
 import datetime as dt
+import json
 
 import pytest
 
@@ -287,8 +288,9 @@ def test_a_catalogue_with_no_products_is_a_problem_not_an_empty_sweep():
 # --- main()'s exit contract, which had no coverage at all.
 
 def _run_main(monkeypatch, judged_out, not_judged_out=(), problems=(),
-              pins=(), cluster_problems=()):
-    monkeypatch.setattr(eol_watch, "catalogue", lambda *a, **k: (PRODUCTS, None))
+              pins=(), cluster_problems=(), node_pins=(), node_problems=(),
+              products=PRODUCTS):
+    monkeypatch.setattr(eol_watch, "catalogue", lambda *a, **k: (products, None))
     monkeypatch.setattr(eol_watch, "sweep",
                         lambda *a, **k: (list(judged_out),
                                          list(not_judged_out), list(problems)))
@@ -296,6 +298,8 @@ def _run_main(monkeypatch, judged_out, not_judged_out=(), problems=(),
     # depends on what happens to be deployed is not a test.
     monkeypatch.setattr(eol_watch, "cluster_images",
                         lambda *a, **k: (list(pins), list(cluster_problems)))
+    monkeypatch.setattr(eol_watch, "node_versions",
+                        lambda *a, **k: (list(node_pins), list(node_problems)))
     return eol_watch.main(["--repo", "o/r"])
 
 
@@ -510,8 +514,8 @@ def test_the_summary_counts_running_images_apart_from_from_lines():
     _, from_line = judged("node", "24")
     _, running = judged("node", "22", kind="running")
     report = eol_watch.format_report([from_line, running], [], [], [], 180)
-    assert ("across 1 FROM line(s), 0 workflow version pin(s) and 1 running "
-            "container image(s)") in report
+    assert ("across 1 FROM line(s), 0 workflow version pin(s), 1 running "
+            "container image(s) and 0 node Kubernetes version(s)") in report
 
 
 def test_a_cluster_finding_raises_the_exit_status_like_any_other(monkeypatch):
@@ -712,3 +716,100 @@ def test_in_reach_counts_distinct_lines_not_occurrences():
     same = [_unjudged("nginx", "alpine", "tag names no release line")
             for _ in range(4)]
     assert len(eol_watch.in_reach(same)) == 1
+
+
+# --- idea #322: the cluster's own Kubernetes version.
+
+KUBERNETES = {
+    "name": "kubernetes",
+    "aliases": ["k8s"],
+    "identifiers": [{"type": "purl", "id": "pkg:github/kubernetes/kubernetes"}],
+    "releases": [
+        {"name": "1.35", "isEol": False, "eolFrom": "2027-02-28"},
+        {"name": "1.34", "isEol": False, "eolFrom": "2026-10-27"},
+        {"name": "1.33", "isEol": True, "eolFrom": "2026-06-28"},
+    ],
+}
+
+
+def _nodes(*versions, returncode=0, stdout=None):
+    """A `subprocess.run` stand-in answering `kubectl get nodes -o json`."""
+    body = {"items": [{"metadata": {"name": "server%d" % (i + 1)},
+                       "status": {"nodeInfo": {"kubeletVersion": v}}}
+                      for i, v in enumerate(versions)]}
+
+    class Proc:
+        pass
+
+    def runner(args, **kwargs):
+        assert args[:3] == ["kubectl", "get", "nodes"]
+        proc = Proc()
+        proc.returncode = returncode
+        proc.stdout = json.dumps(body) if stdout is None else stdout
+        proc.stderr = "forbidden" if returncode else ""
+        return proc
+    return runner
+
+
+def test_a_node_kubelet_version_becomes_a_kubernetes_pin():
+    pins, problems = eol_watch.node_versions(_nodes("v1.34.4+k3s1"))
+    assert problems == []
+    assert pins == [{"repo": "live cluster", "path": "node server1",
+                     "image": "kubernetes", "tag": "1.34.4",
+                     "kubelet": "v1.34.4+k3s1", "kind": "node"}]
+
+
+def test_the_live_node_version_is_judged_against_the_kubernetes_line():
+    # 1.34 ends 2026-10-27; the k3s revision is not a variant to excuse.
+    products = PRODUCTS + [KUBERNETES]
+    pins, _ = eol_watch.node_versions(_nodes("v1.34.4+k3s1"))
+    mapping, ambiguous = eol_watch.image_map(products)
+    entry = pins[0]
+    where = eol_watch.judge(entry, products, mapping, TODAY,
+                            eol_watch.DEFAULT_WITHIN_DAYS, ambiguous)
+    assert (where, entry["verdict"], entry["version"]) == ("judged", "soon",
+                                                           "1.34.4")
+    assert "variant" not in entry
+    _, dead = judged("kubernetes", "1.33.2", products=products, kind="node")
+    assert dead["verdict"] == "eol"
+
+
+def test_a_node_version_prints_as_the_kubelet_wrote_it_and_is_counted():
+    products = PRODUCTS + [KUBERNETES]
+    pins, _ = eol_watch.node_versions(_nodes("v1.34.4+k3s1", "v1.34.4+k3s1"))
+    mapping, ambiguous = eol_watch.image_map(products)
+    for pin in pins:
+        eol_watch.judge(pin, products, mapping, TODAY,
+                        eol_watch.DEFAULT_WITHIN_DAYS, ambiguous)
+    report = eol_watch.format_report(pins, [], [], [],
+                                     eol_watch.DEFAULT_WITHIN_DAYS)
+    assert "kubelet v1.34.4+k3s1 — kubernetes security support ends 2026-10-27" in report
+    assert "live cluster  node server2" in report
+    assert "0 FROM line(s)" in report
+    assert "2 node Kubernetes version(s)" in report
+
+
+def test_an_unreadable_node_list_is_a_problem_never_an_empty_sweep():
+    pins, problems = eol_watch.node_versions(_nodes(returncode=1))
+    assert pins == [] and "could not read nodes" in problems[0]
+    pins, problems = eol_watch.node_versions(_nodes())
+    assert pins == [] and "no nodes" in problems[0]
+    pins, problems = eol_watch.node_versions(_nodes("weird"))
+    assert pins == [] and "`weird`" in problems[0]
+
+
+def test_main_raises_on_a_node_version_near_end_of_support(monkeypatch, capsys):
+    _, live = judged("node", "24")
+    # The pin arrives unjudged, exactly as `node_versions` returns it, so
+    # this fails if main() reads the nodes and never judges them.
+    pins, _ = eol_watch.node_versions(_nodes("v1.34.4+k3s1"))
+    assert _run_main(monkeypatch, [live], node_pins=pins,
+                     products=PRODUCTS + [KUBERNETES]) == 2
+    assert "kubelet v1.34.4+k3s1" in capsys.readouterr().out
+
+
+def test_main_reports_an_unreadable_node_list_as_incomplete(monkeypatch, capsys):
+    _, live = judged("node", "24")
+    assert _run_main(monkeypatch, [live],
+                     node_problems=["could not read nodes: forbidden"]) == 1
+    assert "PROBLEM  could not read nodes" in capsys.readouterr().out
