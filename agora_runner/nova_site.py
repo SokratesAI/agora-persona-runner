@@ -321,6 +321,11 @@ STATIC_ROUTES = {
     # actually appears in a message and `sw.js` deliberately leaves it out
     # of the install-time precache.
     "/vendor/mermaid.min.js": os.path.join("vendor", "mermaid.min.js"),
+    # htm 3.1.1's Preact standalone build (Apache-2.0 + MIT), 13 KB: the
+    # framework ADR 0010 picked for every PWA, loaded before app.js so
+    # `thread.js` can key the chat thread's rows (issue #233).
+    "/vendor/preact-htm.js": os.path.join("vendor", "preact-htm.js"),
+    "/thread.js": "thread.js",
 }
 
 # The files an already-open tab is *running*. `_send_static` hashes these
@@ -335,7 +340,7 @@ STATIC_ROUTES = {
 # runner#876 added is inert on every deploy that does not happen to edit
 # `sw.js` itself -- which is nearly all of them.
 #
-# Why these four and not `STATIC_ROUTES` entire. The banner tells him a
+# Why these and not `STATIC_ROUTES` entire. The banner tells him a
 # reload will get him a newer app, so the honest trigger is a change to
 # what a stale tab already has in memory: the shell, its script, its
 # stylesheet, and the worker's own source. `/vendor/mermaid.min.js` is
@@ -344,7 +349,7 @@ STATIC_ROUTES = {
 # rehashed on every foreground return for a library that moves once a
 # year. Being a content hash rather than a timestamp is what keeps a pod
 # restart silent: identical files, identical stamp, no banner.
-SW_BUILD_INPUTS = ("index.html", "app.js", "style.css", "sw.js")
+SW_BUILD_INPUTS = ("index.html", "app.js", "thread.js", "style.css", "sw.js")
 
 # The page routes the server answers with the SPA shell. A module
 # constant rather than a literal inside `do_GET` because `site_check`
