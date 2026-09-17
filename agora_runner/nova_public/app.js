@@ -13208,12 +13208,14 @@
    * common answer and it is still the truth he pressed for. His 20:00
    * reminder is not a turn and keeps its own switch in the Marcus app.
    */
+  // Its own classes, styled like a heartbeat row: the page's tests count
+  // `.hb-row`s as heartbeats, and so would anything else reading the page.
   function marcusStopCard() {
-    var card = el("div", "hb-row");
-    card.appendChild(el("div", "hb-name", "Marcus"));
-    card.appendChild(el("div", "hb-meta", "Coach turns · no heartbeat"));
-    var actions = el("div", "hb-actions");
-    var stop = el("button", "hb-btn", "Stop Marcus");
+    var card = el("div", "marcus-stop");
+    card.appendChild(el("div", "marcus-stop-name", "Marcus"));
+    card.appendChild(el("div", "marcus-stop-meta", "Coach turns · no heartbeat"));
+    var actions = el("div", "marcus-stop-actions");
+    var stop = el("button", "marcus-stop-btn", "Stop Marcus");
     stop.setAttribute("type", "button");
     stop.addEventListener("click", function () {
       stop.disabled = true;

@@ -4448,7 +4448,8 @@ body.chat-open { overflow: hidden; }
  */
 .hb-list { display: flex; flex-direction: column; gap: 0.6rem; }
 
-.hb-row {
+.hb-row,
+.marcus-stop {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -4459,8 +4460,8 @@ body.chat-open { overflow: hidden; }
  * hidden -- the same call the deleted Chats page made on a cycle thread. */
 .hb-off { opacity: 0.62; }
 
-.hb-name { font-weight: 600; }
-.hb-meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
+.hb-name, .marcus-stop-name { font-weight: 600; }
+.hb-meta, .marcus-stop-meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
 .hb-when { color: var(--dim); font-size: 0.78rem; margin-top: 0.1rem; }
 
 /* The word beside the state, never a bare colour -- his ask about the
@@ -4471,9 +4472,10 @@ body.chat-open { overflow: hidden; }
 .hb-state-off { color: var(--dim); }
 .hb-state-running { color: var(--accent, #a98bff); }
 
-.hb-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+.hb-actions, .marcus-stop-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
 
-.hb-btn {
+.hb-btn,
+.marcus-stop-btn {
   background: var(--card);
   border: 1px solid var(--outline);
   border-radius: 10px;
@@ -4484,7 +4486,7 @@ body.chat-open { overflow: hidden; }
   color: inherit;
   cursor: pointer;
 }
-.hb-btn[disabled] { opacity: 0.5; cursor: default; }
+.hb-btn[disabled], .marcus-stop-btn[disabled] { opacity: 0.5; cursor: default; }
 
 /* The task is the prompt the heartbeat actually sends, and some of them are
  * 1,500 characters. Folded behind a tap rather than truncated: the whole
