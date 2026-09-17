@@ -63,6 +63,23 @@ def test_a_done_rows_rating_is_not_drift_but_an_open_rows_is():
     assert dropped and "priority" in dropped[0], dropped
 
 
+def test_a_done_rows_project_milestone_and_size_are_not_drift():
+    """Issue #242: closed under a milestone, and the Done table has no cell
+    for one, so the re-read gives the parser's defaults back."""
+    placed = item(242, done=True, status="✅ Done", statusKey="done",
+                  project="Nova the app", milestone="Look and feel",
+                  size="S", sizeKey="s")
+    reread = dict(placed, project="Nova", milestone="", size="", sizeKey="")
+    assert differences({"items": [placed]}, {"items": [reread]}) == []
+
+    still_open = dict(placed, done=False, status="⚪ Backlog",
+                      statusKey="backlog")
+    lost = differences({"items": [still_open]},
+                       {"items": [dict(still_open, project="Nova",
+                                       milestone="")]})
+    assert lost and "milestone" in lost[0], lost
+
+
 def test_a_done_rows_other_fields_are_still_compared():
     """Only the rating is unwritable; a lost title is a real render bug."""
     row = item(2, done=True, status="✅ Done", statusKey="done")

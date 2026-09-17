@@ -177,7 +177,12 @@ def _done_last(items):
 #: here is not drift. Rows 215 and 216 both carry `🟠 High` (rated before
 #: #202 retired the picker's use of it) and that is what refused his
 #: `issues.md` after the `## Done` table started being drawn at all.
-DONE_ROW_UNWRITABLE = ("priority", "priorityKey")
+#: Project, milestone and size have no cell either, and read back as the
+#: parser's defaults (`Nova`, blank). Issue #242, closed 09-16 under
+#: `Nova the app / Look and feel`, refused every redraw of `issues.md` from
+#: then until Cycle 1734 -- the first closed row there to carry a milestone.
+DONE_ROW_UNWRITABLE = ("priority", "priorityKey", "project", "milestone",
+                       "size", "sizeKey")
 
 
 def _done_blind(items):
