@@ -1110,7 +1110,7 @@
    *
    * This is not a speed optimisation, it is the fix for a visible fault my
    * reviewer found on the first version. `renderAskThread` rebuilt every
-   * message from scratch (thread.js now keeps unchanged ones), and `pollConv` calls it
+   * message from scratch, and `pollConv` calls it
    * every four seconds for up to four minutes while an answer is on its
    * way. Text and pictures survive that -- a picture is the same URL and
    * comes straight back out of the browser's cache -- but a diagram is
@@ -12945,8 +12945,7 @@
     refreshStepSheet(payload);
   }
 
-  /* Rows go to thread.js (Preact, issue #233), which keeps every row whose
-   * sig is unchanged; without it they are redrawn the old way. */
+  // thread.js (Preact) keeps unchanged rows.
   function renderAskThread(container, payload, afterSend) {
     var rows = [], messages = payload.messages || [];
     function put(node, key, sig) { rows.push({ node: node, key: key, sig: sig }); }
@@ -16421,8 +16420,7 @@
       }
       if (!isOpen && loaded && messages.length > lastCount) setDot(true);
       lastCount = messages.length;
-      /* Both are read **before** the repaint: the old no-Preact path empties
-       * the container, which puts `scrollTop` back to 0. */
+      /* Read **before** the repaint: a redraw puts `scrollTop` back to 0. */
       // `hasMore` absent means an older server or the empty-thread reply;
       // both are honestly "nothing more to fetch", so the default is false.
       hasMore = !!(payload && payload.hasMore);
