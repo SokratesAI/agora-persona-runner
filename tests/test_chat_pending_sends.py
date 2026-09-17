@@ -1,4 +1,4 @@
-"""A message Edvard sends in the chat dock stays on screen until the server has it.
+"""A message the owner sends in the chat dock stays on screen until the server has it.
 
 Issue #233's spike (agora-persona-runner#1200) showed the vanishing message is
 a data bug, not a rendering one: a poll that lands before the server has stored
