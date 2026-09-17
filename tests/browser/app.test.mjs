@@ -8446,7 +8446,11 @@ describe("the notes page", () => {
   test("with Preact, scrolling up keeps the notes already on screen", async () => {
     const spy = observerSpy();
     const window = await loadSite("/notes", {
-      notes: manyNotes(30),
+      notes: (() => {
+        const payload = manyNotes(30);
+        payload.notes[29] = note("Note number 30", { waiting: true, index: 0 });
+        return payload;
+      })(),
       install: (w) => {
         spy.install(w);
         w.scrollTo = () => {};
@@ -8459,12 +8463,24 @@ describe("the notes page", () => {
     const before = [...window.document.querySelectorAll(".note-msg")];
     assert.equal(before.length, 12, "the fixture did not render");
     assert.ok(before[0].parentNode.classList.contains("thread-slot"), "the notes were hand-built");
+    // An Edit he has open on the newest, waiting note, with the cursor in it.
+    click(window, actNamed(await holdNote(window, 11), "Edit"));
+    const editor = before[11].querySelector(".note-acts .capture-input");
+    assert.ok(editor, "Edit opened no text box, so this test proves nothing");
+    editor.focus();
+    assert.equal(window.document.activeElement, editor);
+    const thread = window.document.querySelector(".note-thread");
     const pager = window.document.querySelector(".note-older");
     pager.click();
     const after = [...window.document.querySelectorAll(".note-msg")];
     assert.equal(after.length, 24);
     assert.equal(after[0].querySelector(".note-msg-body").textContent, "Note number 7");
-    assert.deepEqual(after.slice(12), before, "revealing older notes rebuilt the ones on screen");
+    after.slice(12).forEach((node, i) => {
+      assert.ok(node === before[i], "revealing older notes rebuilt note " + (19 + i));
+    });
+    assert.ok(before[11].querySelector(".note-acts .capture-input") === editor, "the open Edit was rebuilt shut");
+    assert.ok(window.document.querySelector(".note-thread") === thread, "the thread was rebuilt");
+    assert.ok(window.document.activeElement === editor, "the Edit box lost the cursor");
     const newPager = window.document.querySelector(".note-older");
     assert.notEqual(newPager, pager, "the pager is the one already clicked");
     assert.ok(spy.watching.some((one) => one.node === newPager), "the new pager is not watched");

@@ -11110,7 +11110,14 @@
      * is worth stating once: **the composer is outside the feed whenever
      * the feed is cleared, without exception.** */
     captureHome();
-    feed.textContent = "";
+    /* Under Preact the kept thread stays attached: taking it out of the
+     * document and putting it back would blur an Edit box he is typing in
+     * and close his keyboard, even though the box itself survives. */
+    var kept = window.novaThread && notes.length && notesThread && notesThread.parentNode === feed
+      ? notesThread : null;
+    Array.prototype.slice.call(feed.childNodes).forEach(function (n) {
+      if (n !== kept) feed.removeChild(n);
+    });
     if (!notes.length) {
       feed.appendChild(el("p", "empty", "No notes yet. Type below and tap Note."));
       moveCaptureInto(feed);
@@ -11155,7 +11162,7 @@
       });
     });
     if (rows) window.novaThread.render(thread, rows);
-    feed.appendChild(thread);
+    if (thread.parentNode !== feed) feed.appendChild(thread);
     moveCaptureInto(feed);
     // Opening at the bottom is the point of the whole page -- "it should
     // not start at the top and i have to scroll all the way down". Not on
