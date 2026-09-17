@@ -359,6 +359,31 @@ def test_a_key_result_that_moves_on_the_same_side_of_its_target_is_not_counted()
     assert kr_drift_crosses_target(down, None) is False
 
 
+def test_a_goal_with_no_target_is_judged_weekly_not_every_sweep():
+    """G5 carries no target on purpose and reads a rolling share.
+
+    Cycle 1731 repaired it 87 -> 88 and the sweep three hours later read 87
+    again: 320 of 366 entries, a rounding edge, nothing wrong. With no target
+    there is no side to change, so the move is named and not counted. A blank
+    `now` still counts, and so does a malformed row that has a target.
+    """
+    from tools import goal_measures
+    from tools.goal_measures import kr_drift_crosses_target
+
+    g5 = {"name": "G5", "now": "88", "direction": "up"}
+    assert kr_drift_crosses_target(g5, 87) is False
+    assert kr_drift_crosses_target({**g5, "target": ""}, 87) is False
+    assert kr_drift_crosses_target({**g5, "now": ""}, 87) is True
+    assert kr_drift_crosses_target({**g5, "target": "90", "direction": ""}, 87) is True
+    assert kr_drift_crosses_target({**g5, "target": "ninety"}, 87) is True
+
+    lines, drifted = goal_measures.drift_status(
+        [{"key": "G5", "goal": g5, "value": 87, "detail": "measured"}],
+        [], [], "goals.md", None)
+    assert drifted == []
+    assert "- G5 in goals.md moved without crossing its target" in lines
+
+
 def test_drift_status_counts_a_key_result_only_when_it_crosses_its_target():
     from tools import goal_measures
 

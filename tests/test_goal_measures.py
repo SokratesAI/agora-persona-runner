@@ -261,8 +261,11 @@ class TestRender:
         assert "drifted" not in out
 
     def test_a_measurement_that_differs_names_the_written_number(self):
-        rows = [{"key": "G5", "goal": self._goal("G5 — x", "41", "%"),
-                 "value": 47, "detail": "d"}]
+        # A target it crosses: a goal with no target is judged weekly and
+        # prints as moved -- see kr_drift_crosses_target.
+        goal = {**self._goal("G5 — x", "41", "%"), "target": "45",
+                "direction": "up"}
+        rows = [{"key": "G5", "goal": goal, "value": 47, "detail": "d"}]
         out = gm.render(rows, "2026-08-22", "2026-08-28", [])
         assert "goals.md says 41, drifted" in out
 
@@ -5160,8 +5163,13 @@ def test_drift_status_still_counts_real_drift_and_keeps_the_summary_last():
     kpi = {"id": "nova-kpi-cost-per-cycle", "now": "1.52",
            "low": "0.8", "high": "2.0"}
     lines, drifted = goal_measures.drift_status(
-        [_g_row("G1", "2.8", 2.5)],
-        [_kr_row("nova-kr-your-rows", "3.9", 3.8)],
+        # Both cross a target, so both are drift rather than a weekly move.
+        [{**_g_row("G1", "2.8", 2.5),
+          "goal": {"name": "G1", "now": "2.8", "target": "2.6",
+                   "direction": "down"}}],
+        [{**_kr_row("nova-kr-your-rows", "3.9", 3.8),
+          "kr": {"id": "nova-kr-your-rows", "now": "3.9", "target": "3.85",
+                 "direction": "down"}}],
         [_kpi_row("nova-kpi-cost-per-cycle", kpi, 1.5),
          _kpi_row("marcus-kpi-coach-latency",
                   {"id": "marcus-kpi-coach-latency", "now": "14.9",
