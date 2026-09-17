@@ -1,0 +1,8 @@
+{
+  "name": "nova-framework-spike-233",
+  "private": true,
+  "type": "module",
+  "description": "Issue #233 spike: one Nova surface (the chat thread) in today's pattern, Preact+htm and Svelte 5, measured.",
+  "scripts": { "measure": "node build.mjs && node measure.mjs" },
+  "dependencies": { "esbuild": "0.28.2", "htm": "3.1.1", "jsdom": "30.1.0", "preact": "10.29.8", "svelte": "5.57.0" }
+}
