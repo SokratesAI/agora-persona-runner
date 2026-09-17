@@ -3983,6 +3983,8 @@ def _eol_sweep():
             repos, products, today, eol_watch.DEFAULT_WITHIN_DAYS)
         mapping, ambiguous = eol_watch.image_map(products)
         pins, _cluster_problems = eol_watch.cluster_images()
+        # The cluster's own Kubernetes line is a runtime line too (idea #322).
+        pins = pins + eol_watch.node_versions()[0]
         for image in pins:
             where = eol_watch.judge(image, products, mapping, today,
                                     eol_watch.DEFAULT_WITHIN_DAYS, ambiguous)
