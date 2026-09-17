@@ -3599,19 +3599,15 @@
   var journalCards = {};
 
   function render(journal, digest, comments) {
-    /* Drop an answer to a query he has already typed past.
-     *
-     * `load()` guards against a different *view* and nothing else, so two
-     * searches in flight resolve in whatever order the threading server
-     * finishes them -- and the broader, older query does more work, so
-     * finishing last is the ordinary case. Without this the feed silently
-     * reverts to the results for the shorter word, count line and all.
-     * `runBoardSearch` has carried the same guard since it shipped;
-     * *displaying* the answered query is not *checking* it.
-     *
-     * Before `stopPolling`, deliberately: bailing out below that line
-     * would leave the tab with no poll timer at all. Every path that
-     * changes `journalQuery` starts a fresh `load`. */
+    /* Drop an answer to a query he has already typed past. `load()`
+     * guards against a different *view* and nothing else, and the broader,
+     * older query does more work, so finishing last is the ordinary case;
+     * without this the feed reverts to the shorter word's results, count
+     * line and all. `runBoardSearch` has had the same guard since it
+     * shipped -- *displaying* the answered query is not *checking* it.
+     * Before `stopPolling`, deliberately: below that line the tab would be
+     * left with no poll timer. Every path that changes `journalQuery`
+     * starts a fresh `load`. */
     var live = journalQuery.trim().toLowerCase() || null;
     if (routedCycle(window.location.pathname) === null
         && (journal.query || null) !== live) return;
@@ -3750,13 +3746,13 @@
 
 
     /* Under Preact the cards go through `thread.js` (issue #233, step 8):
-     * a card whose content did not change keeps the node already on screen,
-     * so a poll that adds one entry -- or a comment landing on one card --
-     * stops rebuilding every card and shutting the drawers he had open. A
-     * card is keyed by its cycle, or by its own date and time when it has
-     * none, and signed with everything `renderEntry` reads. The node is
-     * kept beside its sig, so building is skipped as well as redrawing.
-     * Where Preact did not load, `thread` is the feed and `add` appends. */
+     * a card whose content did not change keeps the node on screen, so a
+     * poll that adds one entry -- or a comment landing on one card -- stops
+     * rebuilding every card and shutting the drawers he had open. A card is
+     * keyed by its cycle, or by its date and time when it has none, and
+     * signed with everything `renderEntry` reads; the node is kept beside
+     * its sig, so building is skipped as well as redrawing. Where Preact
+     * did not load, `thread` is the feed and `add` appends. */
     var rows = window.novaThread ? [] : null;
     var thread = rows
       ? (journalThread && journalThread.parentNode === feed
@@ -3781,10 +3777,10 @@
     };
     /* The twelve-hour summary belongs to the landing page alone, his ask
      * 2026-09-13: *"Remove the 12 hour summary from all pages than the
-     * homepage."* `renderHome` draws its own copy and this page draws none,
-     * so the flag is false rather than conditional -- and the card sits
-     * above the search box, outside the feed, where the feed's own clear
-     * no longer reaches it. Taken down by hand instead. */
+     * homepage."* `renderHome` draws its own copy and this page draws
+     * none, so the flag is false rather than conditional -- and the card
+     * sits above the search box, outside the feed, so the feed's own
+     * clear no longer reaches it. Taken down by hand. */
     recapWanted = false;
     if (recapWanted) {
       ensureRecap();
@@ -3793,11 +3789,10 @@
       var stale = document.querySelector(".recap");
       if (stale) stale.remove();
     }
-    /* The comments read is tolerated on purpose -- a comments failure
-     * should cost the bubbles, not the feed -- but tolerating it silently
-     * made a 502 look like "nobody has commented", a more convincing lie
-     * than "this did not load". `null` is reachable only from that catch:
-     * the endpoint answers with an object and is never asked for a 304. */
+    /* A comments failure should cost the bubbles, not the feed -- but
+     * tolerating it silently made a 502 look like "nobody has commented",
+     * a more convincing lie than "this did not load". `null` comes only
+     * from that catch: the endpoint answers with an object. */
     if (journalFilter !== "all" && !groups.length) {
       add(el("p", "empty", journalFilter === "unread"
         ? "No journal card has a reply you have not read."
@@ -3858,21 +3853,17 @@
     }
     /* The hole in the record, marked where it happened (#72) -- put back
      * where he was already looking rather than summarised in a counter.
-     *
-     * The server decides what counts as missing; this only decides where
-     * to put it. Filling in every number between two cards from the
-     * client's own arithmetic would invent gaps for his own notes, which
-     * have no cycle number to be missing.
-     *
-     * The feed is not sorted by cycle -- a card takes the position of its
-     * cycle's *newest* part -- so the invariant is the one a reader can
-     * check by scrolling: **a hole is never drawn above a card newer than
-     * it.** Each is anchored under the *last* card newer than the hole,
-     * not the numerically smallest such card, which in a scrambled feed
-     * can still have two newer cards below it. It is drawn only when the
-     * window also holds a card older than the hole: a gap running off
-     * either end belongs to entries nobody has loaded yet, and pinning it
-     * to the edge would claim a boundary this page cannot see. */
+     * The server decides what counts as missing; this only decides where.
+     * Filling in every number between two cards from the client's own
+     * arithmetic would invent gaps for his own notes, which have no cycle
+     * number to be missing. The feed is not sorted by cycle -- a card
+     * takes the position of its cycle's *newest* part -- so the invariant
+     * is the one a reader can check by scrolling: **a hole is never drawn
+     * above a card newer than it.** Each is anchored under the *last* card
+     * newer than the hole, not the numerically smallest, which in a
+     * scrambled feed can still have two newer cards below it. Drawn only
+     * when the window also holds a card older than the hole: a gap running
+     * off either end belongs to entries nobody has loaded yet. */
     var missing = {};
     /* Not on `/asks`. A hole is drawn between the two cards it sits
      * between, and on a filtered feed the cards either side of it are not
@@ -3914,10 +3905,9 @@
       var key = cycle === null || cycle === undefined
         ? "e" + entryKeyOf(head) + "." + index : "c" + cycle;
       var sig = JSON.stringify([parts, byCycle[cycle] || null, thread || null]);
-      /* `rows &&`: on the page where Preact did not load the feed is
-       * rebuilt exactly as it always was, and the card's open state comes
-       * back out of `fold` on the way. Keeping a node there would leave
-       * two mechanisms restoring the same thing. */
+      // `rows &&`: where Preact did not load the feed is rebuilt as it
+      // always was and `fold` restores the card's open state. Keeping a
+      // node there would leave two mechanisms doing the same job.
       var built = rows ? journalCards[key] : null;
       var node = built && built.sig === sig
         ? built.node : renderEntry(parts, byCycle[cycle], thread);
