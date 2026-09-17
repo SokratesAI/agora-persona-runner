@@ -80,7 +80,7 @@ def read_recap():
         return None
     # `vault_tool.py get` prints the document plus exactly one newline.
     body = raw[:-1] if raw.endswith("\n") else raw
-    if not body.strip() or body.strip().startswith("[not found]"):
+    if not body.strip() or body.strip().startswith("[not found"):
         return None
     return body
 

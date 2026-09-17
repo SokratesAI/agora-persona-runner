@@ -169,7 +169,7 @@ def seats_markdown(runner=None):
     # exit 0. An absent seats file is unreadable for this purpose: it
     # would seat nothing and refuse everything.
     text = done.stdout
-    if "[not found]" in text[:200] or not text.strip():
+    if "[not found" in text[:200] or not text.strip():
         return "", False
     return text, True
 

@@ -99,7 +99,7 @@ def read_vault(path: str) -> str:
         if proc.returncode != 0:
             raise Unreadable((proc.stderr or proc.stdout or "").strip()[:200] or "vault_tool exited nonzero")
         body = proc.stdout
-        if not body.strip() or body.strip() == "[not found]":
+        if not body.strip() or body.strip().startswith("[not found"):
             raise Unreadable(f"{path} came back empty or not found")
         return body
     try:

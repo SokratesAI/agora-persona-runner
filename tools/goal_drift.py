@@ -142,7 +142,7 @@ def fetch(path, rev_file=None):
             command, capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return "", False
-    if done.returncode != 0 or "[not found]" in done.stdout[:200]:
+    if done.returncode != 0 or "[not found" in done.stdout[:200]:
         return "", False
     # `vault_tool.py get` hands the document to `print`, which adds one
     # newline the document does not have. Kept, `--repair` wrote it back and

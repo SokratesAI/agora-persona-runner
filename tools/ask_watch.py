@@ -350,7 +350,7 @@ def read_goals(path=None):
         return None, f"vault_tool.py exited {done.returncode}", True
     text = done.stdout
     # The vault client answers a missing document with a marker and exit 0.
-    if not text.strip() or "[not found]" in text[:200]:
+    if not text.strip() or "[not found" in text[:200]:
         return None, f"{GOALS_PATH} came back empty or missing", True
     return text, None, True
 

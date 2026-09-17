@@ -37,8 +37,8 @@ def _run(returncode, stdout="written: ideas.md\n", stderr="",
                 body = open(calls[0][4], encoding="utf-8").read()
             if body == "":
                 return subprocess.CompletedProcess(command, returncode, stdout, stderr)
-            # `vault_tool.py get` ends in `print`.
-            return subprocess.CompletedProcess(command, 0, body + "\n", "")
+            # `vault_tool.py get` writes the document exactly (bridge#118).
+            return subprocess.CompletedProcess(command, 0, body, "")
         return subprocess.CompletedProcess(command, returncode, stdout, stderr)
 
     runner.calls = calls
@@ -103,15 +103,18 @@ def test_append_with_a_rev_file_is_refused(monkeypatch, board_file):
     assert runner.calls == []
 
 
-def test_the_read_back_subtracts_the_newline_vault_tool_prints(monkeypatch):
-    """runner#673's byte, on the one path here that goes through `print`."""
+def test_the_read_is_byte_exact_so_a_last_newline_survives(monkeypatch):
+    """A board ends in a newline. Cutting one off made `board_publish`
+    read every view it had just written as different (Cycle 1734)."""
     monkeypatch.setattr(board_put.subprocess, "run",
                         _run(0, read_back="# Issues\n\n- a note\n"))
     assert board_put.vault_get(MINE)[0] == "# Issues\n\n- a note\n"
 
 
 def test_a_board_the_vault_does_not_hold_reads_as_absent(monkeypatch):
-    monkeypatch.setattr(board_put.subprocess, "run", _run(0, read_back="[not found]"))
+    """The marker the bridge prints carries the path, exit 0."""
+    monkeypatch.setattr(board_put.subprocess, "run",
+                        _run(0, read_back=f"[not found: {MINE}]"))
     assert board_put.vault_get(MINE) == (None, None)
 
 
