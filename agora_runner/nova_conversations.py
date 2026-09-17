@@ -28,6 +28,7 @@ from him, so any other sender writes a message nothing ever answers.
 """
 
 import json
+import os
 import re
 import urllib.request
 
@@ -94,6 +95,13 @@ MAX_MESSAGE_CHARS = 4000
 # rather than picked. Shorter and a stop that is working reads as a failure
 # on his screen while the kill is still landing.
 CANCEL_TIMEOUT_SECONDS = 15
+# The one Agora conversation every Marcus coach turn runs in. The Marcus app
+# reads the same id from its own `MARCUS_COACH_CONVERSATION_ID` and sends each
+# chat through `POST /conversations/<id>/ask`, and the bridge registers the
+# turn under it (its log, 2026-09-17 01:30 Oslo: "joined a turn already
+# running for cc484b5a-..."). So stopping Marcus is a cancel on this id.
+MARCUS_COACH_CONVERSATION_ID = os.environ.get(
+    "MARCUS_COACH_CONVERSATION_ID", "cc484b5a-ad53-420e-93f1-5efacdfb4760")
 MAX_NAME_CHARS = 200
 
 # What a thread is called before it has been about anything. His capture,
@@ -692,6 +700,18 @@ def cancel(conversation_id):
     if not isinstance(stopped, int):
         return False, "the bridge did not say what it stopped"
     return True, "stopped" if stopped else "nothing was running"
+
+
+def stop_marcus():
+    """(ok, message). Stop the Marcus coach turn running right now, if any.
+
+    Issue #239. A coach turn is the only thing Marcus does with a model, and
+    every one of them runs in one conversation, so this is `cancel` on that
+    id and nothing more -- the same bridge call, the same answers. His 20:00
+    reminder is a script, not a turn, and already has its own off switch in
+    the Marcus app; this does not touch it.
+    """
+    return cancel(MARCUS_COACH_CONVERSATION_ID)
 
 
 def starting_name(name):

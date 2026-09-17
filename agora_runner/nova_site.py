@@ -224,6 +224,7 @@ from agora_runner.nova_conversations import (
     remove as conversation_remove,
     rename as conversation_rename,
     cancel as conversation_cancel,
+    stop_marcus,
     send as conversation_send,
     set_model as conversation_set_model,
     step_output as conversation_step_output,
@@ -6118,6 +6119,37 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                         {"ok": ok, "result": message if ok else None,
                          "message": message})
 
+    def _post_marcus_stop(self):
+        """`/api/marcus/stop` -- stop the Marcus coach turn running right now.
+
+        Issue #239, the third agent kind on the Control goal's stop coverage:
+        cycles have the Stop button, heartbeats the on/off switch, and until
+        this nothing in the app reached Marcus. It takes no body -- there is
+        one Marcus and one conversation his turns run in -- and answers exactly
+        as `/api/conversations/cancel` does, including recording a stop that
+        reached a running turn for `nova-kr-control-stop-seconds`.
+        """
+        started = time.monotonic()
+        try:
+            ok, message = stop_marcus()
+        except Exception as e:
+            log(f"nova-site marcus/stop failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Marcus stopped · {message}",
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok and message == "stopped":
+            threading.Thread(target=_record_stop_timing,
+                             args=(time.monotonic() - started,),
+                             daemon=True).start()
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
     def _post_heartbeat_enabled(self, payload):
         """`/api/heartbeats/enabled` -- switch one heartbeat on or off.
 
@@ -6537,6 +6569,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/conversations/archive",
             "/api/conversations/folder", "/api/conversations/model",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
+            "/api/marcus/stop",
             "/api/pool/decide", "/api/pool/comment", "/api/pool/generate",
             "/api/goal/status", "/api/push/subscribe",
             "/api/project/comment",
@@ -6604,6 +6637,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/delete":
             self._post_conversation_delete(payload)
+            return
+        if path == "/api/marcus/stop":
+            self._post_marcus_stop()
             return
         if path == "/api/heartbeats/enabled":
             self._post_heartbeat_enabled(payload)

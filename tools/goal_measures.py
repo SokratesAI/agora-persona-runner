@@ -1408,20 +1408,17 @@ def measure_nova_trust_cycles_shown(since, until):
 #: coverage` is a share of these three, so the denominator is this table and
 #: the numerator is how many of them the app actually carries today.
 #:
-#: **Two of the three routes exist and one is a name for a thing nobody has
-#: built.** That is deliberate, and it is the difference between an instrument
-#: and a frozen digit: writing `None` for Marcus would make its column read 0
-#: forever, including on the day somebody ships the control. Naming the route
-#: this check looks for means a Marcus stop button shipped under exactly that
-#: path lifts the number by itself, and one shipped under a different path is
-#: a miss the detail line prints in full rather than swallowing.
+#: **Marcus's route was named here before anything served it**, so that
+#: shipping the control under exactly that path lifted the number by itself
+#: (issue #239 did, 66.7 -> 100), and a control shipped under a different path
+#: is a miss the detail line prints in full rather than swallowing.
 STOP_CONTROLS = {
     "cycles": ("/api/conversations/cancel",
                "the Stop button a running turn's Send button becomes"),
     "heartbeats": ("/api/heartbeats/enabled",
                    "the per-heartbeat on/off switch"),
     "marcus": ("/api/marcus/stop",
-               "nothing in the Nova app reaches Marcus yet"),
+               "the Stop Marcus card on the Beats page"),
 }
 
 #: The Nova app's browser bundle, and the module that serves it. A stop control
