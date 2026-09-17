@@ -1098,3 +1098,11 @@ def test_the_ask_label_on_its_own_is_a_section_name_not_a_block():
         "Something real happened and here is the honest account of it.",
         "Something real happened.\n\n**Needs Edvard:** Yes or no, keep it?")
     assert "block" not in _kinds(lint("168-cycle-152.md", entry))
+
+
+def test_a_quoted_block_phrase_is_refused_because_the_measure_counts_it_too():
+    """The measure does not strip quotes, so neither does the refusal."""
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        'He wrote on the card: "I have been waiting on you." I answered.')
+    assert _kinds(lint("168-cycle-152.md", entry)) == ["block"]

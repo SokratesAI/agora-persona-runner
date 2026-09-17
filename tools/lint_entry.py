@@ -840,10 +840,11 @@ def _block_record_finding(content):
     thread he has archived still reads low there.
 
     Whitespace is collapsed before matching, so a phrase that wraps across a
-    line break is still the phrase. The bold ask label `**Needs Edvard**` is
-    blanked first: it is the name of a section, the same reason the measure
-    dropped `"needs input"`, and the ask checks above already own it. Measured
-    over 2026-09-11..2026-09-17, `needs edvard` matched 1 of 368 entries and
+    line break is still the phrase. The legacy bold ask label, the owner's
+    name in bold, is blanked first: it is the name of a section, the same
+    reason the measure dropped `"needs input"`, and the ask checks above
+    already own it. Measured over 2026-09-11..2026-09-17, that phrase matched
+    1 of 368 entries and
     never without another phrase beside it, so blanking the label changed no
     verdict that week.
 
@@ -851,6 +852,13 @@ def _block_record_finding(content):
     scored unrecorded are refused, and none of the 28 it scored recorded. The
     two that pass name an id-shaped token that is not an open ask, which is
     the liveness half above.
+
+    **Quoted text is not stripped, unlike `absolute_claim_notes`, and that is
+    on purpose.** An entry quoting the owner saying "waiting on you" is
+    refused here, which is a false refusal as prose. But the measure reads the
+    quote too and scores that entry as an unrecorded block, so stripping it
+    here would let through exactly an entry that lowers the number. The way
+    past it is the same: name the thread the quote came from.
     """
     text = _ASK_LABEL_TEXT_RE.sub(" ", (content or "").lower())
     text = " ".join(text.split())
@@ -858,7 +866,7 @@ def _block_record_finding(content):
     if phrase is None or _ASK_ID_RE.search(text):
         return None
     return (
-        f"block: this entry says it is blocked on Edvard (\"{phrase}\") and "
+        f"block: this entry says it is blocked on the owner (\"{phrase}\") and "
         "names no ask thread, so `nova-kr-scale-blocks-recorded` counts it as "
         "a block he has nothing to answer in. Name the thread -- its first "
         "eight characters are enough, and `python3 -m tools.ask_watch` lists "
