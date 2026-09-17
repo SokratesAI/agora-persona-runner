@@ -261,6 +261,7 @@ from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_stop_timings import record as record_stop_timing
+from agora_runner.nova_planned_done import planned_done, render_page as render_planned_done
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_next import (next_payload_from_contents,
                                     project_milestones, rank)
@@ -273,6 +274,7 @@ from agora_runner.nova_boards import BOARD_PATHS, parse_milestone_pins
 from agora_runner.nova_galaxy import galaxy_payload
 from agora_runner.nova_sources import (
     claims_ledger_json,
+    claims_history_json,
     milestone_pins_markdown,
     milestone_seats_markdown,
     project_meta_markdown,
@@ -1676,6 +1678,17 @@ def costs_payload():
     cut is by time, not by count.
     """
     return shape_costs(cost_ledger_json())
+
+
+def planned_done_payload():
+    """Planned vs. done, one line per cycle (idea #312).
+
+    The plan half is `claims-history.json`; the done half is the journal
+    payload this process already caches, so this costs one small vault read
+    rather than a second parse of every entry.
+    """
+    journal, _, _ = cached_payload("journal", journal_payload)
+    return planned_done(claims_history_json(), journal.get("entries") or [])
 
 
 def retros_payload():
@@ -4135,6 +4148,16 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/plan":
                 self._send_cached_json("plan", plans_payload)
+                return
+            if path == "/api/planned":
+                self._send_cached_json("planned", planned_done_payload)
+                return
+            if path == "/planned":
+                # A page of its own rather than a view inside app.js: that
+                # file carries a must-never-grow ratchet (runner#1182), and
+                # this page needs no client code at all.
+                payload, _, _ = cached_payload("planned", planned_done_payload)
+                self._send(200, render_planned_done(payload), "text/html; charset=utf-8")
                 return
             if path == "/api/next":
                 self._send_cached_json("next", next_up_payload)

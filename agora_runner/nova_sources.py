@@ -235,6 +235,21 @@ def claims_ledger_json():
     return vault_read_path(CLAIMS_PATH) or ""
 
 
+CLAIMS_HISTORY_PATH = "projects/sokrates/projects/agora/nova/resources/claims-history.json"
+
+
+def claims_history_json():
+    """Every claim and release ever kept, raw (idea #312).
+
+    `tools/claim_history` copies the claims ledger into it on every
+    preflight sweep, so this is the plan half of the planned vs. done page
+    that the ledger itself deletes after a day. Shaping is
+    `nova_planned_done.planned_done`, which does no I/O. `""` before the
+    first sweep ever wrote it.
+    """
+    return vault_read_path(CLAIMS_HISTORY_PATH) or ""
+
+
 def project_meta_markdown():
     """`projects.md`, raw -- his rating of the projects themselves.
 
