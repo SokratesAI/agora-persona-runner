@@ -5276,9 +5276,70 @@ class TestNovaTrustDataFresh:
                 is gm.measure_nova_trust_data_fresh)
         assert "nova-kr-trust-data-fresh" not in gm.KEY_RESULT_NO_INSTRUMENT
 
-    def test_its_sibling_records_why_it_has_none(self):
-        why = gm.KEY_RESULT_NO_INSTRUMENT["nova-kr-trust-cycles-shown"]
-        assert "planned-vs-done view" in why
+
+
+class TestNovaTrustCyclesShown:
+    """`nova-kr-trust-cycles-shown` -- the share the planned vs. done view shows.
+
+    The site is injected through `gm._get_json`. Each test was checked by
+    breaking the branch under it.
+    """
+
+    def _site(self, monkeypatch, payload, error=None):
+        seen = []
+
+        def fake(url, timeout=60):
+            seen.append(url)
+            return payload, error
+
+        monkeypatch.setattr(gm, "_get_json", fake)
+        return seen
+
+    def test_the_share_is_read_off_the_view(self, monkeypatch):
+        seen = self._site(monkeypatch, {"shown": 47, "total": 50, "share": 94.0,
+                                        "windowDays": 90, "historyFromCycle": 1682})
+        value, detail = gm.measure_nova_trust_cycles_shown(None, None)
+        assert value == 94.0
+        assert seen == [f"{gm.SITE}/api/planned"]
+        assert "47 of 50" in detail
+        assert "cycle 1682" in detail
+
+    def test_the_share_is_recomputed_not_trusted(self, monkeypatch):
+        # A payload whose `share` disagrees with its own counts reads the
+        # counts, so a stale rounding in the page cannot become the number.
+        self._site(monkeypatch, {"shown": 1, "total": 3, "share": 100.0})
+        value, _detail = gm.measure_nova_trust_cycles_shown(None, None)
+        assert value == 33.3
+
+    def test_an_unreadable_view_is_no_reading(self, monkeypatch):
+        self._site(monkeypatch, None, error="could not read http://site: 404")
+        value, detail = gm.measure_nova_trust_cycles_shown(None, None)
+        assert value is None
+        assert "rather than 0" in detail
+        assert "404" in detail
+
+    def test_an_empty_window_is_no_reading(self, monkeypatch):
+        # 100 is the target: an empty view must not read as every cycle shown.
+        self._site(monkeypatch, {"shown": 0, "total": 0, "share": None})
+        value, detail = gm.measure_nova_trust_cycles_shown(None, None)
+        assert value is None
+        assert "no cycle" in detail
+
+    @pytest.mark.parametrize("payload", [
+        {"error": "not found"},
+        {"shown": 5, "total": 4},
+        {"shown": "5", "total": 10},
+        ["not", "an", "object"],
+    ])
+    def test_counts_that_are_not_a_share_are_no_reading(self, monkeypatch, payload):
+        self._site(monkeypatch, payload)
+        value, _detail = gm.measure_nova_trust_cycles_shown(None, None)
+        assert value is None
+
+    def test_it_is_registered_as_that_key_results_instrument(self):
+        assert (gm.KEY_RESULT_FETCH_MEASURERS["nova-kr-trust-cycles-shown"]
+                is gm.measure_nova_trust_cycles_shown)
+        assert "nova-kr-trust-cycles-shown" not in gm.KEY_RESULT_NO_INSTRUMENT
 
 
 class TestNovaControlStopCoverage:

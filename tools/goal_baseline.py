@@ -18,9 +18,9 @@ number for a key result set last week would say more than I can defend.
 
 What it refuses, and the refusal is the point: a key result whose `now:` is
 not a number gets no baseline and stays on the list with the reason printed.
-`nova-kr-trust-cycles-shown` is one of those -- it has no instrument, so
-`now` is blank, and a baseline of "" would drain the list while recording
-nothing. A drained list that recorded nothing is worse than a red one.
+`nova-kr-trust-cycles-shown` was one of those until the planned vs. done
+view gave it an instrument -- `now` was blank, and a baseline of "" would
+drain the list while recording nothing. A drained list that recorded nothing is worse than a red one.
 
 It only ever ADDS `baseline:` lines. Before writing it strips every line it
 inserted back out and compares the result to the input byte for byte, so a
