@@ -29,8 +29,13 @@
     var errors = window.__novaOpenErrors = [];
     window.addEventListener("error", function (e) {
       var t = e.target;
-      errors.push(t && t !== window && t.src ? "could not load " + t.src
-        : (e.message || "error") + (e.filename ? " at " + e.filename + ":" + e.lineno : ""));
+      if (t && t !== window) {
+        // A resource failing to load. Only the app's own code and styles are
+        // "the app did not start"; a broken image in a card is not.
+        if (t.tagName === "SCRIPT" || t.tagName === "LINK") errors.push("could not load " + (t.src || t.href));
+        return;
+      }
+      errors.push((e.message || "error") + (e.filename ? " at " + e.filename + ":" + e.lineno : ""));
     }, true);
     window.addEventListener("unhandledrejection", function (e) {
       errors.push("unhandled rejection: " + String(e.reason && e.reason.message || e.reason));
