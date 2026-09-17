@@ -488,11 +488,23 @@ def test_the_app_sends_its_moves_as_his():
     # case-sensitive -- `"edvard"` is refused a few tests up -- so a check
     # that only found the identifier would pass on a renamed constant that
     # every move then 400s on.
+    #
+    # The two halves now live in two files: `sendRowOrder` moved to
+    # `project.js` with the rest of the project page (issue #233 step 14),
+    # while the constant it sends stayed in `app.js` and is handed over the
+    # seam. So each half is read out of its own file, and the closing brace
+    # is found at whatever depth the declaration itself sits at rather than
+    # at a hard-coded two spaces -- a move that only changes indentation
+    # must not read as a missing function.
     import pathlib
     from agora_runner.nova_capture import ROW_ORDER_AUTHORS
-    source = (pathlib.Path(nova_site.__file__).parent / "nova_public" / "app.js").read_text()
-    start = source.index("function sendRowOrder(")
-    body = source[start:source.index("\n  }\n", start)]
+    public = pathlib.Path(nova_site.__file__).parent / "nova_public"
+    source = (public / "app.js").read_text()
+    page = (public / "project.js").read_text()
+    match = re.search(r"^([ ]*)function sendRowOrder\(", page, re.M)
+    assert match, "sendRowOrder is in neither app.js nor project.js"
+    body = page[match.start():page.index("\n%s}\n" % match.group(1),
+                                        match.start())]
     assert "author: OWNER_RECORD" in body
     declaration = [ln.strip() for ln in source.splitlines()
                    if ln.strip().startswith("var OWNER_RECORD")]
