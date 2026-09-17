@@ -1109,8 +1109,8 @@
   /* Every diagram this session has already drawn, keyed by its source.
    *
    * This is not a speed optimisation, it is the fix for a visible fault my
-   * reviewer found on the first version. `renderAskThread` empties the
-   * thread and rebuilds every message from scratch, and `pollConv` calls it
+   * reviewer found on the first version. `renderAskThread` rebuilt every
+   * message from scratch, and `pollConv` calls it
    * every four seconds for up to four minutes while an answer is on its
    * way. Text and pictures survive that -- a picture is the same URL and
    * comes straight back out of the browser's cache -- but a diagram is
@@ -12924,11 +12924,12 @@
    * every answer knows the question it came from -- the messages arrive as a
    * flat list with no reply-to on them, so position is the only link there is,
    * and reading it here is what keeps `askMessage` from needing the list. */
-  function askPaintThread(container, payload, afterSend) {
+  function askPaintThread(put, payload, afterSend) {
     var asked = "";
     (payload.messages || []).forEach(function (message) {
-      container.appendChild(askMessage(message, payload.conversationId, payload.limit,
-        { question: asked, afterSend: afterSend }));
+      put(askMessage(message, payload.conversationId, payload.limit,
+        { question: asked, afterSend: afterSend }), (message.id || message.createdAt) + message.sender,
+        JSON.stringify([message, asked, payload.conversationId, payload.limit]));
       // Only his lines become the question to re-ask, and the update happens
       // after the row is built: an answer re-asks what was said *above* it,
       // and two answers in a row both point at the same question.
@@ -12944,20 +12945,23 @@
     refreshStepSheet(payload);
   }
 
+  // thread.js (Preact) keeps unchanged rows.
   function renderAskThread(container, payload, afterSend) {
-    container.textContent = "";
-    var messages = payload.messages || [];
+    var rows = [], messages = payload.messages || [];
+    function put(node, key, sig) { rows.push({ node: node, key: key, sig: sig }); }
     if (!messages.length) {
-      container.appendChild(el("p", "empty", "Ask me anything. I answer here, in a minute or so."));
-      return;
+      put(el("p", "empty", "Ask me anything. I answer here, in a minute or so."), "empty", "");
+    } else {
+      askPaintThread(put, payload, afterSend);
+      if (payload.waiting || tailIsWorking(messages)) {
+        var lost = lostTurn(payload, messages);
+        put(lost ? askLost(payload.conversationId, lost, afterSend)
+          : askPending(payload.progress), "tail", NaN);
+      }
     }
-    askPaintThread(container, payload, afterSend);
-    if (payload.waiting || tailIsWorking(messages)) {
-      var lost = lostTurn(payload, messages);
-      container.appendChild(lost
-        ? askLost(payload.conversationId, lost, afterSend)
-        : askPending(payload.progress));
-    }
+    if (window.novaThread) return window.novaThread.render(container, rows);
+    container.textContent = "";
+    rows.forEach(function (r) { container.appendChild(r.node); });
   }
 
   /* How long a turn may go with nothing arriving before the page stops
@@ -16416,10 +16420,7 @@
       }
       if (!isOpen && loaded && messages.length > lastCount) setDot(true);
       lastCount = messages.length;
-      /* Both of these are read **before** the repaint and neither can be read
-       * after it: `renderAskThread` empties the container, and emptying it
-       * puts `scrollTop` back to 0. So a version of this that asked where he
-       * was after painting would see every thread pinned to the top. */
+      /* Read **before** the repaint: a redraw puts `scrollTop` back to 0. */
       // `hasMore` absent means an older server or the empty-thread reply;
       // both are honestly "nothing more to fetch", so the default is false.
       hasMore = !!(payload && payload.hasMore);

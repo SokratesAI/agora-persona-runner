@@ -2870,6 +2870,8 @@ body.has-full-chart { overflow: hidden; }
 }
 
 .ask-thread { display: flex; flex-direction: column; gap: 0.9rem; }
+/* thread.js wrappers: invisible to the flex layout, so each row is still a flex item. */
+.thread-slot { display: contents; }
 
 .ask-msg {
   background: var(--card);
