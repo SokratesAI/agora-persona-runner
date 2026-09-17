@@ -266,6 +266,28 @@
   </form>
 </section>
 
+<!-- Reports whether this page booted in the browser that opened it
+     (nova_app_opens). Inline and in old JavaScript on purpose: a browser
+     that cannot run app.js is the failure it measures, so it cannot live
+     inside app.js. -->
+<script>
+(function () {
+  var errors = [];
+  function keep(message) { if (errors.length < 5) errors.push(String(message).slice(0, 300)); }
+  window.addEventListener("error", function (e) { keep(e.message || "error loading " + (e.target && e.target.src)); }, true);
+  window.addEventListener("unhandledrejection", function (e) { keep("unhandled rejection: " + (e.reason && e.reason.message || e.reason)); });
+  window.addEventListener("load", function () {
+    setTimeout(function () {
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/app/opened");
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.send(JSON.stringify({ booted: window.novaBooted === true, errors: errors }));
+      } catch (ignored) {}
+    }, 5000);
+  });
+})();
+</script>
 <script src="/app.js"></script>
 </body>
 </html>
