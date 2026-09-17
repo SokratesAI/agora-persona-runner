@@ -44,6 +44,9 @@
      a `var` beside the builder would be `undefined` on the first paint and
      filter every card off the feed. */
   var journalFilter = "all";
+  // The element the feed's cards live in, kept for the life of the page so
+  // `thread.js` can diff against it (issue #233, step 8).
+  var journalThread = null;
   var journalFilterNode = null;
   var journalFilterButton = null;
 
@@ -3412,7 +3415,7 @@
     return card;
   }
 
-  /* The recap card, pinned above the feed.
+  /* The recap card, drawn on the landing page.
    *
    * The owner, capture 2026-09-04, 🔴 Immediately: "I want a stick Journal
    * card at the top that summarizes the last 12 hours. Keep it short as I
@@ -3422,66 +3425,16 @@
    * It draws what the server says and computes nothing: the bullets, the
    * time it was written and whether that is stale all come down in the
    * payload, because a number on the screen should have one definition
-   * and one test. Drawn only on the unfiltered, all-cycles feed -- on
-   * `/asks` and on a single-cycle page the reader has asked a narrower
-   * question and a twelve-hour summary is not an answer to it.
+   * and one test.
    *
    * A recap that is missing draws nothing at all rather than an empty
    * card. He asked for a glance, and an empty box is a thing to read.
    */
-  /* Fetched on its own rather than inside `fetchAll`, and that is the
-   * design rather than a convenience.
-   *
-   * It was in `fetchAll` first, and two poll tests caught what that costs:
-   * a journal request that never resolves is a real state the page is
-   * built to survive, and `Promise.all` turned it into a recap that never
-   * resolves either -- so the poll never finished and never re-armed its
-   * timer. The recap is not part of the journal round trip. It changes
-   * when a cycle rewrites one vault document, not every thirty seconds,
-   * so re-fetching it on every poll would be waste even if it were safe.
-   *
-   * Fetched once per page load and cached in `recapPayload`; a failure
-   * leaves the card absent, which is the same outcome as no recap having
-   * been written yet. */
-  var recapPayload = null;
-  var recapPending = false;
-  var recapWanted = false;
-
-  function ensureRecap() {
-    if (recapPayload || recapPending) return;
-    recapPending = true;
-    fetch("/api/recap", { cache: "no-store" })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (payload) {
-        recapPending = false;
-        recapPayload = payload;
-        placeRecap();
-      })
-      .catch(function () { recapPending = false; });
-  }
-
-  /* Put the card at the top of whatever the feed currently holds. Called
-   * from `render` (the card is already cached) and from the fetch landing
-   * after a render (it was not). Both guarded by `recapWanted`, which the
-   * render sets, so a fetch that lands after a tap onto `/asks` or a
-   * single cycle does not paint a twelve-hour summary over it. */
-  function placeRecap() {
-    if (!recapWanted || !recapPayload) return;
-    if (document.querySelector(".recap")) return;
-    var card = renderRecap(recapPayload);
-    if (!card) return;
-    /* Below the search box and above the feed. It went above the box for
-     * half an hour on 2026-09-08 at his ask and came straight back at his
-     * next one -- the box collapsed to a single 44px button that morning,
-     * so the thing it was making room above stopped taking any room.
-     *
-     * Still outside the feed rather than its first child: `render` empties
-     * the feed on every paint, and a card that survives the paint is a card
-     * that does not flicker on the thirty-second poll. `placeRecap` is
-     * guarded on there being no `.recap` already, and the `recapWanted`
-     * branch in `render` takes it down. */
-    feed.parentNode.insertBefore(card, feed);
-  }
+  /* The twelve-hour summary is the landing page's card and nothing else's,
+   * his ask 2026-09-13: *"Remove the 12 hour summary from all pages than the
+   * homepage."* `renderHome` draws it from its own payload, so the feed's
+   * copy -- its own `/api/recap` fetch, a cache and a placer -- had nothing
+   * left that could reach it. */
 
   /* A bullet's text, with whatever it points at as a real tap target.
    *
@@ -3752,30 +3705,40 @@
       groups.push([entry]);
     });
 
-    feed.textContent = "";
-    /* `answered` and not the input box: the card goes with the results it
-     * sits above, and the box runs ahead of them by a round trip on every
-     * keystroke. His capture 2026-09-04 12:29: *"it should go away when i
-     * use the search tool on journals."* A twelve-hour summary pinned over
-     * three search hits is answering a question he did not ask. */
-    /* The twelve-hour summary belongs to the landing page alone, his ask
-     * 2026-09-13: *"Remove the 12 hour summary from all pages than the
-     * homepage."* `renderHome` draws its own copy; this page draws none, so
-     * the flag is false rather than conditional and the block below takes
-     * down any card a previous paint left standing. */
-    recapWanted = false;
-    if (recapWanted) {
-      ensureRecap();
-      placeRecap();
+    /* The feed used to be emptied and rebuilt whole on every poll, so a card
+     * he had open closed under his thumb -- the third of the four bugs in
+     * issue #233. Its rows go through `thread.js` now: a card whose entry,
+     * digest line and replies all read the same keeps the node already on
+     * screen, so one new entry draws one new card. The single-cycle page
+     * keeps the old behaviour -- one card, built elsewhere, nothing to diff
+     * -- and clearing the feed there detaches the thread, so `journalThread`
+     * is dropped with it rather than kept holding stale cards. */
+    var useThread = !!window.novaThread && wanted === null;
+    var kept = useThread && journalThread && journalThread.parentNode === feed
+      ? journalThread : null;
+    Array.prototype.slice.call(feed.childNodes).forEach(function (n) {
+      if (n !== kept) feed.removeChild(n);
+    });
+    var rows = useThread ? [] : null;
+    var thread = feed;
+    if (rows) {
+      thread = kept || el("div", "journal-thread");
+      journalThread = thread;
     } else {
-      /* Taken down by hand now that the card lives outside the feed. It
-       * used to be wiped for free by the feed's own rebuild; above the
-       * search box, nothing else clears it, and a twelve-hour summary left
-       * standing over three search hits is exactly what his 09-04 capture
-       * asked to be rid of. */
-      var stale = document.querySelector(".recap");
-      if (stale) stale.remove();
+      journalThread = null;
     }
+    // A NaN sig means "always redraw": right for a node carrying a fresh
+    // listener, wrong for a card.
+    var add = function (node, key, sig) {
+      if (rows) rows.push({ node: node, key: key, sig: sig });
+      else thread.appendChild(node);
+    };
+    /* The card sits above the search box, so the feed's own repaint never
+     * took it down; it goes by hand. His 09-04 capture -- *"it should go
+     * away when i use the search tool on journals"* -- and his 09-13 one,
+     * which moved it to the landing page for good. */
+    var stale = document.querySelector(".recap");
+    if (stale) stale.remove();
     /* The comments read is tolerated on purpose -- the journal is the page,
      * and a comments failure should cost the bubbles, not the feed. But
      * tolerating it silently is what made a 502 look like "nobody has
@@ -3786,27 +3749,27 @@
      * `null` is reachable only from that catch: the endpoint answers with
      * an object, and a 304 is never asked for on this one. */
     if (journalFilter !== "all" && !groups.length) {
-      feed.appendChild(el("p", "empty", journalFilter === "unread"
+      add(el("p", "empty", journalFilter === "unread"
         ? "No journal card has a reply you have not read."
-        : "No journal card carries a comment."));
+        : "No journal card carries a comment."), "filter-empty", journalFilter);
     }
     if (comments === null) {
-      feed.appendChild(el("p", "empty", "Comments could not be loaded — the entries below are complete, the replies are not."));
+      add(el("p", "empty", "Comments could not be loaded — the entries below are complete, the replies are not."), "comments-failed", 1);
     }
     if (filtered) {
       var backAll = el("a", "back", "← all entries");
       backAll.href = "/journal";
-      feed.appendChild(backAll);
-      feed.appendChild(el("p", "empty", entries.length === 0
+      add(backAll, "asks-back", 1);
+      add(el("p", "empty", entries.length === 0
         ? "Nothing is waiting on you."
         : entries.length === 1
           ? "1 entry is waiting on you."
-          : entries.length + " entries are waiting on you."));
+          : entries.length + " entries are waiting on you."), "asks-count", entries.length);
     }
     if (repliesOnly) {
       var backFeed = el("a", "back", "← all entries");
       backFeed.href = "/journal";
-      feed.appendChild(backFeed);
+      add(backFeed, "replies-back", 1);
       /* Counted in cards, not in replies. The pill above counts replies,
        * because that is the number that arrived; this page is a list of
        * cards, and saying "7" over three of them is the badge pointing at a
@@ -3817,24 +3780,25 @@
        * the set of cards is computed from the comments payload, so without
        * it there is no list -- and "No unread replies" would be the page
        * answering a question it could not read. */
-      feed.appendChild(el("p", "empty", comments === null
+      add(el("p", "empty", comments === null
         ? "Could not tell which replies are unread — this list is built from the replies payload, and it did not load."
         : entries.length === 0
           ? "No unread replies."
           : entries.length === 1
             ? "1 card has replies you have not read."
-            : entries.length + " cards have replies you have not read."));
+            : entries.length + " cards have replies you have not read."),
+        "replies-count", comments === null ? "x" : entries.length);
     }
     if (wanted !== null) {
       var back = el("a", "back", "← all cycles");
       back.href = "/journal";
-      feed.appendChild(back);
-      if (!entries.length) feed.appendChild(el("p", "empty", "No entry for cycle " + wanted + "."));
+      add(back, "cycle-back", 1);
+      if (!entries.length) add(el("p", "empty", "No entry for cycle " + wanted + "."), "cycle-empty", 1);
     }
     if (wanted !== null) {
       if (entries.length) {
-        feed.appendChild(renderCyclePage(wanted, entries, byCycle[wanted],
-          commentsByCycle[String(wanted)]));
+        add(renderCyclePage(wanted, entries, byCycle[wanted],
+          commentsByCycle[String(wanted)]), "cycle-page", NaN);
       }
       return;
     }
@@ -3899,15 +3863,26 @@
        * uses for the anchor and the title. Keying off `parts[0]` here would
        * hand a two-part entry the wrong thread. */
       var head = parts[parts.length - 1];
-      var thread = cycle === null || cycle === undefined
+      var commentThread = cycle === null || cycle === undefined
         ? commentsByEntry[entryKeyOf(head)]
         : commentsByCycle[String(cycle)];
-      feed.appendChild(renderEntry(parts, byCycle[cycle], thread));
+      /* Keyed by cycle, or by the entry's own date and time when it has no
+       * cycle -- his own notes, which share the one `null`. Never by its place
+       * in the feed, which an entry above it shifts. Redrawn when the entry,
+       * its digest line or its replies change, and not otherwise:
+       * `renderEntry` reads nothing else that moves, and the open/shut state
+       * it does read lives in `foldFor`, outside the DOM. */
+      var key = cycle === null || cycle === undefined
+        ? "e" + (entryKeyOf(head) || (head.date || "") + "/" + (head.title || ""))
+        : "c" + cycle;
+      add(renderEntry(parts, byCycle[cycle], commentThread),
+        key, JSON.stringify([parts, byCycle[cycle] || null, commentThread || null]));
       if (!markers[index]) return;
       var gap = markers[index].sort(function (a, b) { return a - b; });
-      feed.appendChild(el("p", "cycle-gap", gap.length === 1
+      add(el("p", "cycle-gap", gap.length === 1
         ? "Cycle " + gap[0] + " ran and wrote no entry"
-        : "Cycles " + gap.join(", ") + " ran and wrote no entry"));
+        : "Cycles " + gap.join(", ") + " ran and wrote no entry"),
+        "gap-" + key, gap.join(","));
     });
 
     /* `total` is the whole corpus, `entries.length` is what came back in
@@ -3938,8 +3913,14 @@
         windowSize += PAGE;
         load();
       });
-      feed.appendChild(more);
+      // NaN: the button carries a listener and an observer, so the one on
+      // screen must be the one this render wired up.
+      add(more, "more", NaN);
       loadWhenScrolledTo(more);
+    }
+    if (rows) {
+      window.novaThread.render(thread, rows);
+      if (thread.parentNode !== feed) feed.appendChild(thread);
     }
   }
 

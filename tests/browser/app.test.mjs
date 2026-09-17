@@ -8261,6 +8261,106 @@ describe("commenting on a boarded row", () => {
  * The server tests already pin the payload. What only a rendered DOM can
  * answer is whether he sees any of it: this repo has shipped a feature
  * that was built, tested, merged and completely dead on his screen. */
+/* The journal feed, kept between polls (issue #233, step 8).
+ *
+ * The third of the four bugs he listed: the feed was emptied and rebuilt
+ * whole on every poll, so a card he had open closed under his thumb and the
+ * page jumped back to the top. Its rows go through `thread.js` now.
+ *
+ * Every assertion below is node identity (`===`) on the elements themselves,
+ * never `deepEqual`: two cards built from the same entry are deeply equal
+ * whether or not the old one was kept, so a structural comparison here would
+ * pass against the bug it is meant to catch.
+ */
+describe("the journal feed keeps the cards it already drew", () => {
+  const withPreact = (win) => {
+    for (const file of ["vendor/preact-htm.js", "message.js", "thread.js"]) {
+      win.eval(readFileSync(join(publicDir, file), "utf8"));
+    }
+  };
+
+  /** The fixture with one more entry on top and a fresh version. */
+  function grownFeed(version) {
+    const copy = JSON.parse(JSON.stringify(payload.journal));
+    const first = JSON.parse(JSON.stringify(copy.entries[0]));
+    first.cycle = 4242;
+    first.title = "A cycle that landed while he was reading";
+    copy.entries.unshift(first);
+    copy.version = version;
+    if (typeof copy.total === "number") copy.total += 1;
+    return copy;
+  }
+
+  test("a new entry draws one new card and leaves the rest standing", async () => {
+    let timers;
+    const window = await loadSite("/journal", {
+      install: (win) => { timers = captureTimers(win); withPreact(win); },
+    });
+    assert.ok(window.novaThread, "Preact did not load into the page");
+    const before = [...window.document.querySelectorAll("article.entry")];
+    assert.ok(before.length >= 2, "the fixture drew " + before.length + " cards, so this test proves nothing");
+    assert.ok(before[0].parentNode.classList.contains("thread-slot"), "the cards were hand-built");
+    const thread = window.document.querySelector(".journal-thread");
+    assert.ok(thread, "the feed has no thread element");
+
+    // One he has opened, with the full journal drawer pulled out inside it.
+    before[1].querySelector(".entry-toggle").click();
+    assert.ok(before[1].classList.contains("is-expanded"), "the card did not open, so this test proves nothing");
+
+    window.fetch = (url) =>
+      res(String(url).includes("/api/digest") ? payload.digest
+        : String(url).includes("/api/comments") ? payload.comments
+          : grownFeed("W/\"grown\""));
+    await timers.firePagePoll();
+
+    const after = [...window.document.querySelectorAll("article.entry")];
+    assert.equal(after.length, before.length + 1, "the new entry did not arrive");
+    assert.ok(after[0] !== before[0], "the new card is a node that was already on screen");
+    after.slice(1).forEach((node, i) => {
+      assert.ok(node === before[i], "the poll rebuilt the card at position " + i);
+    });
+    assert.ok(after[2].classList.contains("is-expanded"), "the card he had open was rebuilt shut");
+    assert.ok(window.document.querySelector(".journal-thread") === thread, "the thread itself was rebuilt");
+  });
+
+  test("a card whose replies changed is the one that redraws", async () => {
+    let timers;
+    const window = await loadSite("/journal", {
+      install: (win) => { timers = captureTimers(win); withPreact(win); },
+    });
+    const before = [...window.document.querySelectorAll("article.entry")];
+    const commented = Object.keys(payload.comments.byCycle)[0];
+    const index = before.findIndex((node) => node.id === "cycle-" + commented);
+    assert.ok(index >= 0, "no card for cycle " + commented + ", so this test proves nothing");
+
+    const grownComments = JSON.parse(JSON.stringify(payload.comments));
+    grownComments.byCycle[commented].unshift({
+      cycle: Number(commented),
+      stamp: "2026-09-17 20:00",
+      text: "a reply that landed while he was reading",
+      reply: "",
+      replyStamp: "",
+      acknowledged: false,
+      replyPending: false,
+      replyWaiting: false,
+      replyFailed: false,
+    });
+    window.fetch = (url) =>
+      res(String(url).includes("/api/digest") ? payload.digest
+        : String(url).includes("/api/comments") ? grownComments
+          : payload.journal);
+    await timers.firePagePoll();
+
+    const after = [...window.document.querySelectorAll("article.entry")];
+    assert.equal(after.length, before.length);
+    assert.ok(after[index] !== before[index], "the card whose replies changed was not redrawn");
+    after.forEach((node, i) => {
+      if (i === index) return;
+      assert.ok(node === before[i], "a card with no new reply was redrawn anyway, at position " + i);
+    });
+  });
+});
+
 describe("the notes page", () => {
   /* the owner, issues.md 2026-08-21: "I do not have a notes page that shows
    * any overview of the notes made."
