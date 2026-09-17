@@ -83,6 +83,23 @@ out.afterStray = msgs().map((m) => m.textContent);
 paint([["d", "4", "one"], ["d", "5", "two"]]);
 out.sameKey = msgs().map((m) => m.textContent);
 
+// Step 5: a send draws under the rows on screen; the old loader and a
+// placeholder make way, and a row that stays keeps its node.
+function appendSent() {
+  w.novaThread.append(t, [{ key: "s", sig: "sent", node: node("sent") }, { key: "tail", sig: NaN, node: node("loader") }]);
+}
+paint([["a", "1", "first"], ["tail", NaN, "old loader"]]);
+const before = msgs()[0];
+appendSent();
+out.sentAfterRows = msgs().map((m) => m.textContent);
+out.sentKeptRow = msgs()[0] === before;
+paint([["empty", "", "Ask me anything"]]);
+appendSent();
+out.sentOverEmpty = msgs().map((m) => m.textContent);
+paint([["note", "loading…", "loading…"]]);
+appendSent();
+out.sentOverNote = msgs().map((m) => m.textContent);
+
 t.textContent = "";  // the error path empties it by hand
 paint([["c", "3", "fresh"]]);
 out.afterEmptied = msgs().map((m) => m.textContent);
@@ -118,6 +135,16 @@ def test_what_other_painters_left_behind_is_cleared(thread):
 
 def test_a_thread_emptied_by_hand_is_drawn_again(thread):
     assert thread["afterEmptied"] == ["fresh"]
+
+
+def test_a_send_draws_under_the_rows_on_screen_and_replaces_the_loader(thread):
+    assert thread["sentAfterRows"] == ["first", "sent", "loader"]
+    assert thread["sentKeptRow"] is True
+
+
+def test_a_send_replaces_a_placeholder_line(thread):
+    assert thread["sentOverEmpty"] == ["sent", "loader"]
+    assert thread["sentOverNote"] == ["sent", "loader"]
 
 
 def test_two_rows_sharing_a_key_both_draw(thread):
