@@ -1056,3 +1056,57 @@ def test_a_not_bet_seat_prints_under_its_own_heading_and_still_exits_zero():
         GOALS, confused, rows=[row(1)], today=datetime.date(2026, 9, 16))
     assert code == 2
     assert any("serves or keeps something" in line for line in lines)
+
+
+def _landed_row(updated, status_key="done"):
+    return {**row(1, status_key=status_key, done=status_key == "done"),
+            "updated": updated}
+
+
+def _short_lists(rows, today=datetime.date(2026, 9, 17)):
+    lines, code = report(_kr(now=30.8, target=100, direction="up",
+                             unit="%", status="agreed"), SEATS, rows=rows,
+                         today=today)
+    assert code == 0
+    nobody = [t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY")]
+    landed = [t for t in lines if t.startswith("SHORT OF TARGET, WORK JUST")]
+    return nobody, landed, lines
+
+
+def test_a_short_key_result_whose_task_closed_this_week_is_work_just_landed():
+    """Cycle 1742: `nova-kr-scale-blocks-recorded` at 30.8% was listed as
+    nobody on it with "nothing on either board would move the number" the
+    morning issue #241 closed under its milestone -- and every entry after it
+    already counted as recorded. The measure reads a trailing week, so the
+    number was moving with no new row. The separating input is the date on
+    the closed row: the same row eight days old is back on the nobody list."""
+    nobody, landed, lines = _short_lists([_landed_row("09-17")])
+    assert not nobody
+    assert landed and landed[0].startswith("SHORT OF TARGET, WORK JUST LANDED (1)")
+    assert ("  Nova / nova-kr1: 30.8 % is below the target of 100 % -- "
+            "nova / picking holds no open row, and a row under it closed as "
+            "done in the last 7 days") in lines
+    assert ("0 key result(s) short of target with nobody on it, 1 more with "
+            "work just landed, ") in lines[-1]
+    nobody, landed, lines = _short_lists([_landed_row("09-10")])
+    assert nobody and not landed
+    assert "1 key result(s) short of target with nobody on it, 1 of" in lines[-1]
+
+
+def test_a_full_date_and_a_year_boundary_both_read_as_the_right_day():
+    """`updated` is `MM-DD` on the boards and sometimes a full date. A `12-30`
+    read on 01-02 is three days old, not a date next December."""
+    _, landed, _ = _short_lists([_landed_row("2026-09-16")])
+    assert landed
+    _, landed, _ = _short_lists([_landed_row("12-30")],
+                                today=datetime.date(2027, 1, 2))
+    assert landed
+    nobody, landed, _ = _short_lists([_landed_row("not a date")])
+    assert nobody and not landed
+
+
+def test_a_row_closed_as_outdated_this_week_is_not_work_that_landed():
+    """Outdated is a row dropped, not a fix shipped -- nothing it did can be
+    moving the number."""
+    nobody, landed, _ = _short_lists([_landed_row("09-17", "outdated")])
+    assert nobody and not landed
