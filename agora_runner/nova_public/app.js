@@ -12926,7 +12926,9 @@
   // message.js draws a bubble with these; thread.js (Preact) keeps unchanged rows.
   window.novaChat = { owner: OWNER_RECORD, chatTime: chatTime, stepsLabel: stepsLabel,
     openStepSheet: openStepSheet, stepMessageKey: stepMessageKey, appendRichText: appendRichText,
-    askCopyButton: askCopyButton, askRetryButton: askRetryButton, openMessageActions: openMessageActions };
+    askCopyButton: askCopyButton, askRetryButton: askRetryButton, openMessageActions: openMessageActions,
+    askPendingSeconds: askPendingSeconds, askElapsed: askElapsed, askOrbit: askOrbit,
+    pendingClockAfter: PENDING_CLOCK_AFTER_SECONDS };
   function renderAskThread(container, payload, afterSend) {
     var rows = [], messages = payload.messages || [];
     function put(node, key, sig) { rows.push({ node: node, key: key, sig: sig }); }
@@ -12936,8 +12938,11 @@
       askPaintThread(put, payload, afterSend);
       if (payload.waiting || tailIsWorking(messages)) {
         var lost = lostTurn(payload, messages);
-        put(lost ? askLost(payload.conversationId, lost, afterSend)
-          : askPending(payload.progress), "tail", NaN);
+        // As props, message.js draws the tail and keeps its nodes across polls.
+        put(window.novaMessage && window.novaThread ? { tail: lost ? "lost" : "pending",
+          progress: payload.progress, conversationId: payload.conversationId, quietSeconds: lost,
+          question: lastAskedQuestion, afterSend: afterSend } : lost ? askLost(payload.conversationId,
+          lost, afterSend) : askPending(payload.progress), "tail", NaN);
       }
     }
     if (window.novaThread) return window.novaThread.render(container, rows);

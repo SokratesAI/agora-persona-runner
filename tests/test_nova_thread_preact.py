@@ -260,3 +260,96 @@ def test_a_poll_keeps_the_bubble_and_does_not_rebuild_its_text(bubbles):
 
 def test_an_answer_with_no_question_above_it_offers_no_re_ask(bubbles):
     assert bubbles["noQuestion"] == [["actions", ["copy:hello"]]]
+
+
+# Step 4: the bottom of the thread -- the loader and the lost-turn card -- is
+# drawn by message.js too, so a poll keeps its nodes instead of swapping them.
+TAIL_HARNESS = r"""
+const { JSDOM } = require("jsdom");
+const fs = require("fs");
+const dom = new JSDOM('<div id="t" class="ask-thread"></div>', { runScripts: "outside-only" });
+const w = dom.window;
+w.eval(fs.readFileSync(process.argv[1] + "/vendor/preact-htm.js", "utf8"));
+w.eval(fs.readFileSync(process.argv[1] + "/message.js", "utf8"));
+w.eval(fs.readFileSync(process.argv[1] + "/thread.js", "utf8"));
+const made = { orbit: 0, retry: [] };
+w.novaChat = {
+  owner: "Edvard",
+  pendingClockAfter: 20,
+  askPendingSeconds: (at) => (at ? 75 : null),
+  askElapsed: () => "1m 15s",
+  askOrbit: () => { made.orbit += 1; const o = w.document.createElement("div"); o.className = "ask-orbit"; return o; },
+  askRetryButton: (id, q) => { made.retry.push([id, q]); const b = w.document.createElement("button"); b.className = "ask-retry"; b.textContent = "Ask again"; return b; },
+};
+const t = w.document.getElementById("t");
+const out = {};
+const tail = (props) => w.novaThread.render(t, [{ node: Object.assign({ conversationId: "c1" }, props), key: "tail", sig: NaN }]);
+const row = () => t.firstChild.children[0];
+const tree = (n) => ({ cls: n.className, kids: Array.from(n.children).map(tree) });
+
+tail({ tail: "pending", progress: {} });
+out.loader = tree(row());
+const orbit = t.querySelector(".ask-orbit");
+tail({ tail: "pending", progress: {} });
+out.orbitKept = t.querySelector(".ask-orbit") === orbit;
+
+tail({ tail: "pending", progress: { askedAt: "x", steps: 3, latest: { capability: "vault_read", detail: "notes.md" } } });
+out.working = tree(row());
+out.workingText = [".ask-pending-head", ".ask-pending-tool", ".ask-pending-detail", ".ask-pending-count"]
+  .map((s) => t.querySelector(s).textContent);
+
+tail({ tail: "lost", quietSeconds: 720, question: "status?" });
+out.lost = tree(row());
+const button = t.querySelector(".ask-retry");
+button.disabled = true; button.textContent = "sending…";  // he tapped it
+tail({ tail: "lost", quietSeconds: 750, question: "status?" });  // 12.5 rounds, as askLost does
+out.buttonKept = t.querySelector(".ask-retry") === button && button.disabled && button.textContent === "sending…";
+out.lostText = t.querySelector(".ask-stopped").textContent;
+tail({ tail: "lost", quietSeconds: 780, question: "" });
+out.noQuestion = tree(row());
+out.made = made;
+console.log(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def tails():
+    env = _jsdom_env()
+    if env is None:
+        pytest.skip("node with jsdom is not available")
+    result = subprocess.run(["node", "-e", TAIL_HARNESS, PUBLIC], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_app_js_hands_the_tail_to_the_component():
+    app = read("app.js")
+    assert '{ tail: lost ? "lost" : "pending"' in app
+    for name in ("askPendingSeconds", "askElapsed", "askOrbit"):
+        assert name + ": " + name in app
+    assert "pendingClockAfter: PENDING_CLOCK_AFTER_SECONDS" in app
+
+
+def test_the_loader_has_the_hand_built_structure_and_keeps_its_orbit(tails):
+    orbit = {"cls": "thread-slot", "kids": [{"cls": "ask-orbit", "kids": []}]}
+    assert tails["loader"] == {"cls": "ask-msg ask-theirs ask-pending", "kids": [orbit]}
+    assert tails["orbitKept"] is True
+
+
+def test_a_working_turn_shows_its_clock_newest_tool_and_step_count(tails):
+    assert [k["cls"] for k in tails["working"]["kids"]] == ["ask-pending-head", "ask-pending-step", "ask-pending-count"]
+    assert tails["workingText"] == ["1m 15s", "vault_read", "notes.md", "3 steps so far"]
+
+
+def test_a_lost_turn_keeps_an_ask_again_he_already_tapped(tails):
+    assert tails["lost"] == {"cls": "ask-msg ask-theirs ask-stopped-row", "kids": [
+        {"cls": "ask-stopped", "kids": []},
+        {"cls": "thread-slot", "kids": [{"cls": "ask-retry", "kids": []}]}]}
+    assert tails["buttonKept"] is True
+    assert tails["lostText"] == "No answer came back. Nothing has arrived for 13 minutes, so the turn was lost."
+
+
+def test_a_lost_turn_with_nothing_asked_offers_no_button(tails):
+    assert tails["noQuestion"]["kids"] == [{"cls": "ask-stopped", "kids": []}]
+    # One orbit and one button were ever built across all those polls.
+    assert tails["made"] == {"orbit": 1, "retry": [["c1", "status?"]]}

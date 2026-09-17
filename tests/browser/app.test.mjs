@@ -18279,4 +18279,30 @@ describe("the chat dock with Preact loaded", () => {
     const sheet = window.document.querySelector(".step-sheet");
     assert.ok(sheet && !sheet.hidden, "the steps line opened nothing");
   });
+
+  /* Step 4: the loader under a running turn is the `Tail` component too,
+   * with the same three lines the hand-built one carries. */
+  test("the loader under a running turn is the component's, with clock, tool and count", async () => {
+    const window = await loadAskDock({
+      install: withPreact,
+      ask: () => ({
+        conversationId: "c-preact",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "status report?" }],
+        progress: {
+          askedAt: new Date(Date.now() - 74000).toISOString(),
+          steps: 9,
+          latest: { capability: "vault_read", detail: "Read vault file \u00b7 journal.md" },
+        },
+      }),
+    });
+    const pending = window.document.querySelector("#chat-thread .ask-pending");
+    assert.ok(pending, "a thread owed an answer should say so");
+    assert.equal(pending.parentNode.parentNode.id, "chat-thread", "the loader was hand-built");
+    assert.deepEqual([...pending.children].map((c) => c.className),
+      ["ask-pending-head", "ask-pending-step", "ask-pending-count"]);
+    assert.match(pending.querySelector(".ask-pending-head").textContent, /1m 1[34]s/);
+    assert.equal(pending.querySelector(".ask-pending-tool").textContent, "vault_read");
+    assert.match(pending.querySelector(".ask-pending-count").textContent, /9 steps/);
+  });
 });
