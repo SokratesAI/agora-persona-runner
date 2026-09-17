@@ -268,4 +268,12 @@ def test_the_control_exists_on_his_project_page_and_posts_the_score():
     source = open(app, encoding="utf-8").read()
     assert "renderProjectSatisfaction" in source
     assert 'fetch("/api/project/satisfaction"' in source
-    assert "feed.appendChild(renderProjectSatisfaction(name, payload));" in source
+    # Drawn through `section()` since issue #233 step 10, which keeps the
+    # card's node across a tab press instead of rebuilding it. The wiring is
+    # what this asserts, not the call shape it had when it was appended by
+    # hand -- but it still has to be *this* page's render, so the section key
+    # is part of the match.
+    assert re.search(
+        r'section\("satisfaction", bars, function \(\) \{'
+        r' return renderProjectSatisfaction\(name, payload\); \}\);',
+        source)
