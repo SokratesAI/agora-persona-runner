@@ -4375,6 +4375,32 @@ class TestMeasurePostEditorAndReadership:
         assert value == 1, detail
         assert "open counter could not be read (could not reach the Post: refused)" in detail
 
+    def test_a_dated_open_adds_its_own_day(self, monkeypatch):
+        # idea #311: an open filed under the day it happened is a reading day,
+        # and a day already counted from a reaction is not counted twice
+        self._articles(monkeypatch, [self._article(feedback="up")])
+        self._opens(monkeypatch, {"total_opens": 9, "opens_in_print": 3, "categories": {},
+                                  "opens_by_day": {"2026-09-17": 2, "2026-07-19": 1}})
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 2, detail
+        assert "2 Oslo day(s) carry a dated open, newest 2026-09-17" in detail
+
+    def test_dated_opens_count_with_no_reaction_anywhere(self, monkeypatch):
+        self._articles(monkeypatch, [self._article()])
+        self._opens(monkeypatch, {"total_opens": 3, "opens_in_print": 3, "categories": {},
+                                  "opens_by_day": {"2026-09-17": 2, "2026-09-18": 1}})
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 2, detail
+
+    def test_an_empty_or_malformed_day_adds_nothing(self, monkeypatch):
+        self._articles(monkeypatch, [self._article()])
+        self._opens(monkeypatch, {"total_opens": 1, "opens_in_print": 1, "categories": {},
+                                  "opens_by_day": {"2026-09-17": 0, "yesterday": 4,
+                                                   "2026-09-18": "2"}})
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 0, detail
+        assert "no open carries a date yet" in detail
+
     def test_open_stats_unwraps_the_live_envelope(self, monkeypatch):
         monkeypatch.setattr(gm, "_get_json", lambda url, timeout=60: (
             {"open_stats": {"total_opens": 7, "opens_in_print": 3, "categories": {}}}, None))
