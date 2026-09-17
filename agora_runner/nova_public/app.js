@@ -5390,16 +5390,13 @@
     // unique on screen.
     row.id = "item-" + item.number;
 
-    // A <button> (the toggle) cannot contain another <button> (the
-    // priority trigger) -- nested interactive controls are invalid HTML.
-    // That ruled out a real <button> for `head` once the priority trigger
-    // needed to sit inside it, level with the status chip (the owner,
-    // 2026-08-14: "the priority status button needs to be placed on the
-    // same horizontal as the progress status, on its right side" -- a
-    // sibling next to the whole head, tried first, could only ever line
-    // up with the head's first line, not specifically the status chip's).
-    // `role="button"` plus a manual Enter/Space handler below is what a
-    // <div> needs to behave like the <button> it replaced.
+    // A <button> cannot contain another <button>, which ruled out a real
+    // one for `head` once the priority trigger had to sit inside it, level
+    // with the status chip (the owner, 2026-08-14: "the priority status
+    // button needs to be placed on the same horizontal as the progress
+    // status, on its right side" -- a sibling beside the whole head could
+    // only line up with the head's first line). `role="button"` plus the
+    // Enter/Space handler below is what a <div> needs instead.
     var head = el("div", "item-head");
     head.setAttribute("role", "button");
     head.setAttribute("tabindex", "0");
@@ -5417,28 +5414,24 @@
     var metaRow = el("div", "item-meta-row");
     metaRow.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
 
-    // No rating on a boarded row, open or closed -- issue #202 and his
-    // correction of 2026-09-10: *"When you board my ideas you then break it
-    // down to milestones and tasks and then order them"*. The rating is his
-    // intent at capture time and the capture box keeps its picker; once a
-    // row is boarded its place is the position the project drawer's arrows
-    // set, and a chip here would be a second ordering beside that one.
-    // The size badge, milestone M2 of the picking redesign. A lettered
-    // badge and deliberately not a coloured chip: a rating and a status
-    // both step down in weight because more really is worse or further
-    // along, and size has no better direction -- XL is not a worse row
-    // than S, only a bigger one -- so spending colour here would assert a
-    // judgement the field does not make. Drawn only when the row has one:
-    // most rows are unestimated and an empty badge on every one of them is
-    // noise, while the absence is itself readable as "nobody has sized
-    // this".
+    // No rating on a boarded row -- issue #202 and his correction of
+    // 2026-09-10: *"When you board my ideas you then break it down to
+    // milestones and tasks and then order them"*. The rating is his intent
+    // at capture time; once a row is boarded its place is what the project
+    // drawer's arrows set, and a chip here would be a second ordering.
+    // The size badge, milestone M2 of the picking redesign. Lettered and
+    // deliberately not coloured: a rating and a status both step down in
+    // weight, and size has no better direction -- XL is not a worse row
+    // than S -- so colour would assert a judgement the field does not
+    // make. Drawn only when the row has one; the absence reads as
+    // "nobody has sized this".
     if (item.size) {
       metaRow.appendChild(el("span", "chip size size-" + item.sizeKey, item.size));
     }
     head.appendChild(metaRow);
 
-    // Below the status/priority line rather than beside it (the owner,
-    // 2026-08-14: "the date should be placed below them").
+    // Below the status/priority line, not beside it (the owner, 2026-08-14:
+    // "the date should be placed below them").
     if (item.updated) head.appendChild(el("span", "item-updated", item.updated));
 
     row.appendChild(head);
@@ -5448,19 +5441,12 @@
     row.appendChild(body);
 
     /* the owner, capture 2026-08-22: *"I can't delete, edit or upload a file
-     * to a boarded issues. I wanted to delete issue #4 but i'm not able
-     * to."* #4 is an ordinary open row, so nothing about that row made it
-     * read-only -- the only way into the editor was the one-second hold,
-     * an invisible gesture with no label anywhere on the page.
-     *
-     * **I did not try to work out whether the hold also fails on his S25,
-     * and that is the point of fixing it this way.** A phone gesture is
-     * not measurable from in here (three cycles have already guessed at
-     * one), so the repair is chosen to land whichever theory is true: if
-     * the hold breaks on his device the button reaches the editor anyway,
-     * and if it works and he simply never knew it existed, the button
-     * says so. The hold stays -- it costs nothing and he asked for it.
-     */
+     * to a boarded issues."* #4 is an ordinary open row; the only way into
+     * the editor was a one-second hold, an invisible gesture with no label.
+     * A phone gesture is not measurable from in here, so the repair lands
+     * whichever theory is true: if the hold breaks on his device the button
+     * reaches the editor anyway, and if he simply never knew the hold
+     * existed, the button says so. The hold stays -- he asked for it. */
     function actionBar() {
       var bar = el("div", "item-actions");
       var edit = el("button", "capture-act", "Edit / Delete");
@@ -6450,24 +6436,58 @@
    * thing showing. */
   var boardRows = null;
 
-  function renderBoardRows(board, items) {
-    boardRows.textContent = "";
-    var shown = visibleItems(items);
-    if (!shown.length) {
-      boardRows.appendChild(el(
-        "p", "empty",
-        boardState.query.trim() ? "Nothing matches “" + boardState.query.trim() + "”."
-          : "Nothing here."
-      ));
-    }
-    shown.forEach(function (item) { boardRows.appendChild(renderBoardItem(board, item)); });
+  /* Everything a row draws. A row whose sig is unchanged keeps the node
+   * already on the page, so a search keystroke stops destroying the row
+   * he had open (issue #233, step 9). Deliberately *not* including
+   * `boardState.open`: the toggle opens and closes a row by hand without
+   * re-rendering, so the node on screen already carries its own open
+   * state, and signing on it would rebuild the one row whose contents --
+   * a half-typed comment, a scrolled write-up -- are the thing worth
+   * keeping. */
+  function boardRowSig(item) {
+    return [
+      item.number, item.title, item.status, item.statusKey, item.priority,
+      item.priorityKey, item.size, item.sizeKey, item.updated, item.where
+    ].join("\u0000");
   }
 
-  /* My own rows, cut by the search and by nothing else. `visibleItems`
-   * is not reused here on purpose: it applies the status filter and the
-   * toggles, and those live on the strip above *his* rows, which my tab
-   * does not draw. Filtering by a control the reader cannot see would
-   * hide rows with no way to get them back. */
+  /* Draw `shown` into `boardRows` through `thread.js`, reusing the node
+   * built for a row last time when its sig has not moved. The cache hangs
+   * off the container rather than off the module, so a fresh `renderBoard`
+   * -- which builds a new `board-rows` -- starts empty, and only the search
+   * path, which keeps the container, reuses anything. Where Preact did not
+   * load, this is the old rebuild exactly. */
+  function drawBoardRows(board, shown, build, cacheKey) {
+    var cache = boardRows.novaBoardCards || {};
+    var built = {};
+    var rows = shown.map(function (item) {
+      var key = cacheKey + item.number;
+      var sig = boardRowSig(item);
+      var was = cache[key];
+      var node = was && was.sig === sig ? was.node : build(board, item);
+      built[key] = { node: node, sig: sig };
+      return { node: node, key: key, sig: sig };
+    });
+    boardRows.novaBoardCards = built;
+    if (!rows.length) {
+      var text = boardState.query.trim()
+        ? "Nothing matches “" + boardState.query.trim() + "”."
+        : "Nothing here.";
+      rows = [{ node: el("p", "empty", text), key: "empty", sig: text }];
+    }
+    if (window.novaThread) return window.novaThread.render(boardRows, rows);
+    boardRows.textContent = "";
+    rows.forEach(function (r) { boardRows.appendChild(r.node); });
+  }
+
+  function renderBoardRows(board, items) {
+    drawBoardRows(board, visibleItems(items), renderBoardItem, "his:");
+  }
+
+  /* My own rows, cut by the search and by nothing else. `visibleItems` is
+   * not reused: it applies the status filter and the toggles, which live
+   * on the strip above *his* rows and my tab does not draw. Filtering by a
+   * control the reader cannot see would hide rows for good. */
   function visibleNovaItems(items) {
     var query = boardState.query.trim().toLowerCase();
     if (!query) return items;
@@ -6481,16 +6501,7 @@
   }
 
   function renderNovaRows(board, items) {
-    boardRows.textContent = "";
-    var shown = visibleNovaItems(items);
-    if (!shown.length) {
-      boardRows.appendChild(el(
-        "p", "empty",
-        boardState.query.trim() ? "Nothing matches “" + boardState.query.trim() + "”."
-          : "Nothing here."
-      ));
-    }
-    shown.forEach(function (item) { boardRows.appendChild(renderNovaItem(board, item)); });
+    drawBoardRows(board, visibleNovaItems(items), renderNovaItem, "mine:");
   }
 
   /* Redraw only what a search changed. The owner, issues.md, 2026-08-15:
@@ -6498,26 +6509,17 @@
    * letter input so i have to open the keyboard each letter."
    *
    * `renderBoard` starts with `feed.textContent = ""`, so every keystroke
-   * used to destroy the very input being typed into and build a fresh
-   * one. Removing the focused element from the document dismisses the
-   * soft keyboard, and the `setTimeout(input.focus)` that used to sit at
-   * the end of `renderBoardControls` cannot bring it back: a phone opens
-   * the keyboard for a focus that happens inside a user gesture, not for
-   * one that arrives a task later. On a desktop browser the caret was
-   * restored and the bug was invisible, which is why it shipped.
+   * used to destroy the very input being typed into. Removing the focused
+   * element dismisses the soft keyboard, and a `setTimeout(input.focus)`
+   * cannot bring it back: a phone opens the keyboard for a focus inside a
+   * user gesture, not one a task later. A desktop browser restored the
+   * caret, which is why it shipped.
    *
    * A search changes which rows show and nothing else -- the chip counts
    * are computed against the status filter, not the query, and the sort
-   * control does not read it -- so the rows are the only thing that has
-   * to be rebuilt. Nothing here touches the input, so there is no focus
-   * to restore.
-   *
-   * What this does *not* promise: the rows themselves are still rebuilt
-   * from scratch, so an open row-title editor loses whatever was typed
-   * into it, exactly as it did when the whole board re-rendered. That is
-   * unchanged rather than fixed, and it is written down here because
-   * "only the rows are redrawn" is otherwise easy to read as "nothing a
-   * reader is holding is disturbed". */
+   * control does not read it -- so the rows are the only thing rebuilt,
+   * and since step 9 of issue #233 a row that still matches is not even
+   * that: `drawBoardRows` keeps its node. */
   function refreshBoardRows(board, payload) {
     if (!boardRows || !boardRows.isConnected) {
       renderBoard(board, payload);

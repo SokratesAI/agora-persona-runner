@@ -18506,3 +18506,75 @@ describe("with Preact, the journal feed keeps the cards already on screen", () =
     });
   });
 });
+
+/* Issue #233, step 9, and the last of the four bugs the issue opens on:
+ * a page that reloads fully on any change. A board's rows were emptied
+ * and rebuilt on every search keystroke -- `refreshBoardRows` already
+ * spared the search box itself, and said out loud that the rows under it
+ * were not spared -- so the row he had open, and anything he had typed
+ * into its comment box, went with the rebuild. With Preact the rows go
+ * through thread.js, keyed by number and signed with everything the row
+ * draws, so a row whose content did not change keeps the node already on
+ * the page. */
+describe("with Preact, a board keeps the rows already on screen", () => {
+  const withPreact = (w) => {
+    for (const file of ["vendor/preact-htm.js", "message.js", "thread.js"]) {
+      w.eval(readFileSync(join(publicDir, file), "utf8"));
+    }
+  };
+  const items = (window) => [...window.document.querySelectorAll(".board-rows .item")];
+  const search = (window, text) => {
+    const input = window.document.querySelector(".board-search-input");
+    input.value = text;
+    input.dispatchEvent(new window.Event("input"));
+  };
+
+  test("a search keystroke keeps every matching row, and the one he opened stays open", async () => {
+    const window = await loadSite("/issues", { install: withPreact });
+    assert.ok(window.novaThread, "Preact did not load into the page");
+    const before = items(window);
+    assert.ok(before.length > 1, "fewer than two rows drew, so this proves nothing");
+    assert.ok(
+      before[0].parentNode.classList.contains("thread-slot"),
+      "the rows are still hand-built",
+    );
+    const head = before[0].querySelector(".item-head");
+    click(window, head);
+    assert.equal(head.getAttribute("aria-expanded"), "true", "the row did not open");
+    // "o" is in both open titles, so nothing is filtered out and every
+    // row on screen is one the rebuild would have thrown away.
+    search(window, "o");
+    const after = items(window);
+    assert.equal(after.length, before.length, "the search changed which rows show");
+    after.forEach((node, i) => assert.ok(node === before[i], "row " + i + " was rebuilt"));
+    assert.equal(
+      before[0].querySelector(".item-head"),
+      head,
+      "the open row's head was rebuilt",
+    );
+    assert.equal(
+      head.getAttribute("aria-expanded"),
+      "true",
+      "the row he had open was rebuilt shut",
+    );
+  });
+
+  test("a row whose content changed is redrawn, and its neighbours are not", async () => {
+    const board = JSON.parse(JSON.stringify(payload.board));
+    const window = await loadSite("/issues", { board: () => board, install: withPreact });
+    const before = items(window);
+    assert.ok(before.length > 1, "fewer than two rows drew, so this proves nothing");
+    const changed = Number(before[0].querySelector(".item-number").textContent.slice(1));
+    const row = board.items.filter((i) => i.number === changed)[0];
+    assert.ok(row, "could not find the row the page drew first");
+    row.title = row.title + " (edited)";
+    search(window, "o");
+    const after = items(window);
+    assert.equal(after.length, before.length);
+    assert.ok(after[0] !== before[0], "the row whose title changed kept its stale node");
+    assert.match(after[0].querySelector(".item-title").textContent, /\(edited\)$/);
+    after.slice(1).forEach((node, i) => {
+      assert.ok(node === before[i + 1], "row " + (i + 1) + " was rebuilt with it");
+    });
+  });
+});
