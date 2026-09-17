@@ -105,6 +105,7 @@ from agora_runner.project_goals import (
     projects_without_goals,
     writeup_readings,
     unworked_breaches,
+    lagging_shortfalls,
     unworked_shortfalls,
     short_key_results,
     key_results_without_baseline,
@@ -165,7 +166,10 @@ def report(goals_markdown, seats_markdown, rows=None, today=None,
     undecided = undecided_goals(sections, thread_silence)
     breaches = kpi_breaches(sections)
     unworked = unworked_breaches(sections, keeps, rows)
-    stalled = unworked_shortfalls(sections, serves, rows)
+    stalled = unworked_shortfalls(sections, serves, rows,
+                                  today or datetime.date.today())
+    lagging = lagging_shortfalls(sections, serves, rows,
+                                 today or datetime.date.today())
     short = short_key_results(sections)
     unbased, judged_krs = key_results_without_baseline(sections)
     contradicting, older = writeup_readings(goals_markdown)
@@ -243,6 +247,15 @@ def report(goals_markdown, seats_markdown, rows=None, today=None,
             "right now, because that is what a key result is. An inventory "
             "rather than a defect, so it does not raise:")
         for line in stalled:
+            lines.append(f"  {line}")
+    if lagging:
+        lines.append(
+            f"SHORT OF TARGET, WORK JUST LANDED ({len(lagging)}) -- short of "
+            "target and no open row under it, but a task there closed inside "
+            "the week the instruments read, so the number can still be "
+            "catching up. Not counted as nobody on it; if it is still here "
+            "unmoved when the week is out, it comes back as that:")
+        for line in lagging:
             lines.append(f"  {line}")
     if unbased:
         lines.append(
@@ -330,7 +343,9 @@ def report(goals_markdown, seats_markdown, rows=None, today=None,
                     else f"{len(unworked)} of them with nobody on it, ")
                  + ("" if rows is None
                     else f"{len(stalled)} key result(s) short of target with "
-                         "nobody on it, ")
+                         "nobody on it, "
+                         + (f"{len(lagging)} more with work just landed, "
+                            if lagging else ""))
                  + f"{len(unbased)} of {judged_krs} key result(s) with no "
                  + "baseline, "
                  + f"{len(contradicting)} write-up(s) contradicting their "

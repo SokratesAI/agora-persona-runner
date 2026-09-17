@@ -678,7 +678,7 @@ def key_results_without_baseline(sections):
     return lines, judged
 
 
-def unworked_shortfalls(sections, serves, rows):
+def unworked_shortfalls(sections, serves, rows, today=None):
     """Every key result short of target whose servers hold no open row --
     rule 4 read from the target's side.
 
@@ -711,14 +711,75 @@ def unworked_shortfalls(sections, serves, rows):
     And it does not raise -- opening a row, retiring the milestone or moving
     the target are three different calls and all three are his.
     """
+    return _split_shortfalls(sections, serves, rows, today)[0]
+
+
+def lagging_shortfalls(sections, serves, rows, today):
+    """Every key result `unworked_shortfalls` would list, except that a row
+    under one of its servers was closed as done inside the last
+    `LANDED_WINDOW_DAYS` -- the work landed and the reading has not caught up.
+
+    Measured Cycle 1742: `nova-kr-scale-blocks-recorded` read 30.8% against
+    100% and was listed as having nobody on it, with the sentence "nothing on
+    either board would move the number". Issue #241 had closed under its
+    milestone that morning, and every entry written after it named a thread
+    (3 of 3), while the measure is a trailing 7-day window still holding the
+    week before. The number was moving with no new row, so the sentence was
+    false, and it invites a cycle to invent work for a number already on its
+    way. It is printed under its own heading rather than dropped, because a
+    fix that does not move the number is also possible and a week is how long
+    it takes to tell those apart.
+    """
+    return _split_shortfalls(sections, serves, rows, today)[1]
+
+
+#: How long a closed row keeps its key result off the nobody-on-it list. Seven
+#: days because the key-result instruments in `tools.goal_measures` read a
+#: trailing seven-day window by default: past that, a fix that worked has
+#: moved the reading and one that did not is back on the list.
+LANDED_WINDOW_DAYS = 7
+
+
+def _row_closed_on(row, today):
+    """The date a `done` row was last touched, or None -- `updated` is `MM-DD`
+    on the boards and sometimes `YYYY-MM-DD`; a bare `MM-DD` is read in
+    `today`'s year, and one that would land after `today` in the year before.
+    """
+    stamp = str(row.get("updated") or "").strip()
+    try:
+        if len(stamp) == 10:
+            return datetime.date.fromisoformat(stamp)
+        if len(stamp) == 5:
+            month, day = int(stamp[:2]), int(stamp[3:])
+            on = datetime.date(today.year, month, day)
+            return on if on <= today else datetime.date(today.year - 1, month, day)
+    except ValueError:
+        return None
+    return None
+
+
+def _split_shortfalls(sections, serves, rows, today):
+    """`(unworked, lagging)` in one walk, so the two lists cannot disagree
+    about which key results are short."""
     if rows is None:
-        return []
+        return [], []
     open_counts = _open_rows_by_milestone(rows)
+    landed = set()
+    if today is not None:
+        for row in rows:
+            if (row.get("statusKey") or "") != "done":
+                continue
+            milestone = (row.get("milestone") or "").strip().lower()
+            closed = _row_closed_on(row, today)
+            if (milestone and closed is not None
+                    and (today - closed).days < LANDED_WINDOW_DAYS):
+                landed.add(((row.get("project") or "").strip().lower(),
+                            milestone))
     servers = {}
     for seat, cell in (serves or {}).items():
         for identifier in split_serves(cell):
             servers.setdefault(identifier, []).append(seat)
-    out = []
+    unworked, lagging = [], []
     for project, label, identifier, shortfall in short_key_results(sections):
         seats = servers.get(identifier, [])
         if not seats:
@@ -726,10 +787,15 @@ def unworked_shortfalls(sections, serves, rows):
         if any(open_counts.get(seat) for seat in seats):
             continue
         named = ", ".join(f"{seat[0]} / {seat[1]}" for seat in sorted(seats))
-        out.append(f"{project} / {label}: {shortfall} -- and {named} serves "
-                   "it with no open row under it, so nothing on either board "
-                   "would move the number")
-    return out
+        if any(seat in landed for seat in seats):
+            lagging.append(f"{project} / {label}: {shortfall} -- {named} "
+                           "holds no open row, and a row under it closed as "
+                           f"done in the last {LANDED_WINDOW_DAYS} days")
+            continue
+        unworked.append(f"{project} / {label}: {shortfall} -- and {named} "
+                        "serves it with no open row under it, so nothing on "
+                        "either board would move the number")
+    return unworked, lagging
 
 
 def key_result_ids(sections):
