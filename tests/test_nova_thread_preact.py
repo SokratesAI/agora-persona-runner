@@ -122,3 +122,141 @@ def test_a_thread_emptied_by_hand_is_drawn_again(thread):
 
 def test_two_rows_sharing_a_key_both_draw(thread):
     assert thread["sameKey"] == ["one", "two"]
+
+
+# Step 3: the bubble itself is a Preact component (message.js). The helpers it
+# needs are app.js's, handed over as window.novaChat; here they are fakes that
+# record what they were asked, so the test pins the bubble's own structure --
+# the same classes, in the same order, that askMessage builds by hand.
+MESSAGE_HARNESS = r"""
+const { JSDOM } = require("jsdom");
+const fs = require("fs");
+const dom = new JSDOM('<div id="t" class="ask-thread"></div>', { runScripts: "outside-only" });
+const w = dom.window;
+w.eval(fs.readFileSync(process.argv[1] + "/vendor/preact-htm.js", "utf8"));
+w.eval(fs.readFileSync(process.argv[1] + "/message.js", "utf8"));
+w.eval(fs.readFileSync(process.argv[1] + "/thread.js", "utf8"));
+const calls = [];
+let rich = 0;
+w.novaChat = {
+  owner: "Edvard",
+  chatTime: (at) => (at ? "18:05" : ""),
+  stepsLabel: (steps) => steps.length + " steps",
+  stepMessageKey: (m) => "key-" + m.id,
+  openStepSheet: (...a) => calls.push(["sheet", a[0], a[2], a[3]]),
+  appendRichText: (node, cls, text) => { rich += 1; node.textContent = text; },
+  askCopyButton: (text) => "copy:" + text,
+  askRetryButton: (id, q) => "retry:" + q,
+  openMessageActions: (actions) => calls.push(["actions", actions]),
+};
+const t = w.document.getElementById("t");
+const out = {};
+const shape = (n) => ({ cls: n.className, kids: Array.from(n.children).map((c) => c.className) });
+function paint(rows) { w.novaThread.render(t, rows); }
+const ask = { id: 1, sender: "Edvard", text: "status?", createdAt: "2026-09-17T16:05:00Z" };
+const answer = { id: 2, sender: "Nova", text: "all green", createdAt: "2026-09-17T16:06:00Z", steps: [{}, {}] };
+const loader = w.document.createElement("div"); loader.className = "ask-pending";
+const rows = (a) => [
+  { node: { message: ask, conversationId: "c1", limit: 50, retry: { question: "" } }, key: "1", sig: "s1" },
+  { node: { message: a, conversationId: "c1", limit: 50, retry: { question: "status?" } }, key: "2", sig: JSON.stringify(a) },
+  { node: { message: { id: 3, sender: "Nova", text: "", stepsOnly: true, steps: [{}] }, conversationId: "c1", limit: 50 }, key: "3", sig: "s3" },
+  { node: loader, key: "tail", sig: NaN },
+];
+paint(rows(answer));
+const kids = Array.from(t.firstChild.children);
+out.rows = kids.map(shape);
+out.mineWho = Array.from(kids[0].querySelector(".ask-who").children).map((c) => [c.className, c.textContent]);
+out.theirName = kids[1].querySelector(".ask-who-name").textContent;
+out.text = kids[1].querySelector(".ask-text").textContent;
+out.stepsLabel = kids[1].querySelector(".ask-steps").getAttribute("aria-label");
+kids[1].querySelector(".ask-steps").click();
+kids[1].querySelector(".ask-more").click();
+kids[0].querySelector(".ask-more").click();
+out.calls = calls.slice();
+const first = kids[1];
+first.setAttribute("data-open", "yes");
+const richBefore = rich;
+paint(rows(answer));
+out.keptNode = t.firstChild.children[1] === first && first.getAttribute("data-open") === "yes";
+out.richRedrawnOnSamePoll = rich - richBefore;
+// Same text, different sig (the answer stopped being partial): the bubble is
+// drawn again, the rich text is not rebuilt.
+const richBeforeFlag = rich;
+paint(rows(Object.assign({}, answer, { partial: false })));
+out.richRedrawnOnSameText = rich - richBeforeFlag;
+out.textAfterFlag = t.firstChild.children[1].querySelector(".ask-text").textContent;
+paint(rows(Object.assign({}, answer, { text: "all green, and done" })));
+out.editedText = t.firstChild.children[1].querySelector(".ask-text").textContent;
+paint([{ node: { message: { id: 9, sender: "Nova", text: "", createdAt: "" }, conversationId: "c1" }, key: "9", sig: "x" }]);
+out.bare = shape(t.firstChild.children[0]);
+// An answer with nothing asked above it has no question to re-ask.
+calls.length = 0;
+paint([{ node: { message: { id: 10, sender: "Nova", text: "hello" }, conversationId: "c1", retry: { question: "" } }, key: "10", sig: "y" }]);
+t.firstChild.children[0].querySelector(".ask-more").click();
+out.noQuestion = calls;
+console.log(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def bubbles():
+    env = _jsdom_env()
+    if env is None:
+        pytest.skip("node with jsdom is not available")
+    result = subprocess.run(["node", "-e", MESSAGE_HARNESS, PUBLIC], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_message_js_is_served_offline_and_loads_between_preact_and_thread_js():
+    assert nova_site.STATIC_ROUTES["/message.js"] == "message.js"
+    assert "message.js" in nova_site.SW_BUILD_INPUTS
+    assert '"/message.js"' in read("sw.js")
+    page = read("index.html")
+    assert page.index('src="/vendor/preact-htm.js"') < page.index('src="/message.js"') < page.index('src="/app.js"')
+
+
+def test_app_js_hands_messages_to_the_component_and_its_helpers_over():
+    app = read("app.js")
+    assert "window.novaMessage && window.novaThread ? { message: message" in app
+    for name in ("chatTime", "stepsLabel", "openStepSheet", "stepMessageKey", "appendRichText",
+                 "askCopyButton", "askRetryButton", "openMessageActions"):
+        assert name + ": " + name in app
+
+
+def test_the_bubble_has_the_hand_built_structure(bubbles):
+    assert bubbles["rows"] == [
+        {"cls": "ask-msg ask-mine", "kids": ["ask-who", "ask-text", "ask-more"]},
+        {"cls": "ask-msg ask-theirs", "kids": ["ask-who", "ask-steps", "ask-text", "ask-more"]},
+        {"cls": "ask-msg-steps", "kids": ["ask-steps"]},
+        # a DOM row (the loader) still sits in its slot
+        {"cls": "thread-slot", "kids": ["ask-pending"]},
+    ]
+    assert bubbles["mineWho"] == [["ask-when", "18:05"], ["ask-who-name", "You"]]
+    assert bubbles["theirName"] == "Nova"
+    assert bubbles["text"] == "all green"
+    assert bubbles["stepsLabel"] == "2 steps — open the details"
+
+
+def test_an_undated_message_with_nothing_to_copy_gets_no_stamp_and_no_button(bubbles):
+    assert bubbles["bare"] == {"cls": "ask-msg ask-theirs", "kids": ["ask-who", "ask-text"]}
+
+
+def test_steps_and_actions_open_what_they_did(bubbles):
+    sheet, answer_actions, own_actions = bubbles["calls"]
+    assert sheet == ["sheet", "c1", 50, "key-2"]
+    assert answer_actions == ["actions", ["copy:all green", "retry:status?"]]
+    # His own line has text to copy and nothing to re-ask.
+    assert own_actions == ["actions", ["copy:status?"]]
+
+
+def test_a_poll_keeps_the_bubble_and_does_not_rebuild_its_text(bubbles):
+    assert bubbles["keptNode"] is True
+    assert bubbles["richRedrawnOnSamePoll"] == 0
+    assert bubbles["richRedrawnOnSameText"] == 0
+    assert bubbles["textAfterFlag"] == "all green"
+    assert bubbles["editedText"] == "all green, and done"
+
+
+def test_an_answer_with_no_question_above_it_offers_no_re_ask(bubbles):
+    assert bubbles["noQuestion"] == [["actions", ["copy:hello"]]]

@@ -9,6 +9,8 @@
  *
  * Rows are `{node, key, sig}`. A `sig` that is NaN never equals itself, so a
  * row that must always redraw (the loader, the lost-turn card) passes NaN.
+ * A `node` that is not a DOM node is a message's props, and is drawn by the
+ * `Message` component in `message.js` (step 3) rather than slotted in.
  *
  * Other painters still write straight into the container -- the send
  * bubble, the error line, the loading line -- so anything in it that is not
@@ -38,6 +40,14 @@
   Row.prototype.componentDidMount = function () { put(this.base, this.props.node); };
   Row.prototype.componentDidUpdate = function () { put(this.base, this.props.node); };
 
+  function MessageRow(props) { P.Component.call(this, props); }
+  MessageRow.prototype = Object.create(P.Component.prototype);
+  MessageRow.prototype.constructor = MessageRow;
+  MessageRow.prototype.shouldComponentUpdate = Row.prototype.shouldComponentUpdate;
+  MessageRow.prototype.render = function () {
+    return P.h(window.novaMessage.Message, this.props.node);
+  };
+
   function render(container, rows) {
     var root = container.novaThreadRoot;
     if (!root || root.parentNode !== container) {
@@ -57,7 +67,7 @@
       var key = String(r.key);
       seen[key] = (seen[key] || 0) + 1;
       if (seen[key] > 1) key += "#" + seen[key];
-      return P.h(Row, { key: key, sig: r.sig, node: r.node });
+      return P.h(r.node.nodeType ? Row : MessageRow, { key: key, sig: r.sig, node: r.node });
     }), root);
   }
 
