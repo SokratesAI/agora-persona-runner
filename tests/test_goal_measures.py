@@ -5427,7 +5427,14 @@ class TestNovaControlStopCoverage:
         # `test_a_button_only_in_the_chat_dock_counts` proves.
         dock = "\n".join(f'  fetch("{r}", {{method: "POST"}});'
                           for r in dock_routes)
-        files = dict(zip(gm._APP_BUNDLE_PARTS, (bundle, dock)))
+        # Every part gets a file, not just the two this fixture states.
+        # `zip` silently dropped the tail when `attach.js` joined the
+        # tuple, and the measure then read "no such file" and returned
+        # its could-not-read branch -- six tests red for a reason that
+        # had nothing to do with what they assert.
+        stated = (bundle, dock)
+        files = {part: (stated[i] if i < len(stated) else "")
+                 for i, part in enumerate(gm._APP_BUNDLE_PARTS)}
         files[gm._SITE_MODULE] = site
 
         class _F:

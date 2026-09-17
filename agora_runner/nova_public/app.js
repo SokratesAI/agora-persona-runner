@@ -15279,7 +15279,6 @@
   if (window.novaChatDock) {
     window.novaChatDock({
       el: el,
-      buildAttach: window.novaAttach.build,
       fetchPage: fetchPage,
       localStore: localStore,
       toast: toast,

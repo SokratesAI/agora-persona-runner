@@ -36,7 +36,6 @@
    * stayed in `app.js` rather than coming along. */
   window.novaChatDock = function (shared) {
     var el = shared.el;
-    var buildAttach = shared.buildAttach;
     var fetchPage = shared.fetchPage;
     var localStore = shared.localStore;
     var toast = shared.toast;
@@ -308,7 +307,7 @@
         });
     });
 
-    var attach = buildAttach({
+    var attach = window.novaAttach.build({
       onBusy: function (isBusy) { uploading = isBusy; syncSend(); },
       onStatus: function (text) { status.textContent = text; },
     });
