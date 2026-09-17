@@ -5620,6 +5620,27 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_board_redraw(self, payload):
+        """`POST /api/board/redraw` -- a board written from a shell asks for its file.
+
+        `board_write` is the command-line writers' module and the site never
+        imports it, so none of those writes reached `invalidate`: the records
+        moved and his `issues.md` / `ideas.md` kept the old board until his
+        next tap here (Cycle 1734). This is that same one call, reached over
+        HTTP. It changes nothing but the cache and the publisher's queue, and
+        the publish draws from the records, so a spurious request redraws
+        the board as it already is. `requested` is false when no publisher
+        was started, which the caller prints rather than taking as done.
+        """
+        board = payload.get("board")
+        names = {kind: name for name, kind in _RECORD_BOARDS.items()}
+        if board not in names:
+            self._send_json(400, {"error": f"board must be one of {sorted(names)}"})
+            return
+        # `invalidate` is what queues the publish, exactly as after a tap.
+        invalidate("board:" + names[board])
+        self._send_json(200, {"requested": board_publish.running()})
+
     def _post_board_comment(self, payload):
         """`POST /api/board/comment` -- idea #64, the comment half.
 
@@ -6505,7 +6526,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/project/lifecycle", "/api/milestone/pin",
             "/api/board/edit", "/api/board/delete", "/api/board/archive",
             "/api/capture/comment",
-            "/api/board/comment", "/api/ask", "/api/ask/watching",
+            "/api/board/comment", "/api/board/redraw",
+            "/api/ask", "/api/ask/watching",
             "/api/conversations/send", "/api/conversations/cancel",
             "/api/conversations/new",
             "/api/conversations/watching", "/api/conversations/rename",
@@ -6636,6 +6658,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/comment":
             self._post_board_comment(payload)
+            return
+        if path == "/api/board/redraw":
+            self._post_board_redraw(payload)
             return
         if path == "/api/goal/status":
             self._post_goal_status(payload)

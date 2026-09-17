@@ -452,6 +452,11 @@ def start(read, write, log=print, debounce=DEBOUNCE_SECONDS):
     return _publisher
 
 
+def running():
+    """Whether `start` has run, so a `request` in this process does anything."""
+    return _publisher is not None
+
+
 def request(board):
     """Ask for `board` to be redrawn. A no-op until `start` has run."""
     publisher = _publisher

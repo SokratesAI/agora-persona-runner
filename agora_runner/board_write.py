@@ -77,13 +77,90 @@ what `_touch_row_updated` was doing as a second pass over the markdown.
 """
 
 import copy
+import functools
+import inspect
+import json
+import os
 import subprocess
 import sys
+import urllib.request
 
 from agora_runner import (
     board_document, board_records, board_store, nova_boards, project_goals,
     rank_key)
 from agora_runner.nova_boards import NOTE_AUTHORS
+
+
+#: The site that draws his board files. It holds the one publisher, so a
+#: redraw asked of it is debounced and serialised with his own taps.
+SITE_URL = os.environ.get(
+    "NOVA_SITE_SELF_URL", "http://nova-site.agents.svc.cluster.local:8083")
+
+
+def ask_site_to_redraw(board, timeout=10):
+    """Ask the site to redraw `board`'s file. `(requested, why_not)`.
+
+    Only the site's own writes used to redraw his `issues.md` / `ideas.md`
+    (`nova_site.invalidate`). Every writer in this module is a command-line
+    one -- the site never imports it -- so a status, priority, milestone or
+    new row written from a shell changed the records and left his file
+    showing the old board until his next tap in the app (Cycle 1734 found
+    #235 and #312 closed on the board and open in the file).
+
+    Asking the site rather than publishing from here is deliberate: the
+    site draws from the real records whatever this process's store is, so a
+    test that writes a fake store can at worst ask for a redraw of the real
+    board as it already is -- never draw fake rows over his file. Never
+    raises; a write that landed is not undone by a redraw that did not.
+    """
+    request = urllib.request.Request(
+        SITE_URL + "/api/board/redraw",
+        data=json.dumps({"board": board}).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            answer = json.loads(response.read() or b"{}")
+    except Exception as problem:  # noqa: BLE001 -- the write already landed
+        return False, str(problem) or type(problem).__name__
+    if answer.get("requested") is True:
+        return True, ""
+    return False, answer.get("error") or "the site has no publisher running"
+
+
+def _redraws_his_file(write):
+    """Run `write`, then ask the site to redraw the board it wrote.
+
+    Only for the real store: a caller passing its own store is not writing
+    his board. Runs after a write that landed -- including one that raised
+    `BoardDamaged`, which landed -- so a `WriteRefused` asks nothing.
+    """
+    signature = inspect.signature(write)
+
+    def redraw(args, kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        if bound.arguments["store"] is not board_store:
+            return
+        board = bound.arguments["board"]
+        requested, why_not = ask_site_to_redraw(board)
+        if not requested:
+            print(f"note: the {board} board was written but his file was "
+                  f"not redrawn ({why_not}) -- run python3 -m "
+                  f"tools.board_publish --board {board} --publish",
+                  file=sys.stderr)
+
+    @functools.wraps(write)
+    def wrapper(*args, **kwargs):
+        try:
+            result = write(*args, **kwargs)
+        except BoardDamaged:
+            # Landed, then came back wrong: the records moved all the same.
+            redraw(args, kwargs)
+            raise
+        redraw(args, kwargs)
+        return result
+
+    return wrapper
 
 
 class WriteRefused(ValueError):
@@ -258,6 +335,7 @@ def _differences(before, after, number, added=False):
     return problems
 
 
+@_redraws_his_file
 def change_row(board, number, changes, detail=None, store=board_store,
                expect=None, seats=None):
     """Change `changes` on row `number` of `board`, and check the whole board.
@@ -370,6 +448,7 @@ class RowGone(WriteRefused):
     rather than "the write failed"."""
 
 
+@_redraws_his_file
 def remove_row(board, number, store=board_store):
     """Delete row `number` of `board` and its write-up, and check the board.
 
@@ -584,6 +663,7 @@ def _next_number(rows):
     return highest + 1
 
 
+@_redraws_his_file
 def add_row(board, title, dated, priority, status="backlog", write_up="",
             notes=(), project="", cycle=None, author=None, store=board_store):
     """Board a new row. Returns the row it wrote, in `parse_board`'s shape.
@@ -727,6 +807,7 @@ class CaptureRefused(WriteRefused):
     """A capture rewrite that was not attempted. Nothing was written."""
 
 
+@_redraws_his_file
 def change_capture_text(board, doc, text, store=board_store):
     """Rewrite one capture's own words, and check the whole board afterwards.
 
