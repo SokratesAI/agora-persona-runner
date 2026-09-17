@@ -18435,3 +18435,74 @@ describe("the chat dock with Preact loaded", () => {
     assert.match(pending.querySelector(".ask-pending-count").textContent, /9 steps/);
   });
 });
+
+/* Issue #233, step 8, and the third of the four bugs the issue opens on:
+ * "the Journal page and others reload fully on any change". Every render
+ * of the feed emptied it and rebuilt every card, so a drawer he had open
+ * -- and the scroll position under it -- went with the rebuild. With
+ * Preact the cards go through thread.js, keyed by cycle and signed with
+ * everything `renderEntry` reads, so a card whose content did not change
+ * keeps the node already on the page. */
+describe("with Preact, the journal feed keeps the cards already on screen", () => {
+  const withPreact = (w) => {
+    for (const file of ["vendor/preact-htm.js", "message.js", "thread.js"]) {
+      w.eval(readFileSync(join(publicDir, file), "utf8"));
+    }
+  };
+
+  /* `total` above what the window holds is what draws the pager at all --
+   * the live server paginates and the fixture does not, so without this
+   * there is no way to make the page render a second time. */
+  const paginated = () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.total = journal.entries.length + 20;
+    return journal;
+  };
+
+  test("showing older entries keeps every card and the drawer he opened", async () => {
+    const journal = paginated();
+    const window = await loadSite("/journal", { journal: () => journal, install: withPreact });
+    assert.ok(window.novaThread, "Preact did not load into the page");
+    const before = cards(window);
+    assert.ok(before.length > 1, "the fixture drew fewer than two cards, so this proves nothing");
+    assert.ok(before[0].parentNode.classList.contains("thread-slot"), "the feed is still hand-built");
+    const toggle = before[0].querySelector(".journal-toggle");
+    assert.ok(toggle, "the newest card has no drawer, so this proves nothing");
+    click(window, toggle);
+    assert.equal(toggle.getAttribute("aria-expanded"), "true", "the drawer did not open");
+    const more = window.document.querySelector(".more");
+    assert.ok(more, "no pager, so the feed never renders a second time");
+    more.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const after = cards(window);
+    assert.equal(after.length, before.length);
+    after.forEach((node, i) => {
+      assert.ok(node === before[i], "card " + i + " was rebuilt");
+    });
+    assert.equal(before[0].querySelector(".journal-toggle"), toggle, "the drawer's button was rebuilt");
+    assert.equal(toggle.getAttribute("aria-expanded"), "true", "the open drawer was rebuilt shut");
+  });
+
+  /* The other half: a card whose content DID change must be redrawn, or
+   * "keeps the node" is just a feed that never updates. A comment landing
+   * on one card redraws that card and leaves its neighbours alone. */
+  test("a card whose content changed is redrawn, and only that card", async () => {
+    const journal = paginated();
+    const window = await loadSite("/journal", { journal: () => journal, install: withPreact });
+    const before = cards(window);
+    assert.ok(before.length > 1);
+    const changed = journal.entries.find((e) => e.cycle !== null);
+    const index = before.findIndex(
+      (c) => c.querySelector("h2").textContent === "Cycle " + changed.cycle);
+    assert.ok(index >= 0, "the changed entry draws no card, so this proves nothing");
+    changed.title = "A title no card on screen is carrying";
+    window.document.querySelector(".more").click();
+    await new Promise((r) => setTimeout(r, 0));
+    const after = cards(window);
+    assert.equal(after.length, before.length);
+    assert.ok(after[index] !== before[index], "the card that changed was not redrawn");
+    after.forEach((node, i) => {
+      if (i !== index) assert.ok(node === before[i], "card " + i + " was rebuilt with it");
+    });
+  });
+});
