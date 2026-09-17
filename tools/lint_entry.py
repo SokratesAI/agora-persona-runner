@@ -81,6 +81,7 @@ from agora_runner.nova_journal import (
     stray_footer,
     synthetic_heading,
 )
+from tools.goal_measures import BLOCK_PHRASES
 
 # `<seq>-cycle-<n>.md`, and the `-addendum` suffixes twelve live files
 # carry. Entry 004 has no cycle token at all and never will -- it is
@@ -810,6 +811,70 @@ def absolute_claim_notes(body):
     return notes
 
 
+# An Agora conversation id as a cycle writes it: the full UUID, or its first
+# eight characters, which is what `ask_watch` prints and what
+# `goal_measures.measure_nova_scale_blocks_recorded` matches (`cid[:8] in
+# text`). A bare eight-character token has to carry a letter, because every
+# eight-digit number is also hex -- `20260917` is a date, not a thread -- and a
+# thread whose prefix happens to be all digits can still be named in full.
+_ASK_ID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
+    r"|\b(?=[0-9]*[a-f])[0-9a-f]{8}\b"
+)
+
+_ASK_LABEL_TEXT_RE = re.compile(r"\*\*needs edvard:?\*\*")
+
+
+def _block_record_finding(content):
+    """An entry that says it is blocked on the owner and names no ask thread.
+
+    Issue #241, under the agreed key result `nova-kr-scale-blocks-recorded`:
+    a block counts as recorded only when it names an Agora thread he can
+    answer, and the measure found 28 of 84 entries in a week that did. The
+    phrase list is imported from the measure rather than copied, so the entry
+    this refuses is exactly the entry that would count against the number.
+
+    It checks the *shape* of an id, not that the thread is live. Asking Agora
+    from a linter would make every journal write depend on a network call;
+    the measure does the liveness half every hour, and a cycle that names a
+    thread he has archived still reads low there.
+
+    Whitespace is collapsed before matching, so a phrase that wraps across a
+    line break is still the phrase. The legacy bold ask label, the owner's
+    name in bold, is blanked first: it is the name of a section, the same
+    reason the measure dropped `"needs input"`, and the ask checks above
+    already own it. Measured over 2026-09-11..2026-09-17, that phrase matched
+    1 of 368 entries and
+    never without another phrase beside it, so blanking the label changed no
+    verdict that week.
+
+    Run over the same week's 368 entries: 54 of the 56 blocks the measure
+    scored unrecorded are refused, and none of the 28 it scored recorded. The
+    two that pass name an id-shaped token that is not an open ask, which is
+    the liveness half above.
+
+    **Quoted text is not stripped, unlike `absolute_claim_notes`, and that is
+    on purpose.** An entry quoting the owner saying "waiting on you" is
+    refused here, which is a false refusal as prose. But the measure reads the
+    quote too and scores that entry as an unrecorded block, so stripping it
+    here would let through exactly an entry that lowers the number. The way
+    past it is the same: name the thread the quote came from.
+    """
+    text = _ASK_LABEL_TEXT_RE.sub(" ", (content or "").lower())
+    text = " ".join(text.split())
+    phrase = next((p for p in BLOCK_PHRASES if p in text), None)
+    if phrase is None or _ASK_ID_RE.search(text):
+        return None
+    return (
+        f"block: this entry says it is blocked on the owner (\"{phrase}\") and "
+        "names no ask thread, so `nova-kr-scale-blocks-recorded` counts it as "
+        "a block he has nothing to answer in. Name the thread -- its first "
+        "eight characters are enough, and `python3 -m tools.ask_watch` lists "
+        "the open ones -- or, if there is none, open one with "
+        "`agora_runner.needs_input` from the runner pod and name that."
+    )
+
+
 # `None` is a real answer from `read_turn_clock` -- it means "no ground
 # truth", which is the whole point of that check being skippable -- so it
 # cannot double as "the caller did not pass one". Using it for both made
@@ -906,6 +971,9 @@ def lint(name, content, now=None, clock=_UNSET):
     comment_key = _comment_key_finding(entry)
     if comment_key:
         findings.append(comment_key)
+    block = _block_record_finding(content)
+    if block:
+        findings.append(block)
     findings.extend(_clock_findings(raw, clock))
     return findings
 

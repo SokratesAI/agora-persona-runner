@@ -1036,3 +1036,73 @@ def test_the_finding_names_the_consequence_not_just_the_shape():
         if f.startswith("comment key")
     ][0]
     assert "no comment box" in finding
+
+
+# -- issue #241: a block with no ask thread named -------------------------
+
+BLOCKED = GOOD.replace(
+    "Something real happened and here is the honest account of it.",
+    "Nothing moved, because #227 is still waiting on you.",
+)
+
+
+def test_a_block_that_names_no_ask_thread_is_refused():
+    findings = lint("168-cycle-152.md", BLOCKED)
+    assert _kinds(findings) == ["block"]
+    assert '"waiting on you"' in findings[0]
+
+
+def test_a_block_naming_the_thread_prefix_passes():
+    entry = BLOCKED.replace("waiting on you.", "waiting on you in 0256140f.")
+    assert lint("168-cycle-152.md", entry) == []
+
+
+def test_a_block_naming_the_full_thread_id_passes_even_when_its_prefix_is_digits():
+    entry = BLOCKED.replace(
+        "waiting on you.",
+        "waiting on you in 12345678-1b68-437b-b1c7-6a4267c43e05.")
+    assert lint("168-cycle-152.md", entry) == []
+
+
+def test_an_all_digit_number_is_not_a_thread_id():
+    """`20260917` is eight hex characters and a date, not a thread."""
+    entry = BLOCKED.replace("waiting on you.", "waiting on you since 20260917.")
+    assert _kinds(lint("168-cycle-152.md", entry)) == ["block"]
+
+
+def test_a_phrase_wrapped_across_a_line_break_is_still_a_block():
+    entry = BLOCKED.replace("waiting on you.", "waiting\non you.")
+    assert _kinds(lint("168-cycle-152.md", entry)) == ["block"]
+
+
+def test_the_phrases_are_the_measures_own_list_not_a_copy():
+    """Every phrase the key result counts is one this refuses on.
+
+    Bound to the real tuple, so a phrase added to the measure is refused here
+    the same day without anyone editing this module.
+    """
+    from tools import goal_measures
+    for phrase in goal_measures.BLOCK_PHRASES:
+        entry = GOOD.replace(
+            "Something real happened and here is the honest account of it.",
+            f"Nothing moved: {phrase} answer.")
+        assert _kinds(lint("168-cycle-152.md", entry)) == ["block"], phrase
+
+
+def test_an_entry_with_no_block_phrase_says_nothing_about_blocks():
+    assert lint("168-cycle-152.md", GOOD) == []
+
+
+def test_the_ask_label_on_its_own_is_a_section_name_not_a_block():
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs Edvard:** Yes or no, keep it?")
+    assert "block" not in _kinds(lint("168-cycle-152.md", entry))
+
+
+def test_a_quoted_block_phrase_is_refused_because_the_measure_counts_it_too():
+    """The measure does not strip quotes, so neither does the refusal."""
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        'He wrote on the card: "I have been waiting on you." I answered.')
+    assert _kinds(lint("168-cycle-152.md", entry)) == ["block"]
