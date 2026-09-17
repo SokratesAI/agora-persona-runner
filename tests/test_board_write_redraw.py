@@ -2,9 +2,9 @@
 
 Cycle 1734 found #235 and #312 closed in the records and still open in his
 `issues.md` / `ideas.md`: the site redraws the file after its own writes
-(`nova_site.invalidate`), and every command-line writer goes through
-`board_write`, which the site never imports, so none of those writes ever
-asked. The cases pin the three things that matter: a landed write on the real
+(`nova_site.invalidate`), and the command-line writers call the same
+`board_write` functions from a process with no publisher, so none of those
+writes ever asked. The cases pin the three things that matter: a landed write on the real
 store asks for its own board, a refused write or a caller's own store asks
 nothing, and a redraw that could not be asked for is printed with the command
 that does it by hand. The writes are real ones against the fake CouchDB, so a
@@ -58,6 +58,18 @@ def test_a_callers_own_store_is_not_his_board(asked):
     _parsed, store = writable()
     board_write.change_row("issue", 42, IN_PROGRESS, store=store)
 
+    assert asked == []
+
+
+def test_inside_the_site_the_request_is_queued_not_sent_over_http(
+        vault, asked, monkeypatch):
+    queued = []
+    monkeypatch.setattr(board_publish, "running", lambda: True)
+    monkeypatch.setattr(board_publish, "request", queued.append)
+
+    board_write.change_row("issue", 1, IN_PROGRESS)
+
+    assert queued == ["issue"]
     assert asked == []
 
 

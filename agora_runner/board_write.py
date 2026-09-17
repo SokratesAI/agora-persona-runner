@@ -86,7 +86,8 @@ import sys
 import urllib.request
 
 from agora_runner import (
-    board_document, board_records, board_store, nova_boards, project_goals,
+    board_document, board_publish, board_records, board_store, nova_boards,
+    project_goals,
     rank_key)
 from agora_runner.nova_boards import NOTE_AUTHORS
 
@@ -100,12 +101,13 @@ SITE_URL = os.environ.get(
 def ask_site_to_redraw(board, timeout=10):
     """Ask the site to redraw `board`'s file. `(requested, why_not)`.
 
-    Only the site's own writes used to redraw his `issues.md` / `ideas.md`
-    (`nova_site.invalidate`). Every writer in this module is a command-line
-    one -- the site never imports it -- so a status, priority, milestone or
-    new row written from a shell changed the records and left his file
-    showing the old board until his next tap in the app (Cycle 1734 found
-    #235 and #312 closed on the board and open in the file).
+    Only writes made inside the site used to redraw his `issues.md` /
+    `ideas.md` (`nova_site.invalidate` after `nova_capture`'s calls into
+    this module). The command-line writers call the same functions from a
+    process with no publisher, so a status, priority, milestone or new row
+    written from a shell changed the records and left his file showing the
+    old board until his next tap in the app (Cycle 1734 found #235 and #312
+    closed on the board and open in the file).
 
     Asking the site rather than publishing from here is deliberate: the
     site draws from the real records whatever this process's store is, so a
@@ -131,7 +133,8 @@ def _redraws_his_file(write):
     """Run `write`, then ask the site to redraw the board it wrote.
 
     Only for the real store: a caller passing its own store is not writing
-    his board. Runs after a write that landed -- including one that raised
+    his board. Inside the site the publisher is in this process, so the
+    request is queued directly rather than sent to the site's own port. Runs after a write that landed -- including one that raised
     `BoardDamaged`, which landed -- so a `WriteRefused` asks nothing.
     """
     signature = inspect.signature(write)
@@ -142,6 +145,9 @@ def _redraws_his_file(write):
         if bound.arguments["store"] is not board_store:
             return
         board = bound.arguments["board"]
+        if board_publish.running():
+            board_publish.request(board)
+            return
         requested, why_not = ask_site_to_redraw(board)
         if not requested:
             print(f"note: the {board} board was written but his file was "

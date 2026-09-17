@@ -5623,8 +5623,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
     def _post_board_redraw(self, payload):
         """`POST /api/board/redraw` -- a board written from a shell asks for its file.
 
-        `board_write` is the command-line writers' module and the site never
-        imports it, so none of those writes reached `invalidate`: the records
+        A command-line writer runs `board_write` in a process with no
+        publisher, so its writes never reached `invalidate`: the records
         moved and his `issues.md` / `ideas.md` kept the old board until his
         next tap here (Cycle 1734). This is that same one call, reached over
         HTTP. It changes nothing but the cache and the publisher's queue, and
