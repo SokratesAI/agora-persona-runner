@@ -417,11 +417,14 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
    * function would never return. */
   const realTimeout = window.setTimeout.bind(window);
   if (install) install(window);
-  /* `mermaid.js` always, `app.js` after it, exactly as index.html orders the
-   * two tags: `appendRichText` calls `window.novaMermaid.split` on every
-   * message on this site, not only the ones carrying a diagram, so a window
-   * without it is not the app. Preact stays opt-in via `install`. */
+  /* `mermaid.js` and `attach.js` always, `app.js` after them, exactly as
+   * index.html orders the tags: `appendRichText` calls
+   * `window.novaMermaid.split` on every message on this site, not only the
+   * ones carrying a diagram, and every composer here mounts
+   * `window.novaAttach.build`, so a window without them is not the app.
+   * Preact stays opt-in via `install`. */
   window.eval(readFileSync(join(publicDir, "mermaid.js"), "utf8"));
+  window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
   // app.js renders from three resolved promises; let the microtasks drain.
   await new Promise((resolve) => realTimeout(resolve, 0));
@@ -2027,6 +2030,9 @@ describe("the vault cannot inject markup", () => {
     const { window } = openWindow(html, { url: "https://nova.example/journal", runScripts: "outside-only" });
     window.fetch = (url) =>
       res(url.includes("/api/digest") ? payload.digest : hostile);
+    // `attach.js` first, as index.html orders the tags: `app.js` mounts the
+    // capture box while it loads, and that box builds an attach button.
+    window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     assert.equal(window.pwned, undefined);
@@ -2169,6 +2175,9 @@ describe("a payload cached before the brief existed", () => {
     window.fetch = (url) =>
       res(url.includes("/api/digest") ? stale.digest : stale.journal);
     window.scrollTo = () => {};
+    // `attach.js` first, as index.html orders the tags: `app.js` mounts the
+    // capture box while it loads, and that box builds an attach button.
+    window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 

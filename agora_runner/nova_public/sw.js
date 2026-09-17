@@ -50,7 +50,7 @@ var PUSH_CACHE = "nova-push-v1";
  */
 var SHELL = ["/", "/app.js", "/style.css", "/icon.svg", "/manifest.webmanifest",
              "/vendor/echarts.min.js", "/vendor/preact-htm.js", "/message.js", "/thread.js",
-             "/mermaid.js"];
+             "/mermaid.js", "/attach.js"];
 
 self.addEventListener("install", function (event) {
   event.waitUntil(

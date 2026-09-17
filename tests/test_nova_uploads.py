@@ -1,7 +1,7 @@
 """Image uploads: the round trip, the refusals, and whether the button exists.
 
 The last one is not padding. When I picked this work up it was a complete,
-careful `nova_uploads.py` plus a complete `buildAttach` in `app.js` that
+careful `nova_uploads.py` plus a complete `buildAttach` (then in `app.js`) that
 **nothing ever called** -- the helper was defined, documented, and wired to
 no composer, so every byte of the server side was reachable only by curl.
 `test_attach_button_is_wired_into_both_composers` is the guard for exactly
@@ -210,6 +210,12 @@ def _app_js():
         return handle.read()
 
 
+def _attach_js():
+    with open(os.path.join(os.path.dirname(APP_JS), "attach.js"),
+              encoding="utf-8") as handle:
+        return handle.read()
+
+
 def test_attach_button_is_wired_into_every_composer():
     """The guard for the gap that made every server-side test above moot.
 
@@ -238,16 +244,21 @@ def test_attach_button_is_wired_into_every_composer():
     share one with the dock either.
     """
     source = _app_js()
-    # The definition matches `buildAttach(` too, so it is subtracted rather
-    # than pattern-dodged -- this counts call sites, and there are five.
-    calls = source.count("buildAttach(") - source.count("function buildAttach(")
+    # The builder itself moved to `attach.js` on 2026-09-17 (issue #233), so
+    # the call site reads `window.novaAttach.build(` and the definition is no
+    # longer in this file. The call form is pinned with its `= ` and `({` so
+    # the prose around it -- this file carries a paragraph naming the call --
+    # cannot be counted as a composer.
+    calls = source.count("= window.novaAttach.build({")
     # Four, not five: the Conversations page's composer went with the page on
     # 2026-09-07 (his ask -- the dock is the only thread view now). The dock's
     # own is the one he uses for a conversation.
     assert calls == 4, f"expected every composer to build one, found {calls}"
 
-    # Defined once, and the returned button actually reaches the DOM.
-    assert source.count("function buildAttach(") == 1
+    # Defined once, in the file it moved to, and the returned button actually
+    # reaches the DOM from here.
+    assert source.count("function buildAttach(") == 0
+    assert _attach_js().count("function buildAttach(") == 1
     assert "appendChild(attach.button)" in source
     assert "insertBefore(captureAttach.button" in source
 

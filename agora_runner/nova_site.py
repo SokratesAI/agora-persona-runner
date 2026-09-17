@@ -330,6 +330,9 @@ STATIC_ROUTES = {
     # Diagrams, lifted out of `app.js` whole (issue #233): the code that
     # reads a ```mermaid block and draws it, and nothing else.
     "/mermaid.js": "mermaid.js",
+    # The attach button, lifted out of `app.js` whole the same way (issue
+    # #233): the file picker, the upload and the tray of chips.
+    "/attach.js": "attach.js",
 }
 
 # The files an already-open tab is *running*. `_send_static` hashes these
@@ -354,7 +357,7 @@ STATIC_ROUTES = {
 # year. Being a content hash rather than a timestamp is what keeps a pod
 # restart silent: identical files, identical stamp, no banner.
 SW_BUILD_INPUTS = ("index.html", "app.js", "thread.js", "message.js", "mermaid.js",
-                   "style.css", "sw.js")
+                   "attach.js", "style.css", "sw.js")
 
 # The page routes the server answers with the SPA shell. A module
 # constant rather than a literal inside `do_GET` because `site_check`
