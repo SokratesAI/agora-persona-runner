@@ -23,7 +23,19 @@ from pathlib import Path
 
 import pytest
 
-APP_JS = Path(__file__).resolve().parent.parent / "agora_runner" / "nova_public" / "app.js"
+_PUBLIC = Path(__file__).resolve().parent.parent / "agora_runner" / "nova_public"
+APP_JS = _PUBLIC / "app.js"
+#: The chat dock moved out of `app.js` into its own file for issue #233. It
+#: is still one client, so anything searching "the app's source" has to read
+#: both -- a dock assertion against `app.js` alone now passes on source that
+#: does not contain the dock.
+CHAT_DOCK_JS = _PUBLIC / "chat-dock.js"
+
+
+def app_source() -> str:
+    """`app.js` and `chat-dock.js`, the two files the browser runs."""
+    return (APP_JS.read_text(encoding="utf-8") + "\n"
+            + CHAT_DOCK_JS.read_text(encoding="utf-8"))
 # Read off the shipped file so the bound under test is the real one.
 ASK_POLL_MAX_VALUE = int(
     [ln.strip() for ln in APP_JS.read_text(encoding="utf-8").splitlines()

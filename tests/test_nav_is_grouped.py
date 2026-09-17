@@ -211,7 +211,9 @@ def test_the_ask_page_is_gone_and_its_api_is_not():
         "`/ask` is back in `PAGE_ROUTES`; the page was deleted, so the server "
         "should 404 it"
     )
-    app_js = (HTML.parent / "app.js").read_text(encoding="utf-8")
+    # Both halves of the client: the dock is its own file since issue #233.
+    app_js = "\n".join((HTML.parent / n).read_text(encoding="utf-8")
+                       for n in ("app.js", "chat-dock.js"))
     assert '"/ask"' not in app_js, (
         "app.js routes `/ask` again -- the client router was the third place "
         "the page lived"
@@ -242,7 +244,9 @@ def test_the_chats_page_is_gone_and_the_thread_view_is_not():
         "`/conversations` is back in `PAGE_ROUTES`; the page was deleted, so "
         "the server should 404 it"
     )
-    app_js = (HTML.parent / "app.js").read_text(encoding="utf-8")
+    # Both halves of the client: the dock is its own file since issue #233.
+    app_js = "\n".join((HTML.parent / n).read_text(encoding="utf-8")
+                       for n in ("app.js", "chat-dock.js"))
     assert '"/conversations"' not in app_js, (
         "app.js routes or navigates to `/conversations` again -- the client "
         "router was the second place the page lived"

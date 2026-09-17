@@ -33,7 +33,16 @@ import pathlib
 import re
 
 CSS = pathlib.Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public" / "style.css"
-APP = pathlib.Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public" / "app.js"
+_PUBLIC = pathlib.Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public"
+# The chat dock moved out of `app.js` into `chat-dock.js` for issue #233.
+# It is one client split across two files, so the source these tests
+# search is both of them -- reading `app.js` alone would pass every dock
+# assertion against source with no dock in it.
+APP_SOURCES = (_PUBLIC / "app.js", _PUBLIC / "chat-dock.js")
+
+
+def _app_source():
+    return "\n".join(p.read_text(encoding="utf-8") for p in APP_SOURCES)
 
 
 def _rule(selector):
@@ -78,7 +87,7 @@ def test_the_class_is_still_set_at_every_width():
     that is a plausible tidy -- the lock would silently stop applying on a
     desktop, and no computed assertion in this repo could see it.
     """
-    src = APP.read_text(encoding="utf-8")
+    src = _app_source()
     assert 'document.body.classList.toggle("chat-open", isOpen);' in src, (
         "`setOpen` no longer marks the body unconditionally, so "
         "`body.chat-open` cannot be relied on to hold the scroll lock"

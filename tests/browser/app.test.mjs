@@ -417,14 +417,17 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
    * function would never return. */
   const realTimeout = window.setTimeout.bind(window);
   if (install) install(window);
-  /* `mermaid.js` and `attach.js` always, `app.js` after them, exactly as
-   * index.html orders the tags: `appendRichText` calls
+  /* `mermaid.js`, `attach.js` and `chat-dock.js` always, `app.js` after them,
+   * exactly as index.html orders the tags: `appendRichText` calls
    * `window.novaMermaid.split` on every message on this site, not only the
-   * ones carrying a diagram, and every composer here mounts
-   * `window.novaAttach.build`, so a window without them is not the app.
+   * ones carrying a diagram, every composer here mounts
+   * `window.novaAttach.build`, and `app.js` calls `window.novaChatDock` from
+   * its own body -- so a window without the three is not the app, and without
+   * the dock every dock test would pass against an app with no dock in it.
    * Preact stays opt-in via `install`. */
   window.eval(readFileSync(join(publicDir, "mermaid.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
+  window.eval(readFileSync(join(publicDir, "chat-dock.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
   // app.js renders from three resolved promises; let the microtasks drain.
   await new Promise((resolve) => realTimeout(resolve, 0));

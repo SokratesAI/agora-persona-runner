@@ -29,6 +29,10 @@ APP_JS = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..", "agora_runner", "nova_public", "app.js",
 )
+CHAT_DOCK_JS = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "agora_runner", "nova_public", "chat-dock.js",
+)
 STYLE_CSS = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..", "agora_runner", "nova_public", "style.css",
@@ -206,8 +210,11 @@ def test_a_real_write_failure_is_not_swallowed_as_a_duplicate():
 
 
 def _app_js():
+    # `app.js` plus the chat dock, which is its own file since issue #233.
+    with open(CHAT_DOCK_JS, encoding="utf-8") as handle:
+        dock = handle.read()
     with open(APP_JS, encoding="utf-8") as handle:
-        return handle.read()
+        return handle.read() + "\n" + dock
 
 
 def _attach_js():

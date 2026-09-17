@@ -34,11 +34,18 @@ import pytest
 import agora_runner.nova_site as nova_site
 from tests.test_nova_site import _post
 
-APP_JS = pathlib.Path(nova_site.__file__).parent / "nova_public" / "app.js"
+_PUBLIC = pathlib.Path(nova_site.__file__).parent / "nova_public"
+# One client, two files since issue #233 moved the dock out of `app.js`.
+APP_JS = _PUBLIC / "app.js"
+CHAT_DOCK_JS = _PUBLIC / "chat-dock.js"
+
+
+def _app_source():
+    return APP_JS.read_text() + "\n" + CHAT_DOCK_JS.read_text()
 
 
 def _chat_write_source():
-    text = APP_JS.read_text()
+    text = _app_source()
     start = text.index("function chatWrite(")
     # The body ends at the first line that closes the function at its own
     # indentation -- `chatWrite` is nested, so a bare "}" would match early.
@@ -55,7 +62,7 @@ def chat_write_key():
 
 def chat_write_paths():
     """Every route the dock posts through `chatWrite`."""
-    return sorted(set(re.findall(r'chatWrite(?:Full)?\("([^"]+)"', APP_JS.read_text())))
+    return sorted(set(re.findall(r'chatWrite(?:Full)?\("([^"]+)"', _app_source())))
 
 
 # A minimally valid body per route, and the argument-taking store function
@@ -154,5 +161,5 @@ def test_the_route_that_answers_with_a_name_is_posted_through_the_full_writer():
     it back to `chatWrite` would drop the name silently: the thread still
     opens, the header just says the wrong thing. The route test next door
     accepts either writer by design -- this is the half that does not."""
-    text = APP_JS.read_text()
+    text = _app_source()
     assert 'chatWriteFull("/api/conversations/new"' in text
