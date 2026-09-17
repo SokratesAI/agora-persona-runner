@@ -583,7 +583,7 @@ def _drop_legacy_reply(comment):
     Measured against the live pod 2026-08-28: 155 of 159 comments carry a
     non-empty `reply`, all 155 byte-identical to a text already in their
     own `replies`, 65,607 bytes of a 258,352-byte `byCycle`. The route is
-    deliberately uncached and `refreshMail` fetches it on every
+    deliberately uncached and was then fetched on every
     navigation, so that quarter is paid again on every page the owner
     opens -- which is what he reported as the app being slow to load
     comments.
