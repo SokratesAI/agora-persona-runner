@@ -424,18 +424,26 @@ def test_half_a_summary_is_no_summary_rather_than_half_a_card():
 def test_the_page_draws_exactly_the_parts_the_server_defines():
     """`WEEK_KEYS` is the single source of truth and the browser cannot
     import it, so the wire is the payload: `app.js` iterates
-    `payload.weekKeys` rather than naming the four parts itself.
+    `payload.weekKeys` rather than naming the four parts itself. The retro
+    page lives in `charts.js` since issue #233 moved it out of `app.js`.
 
     Asserted as an absence, which is the only form this can take -- the
     failure being guarded is a later cycle hard-coding the labels into the
     card, at which point renaming a part on this side changes the ledger
     and not the screen, silently."""
+    import re as _re
     from pathlib import Path
 
-    source = Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public" / "app.js"
+    source = (Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public"
+              / "charts.js")
     text = source.read_text(encoding="utf-8")
     start = text.index("function renderWeekCard(")
-    body = text[start:text.index("\n  }", start)]
+    #: The retro page moved out of `app.js` into `charts.js` for issue #233,
+    #: which put every function one level deeper inside a second IIFE. Close
+    #: the body on whatever indentation the declaration itself carries, so
+    #: the next move does not silently make this read half a function.
+    indent = _re.search(r"[ ]*$", text[:start].rsplit("\n", 1)[-1] or "").group(0)
+    body = text[start:text.index("\n" + indent + "}", start)]
     assert "payload.weekKeys" in body, "the card no longer reads its labels from the server"
     for _key, label in WEEK_KEYS:
         assert label not in body, f"the card hard-codes {label!r} instead of reading weekKeys"
@@ -446,7 +454,7 @@ def test_the_page_draws_exactly_the_parts_the_server_defines():
 
 def test_the_page_styles_exactly_the_scores_the_server_defines():
     """`SCORE_KEYS` is the stated single source of truth and the browser
-    cannot import it. `app.js` maps each key to a colour and a stroke
+    cannot import it. `charts.js` maps each key to a colour and a stroke
     width, and falls back to the "going" style for anything unknown -- so a
     key added or renamed on this side would draw a fourth line identical to
     the first, with every browser test still green.
@@ -456,8 +464,15 @@ def test_the_page_styles_exactly_the_scores_the_server_defines():
     import re as _re
     from pathlib import Path
 
-    source = Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public" / "app.js"
-    block = _re.search(r"var RETRO_SERIES = \{(.*?)\n  \};", source.read_text(encoding="utf-8"), _re.S)
-    assert block, "RETRO_SERIES is gone from app.js, or no longer looks like an object literal"
-    styled = _re.findall(r"^\s{4}(\w+):", block.group(1), _re.M)
+    source = (Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public"
+              / "charts.js")
+    #: Indentation is read off the declaration rather than counted, for the
+    #: same reason as the test above: this block moved one level deeper when
+    #: the charts left `app.js`, and a hard-coded depth turns a move into a
+    #: red test about nothing.
+    block = _re.search(r"^([ ]*)var RETRO_SERIES = \{(.*?)\n\1\};",
+                       source.read_text(encoding="utf-8"), _re.S | _re.M)
+    assert block, "RETRO_SERIES is gone from charts.js, or no longer looks like an object literal"
+    styled = _re.findall(r"^[ ]{%d}(\w+):" % (len(block.group(1)) + 2),
+                         block.group(2), _re.M)
     assert styled == [key for key, _ in SCORE_KEYS]
