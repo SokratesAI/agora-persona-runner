@@ -1635,7 +1635,7 @@ def _set_field_in_fence(markdown, fence, row_id, field, value):
     written = [i for i in body if field_re.match(lines[i])]
     if written:
         for i in written:
-            lines[i] = f"{indent}{field}: {value}"
+            lines[i] = f"{indent}{field}:{' ' + value if value else ''}"
         for i in reversed(written[1:]):
             del lines[i]
         return "\n".join(lines)

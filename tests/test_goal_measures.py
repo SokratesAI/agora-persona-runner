@@ -5854,3 +5854,90 @@ def test_false_status_counts_a_live_cycle_shown_not_running():
         kpi_rows=[], running=lambda: (["shown not running 20 min into a live cycle"], None))
     assert value == 1 and "running badge shown not running" in detail
     assert "a cycle shown running after it ended" in detail
+
+
+FALSE_STATUS_DOC = """# Project goals
+
+## Nova the app
+
+```kpi
+id: nova-kpi-false-status
+name: Nothing on screen is false
+measure: Known false statuses showing in the app right now
+now: 1
+low: 0
+high: 0
+unit: statuses
+```
+"""
+
+
+def _false_status_rows(monkeypatch, doc, heartbeats=lambda: ([], None),
+                       board=lambda: ([], None)):
+    """The real measurer, with every comparison it makes handed in."""
+    import functools
+    from agora_runner.project_goals import parse_project_goals
+    monkeypatch.setitem(goal_measures.KPI_MEASURERS, "nova-kpi-false-status",
+                        functools.partial(goal_measures.measure_nova_false_status,
+                                          heartbeats=heartbeats, board=board,
+                                          running=lambda: ([], None)))
+    return goal_measures.kpi_rows(parse_project_goals(doc))
+
+
+def test_a_false_status_count_that_is_no_longer_found_is_written_away(monkeypatch, tmp_path):
+    """Cycle 1724: `now: 1` stayed out of bounds on /plan after idea #193 cleared.
+
+    The measurer refuses to report 0 and `write_back_kpis` skipped a `None`,
+    so nothing could ever take a written breach off the page.
+    """
+    rows = _false_status_rows(monkeypatch, FALSE_STATUS_DOC)
+    assert rows[0]["value"] is None and rows[0].get("stale_now") is True
+    path = tmp_path / "project-goals.md"
+    path.write_text(FALSE_STATUS_DOC, encoding="utf-8")
+    report = goal_measures.write_back_kpis(str(path), FALSE_STATUS_DOC, rows)
+    out = path.read_text(encoding="utf-8")
+    assert "\nnow:\n" in out and "now: 1" not in out
+    assert "low: 0" in out and "high: 0" in out
+    assert "nova-kpi-false-status  now: 1 -> (blank)" in report
+    lines, drifted = goal_measures.drift_status([], [], rows, "goals.md",
+                                                "project-goals.md")
+    assert drifted == ["nova the app / nova-kpi-false-status in project-goals.md"]
+    assert "DRIFT — 1 of 1 instrumented" in lines
+    assert "publishes a number no instrument could confirm" not in lines
+    assert "a breach that ended" in goal_measures.render_kpis(rows, "project-goals.md")
+
+
+def test_an_unreadable_false_status_sweep_leaves_the_written_count_alone(monkeypatch, tmp_path):
+    rows = _false_status_rows(monkeypatch, FALSE_STATUS_DOC,
+                              heartbeats=lambda: (None, "agora down"))
+    assert rows[0]["value"] is None and not rows[0].get("stale_now")
+    path = tmp_path / "project-goals.md"
+    path.write_text(FALSE_STATUS_DOC, encoding="utf-8")
+    assert goal_measures.write_back_kpis(
+        str(path), FALSE_STATUS_DOC, rows).startswith("WROTE NOTHING")
+    assert path.read_text(encoding="utf-8") == FALSE_STATUS_DOC
+    _, drifted = goal_measures.drift_status([], [], rows, "goals.md", "project-goals.md")
+    assert drifted == []
+
+
+def test_a_blank_false_status_with_nothing_found_stays_quiet(monkeypatch):
+    doc = FALSE_STATUS_DOC.replace("now: 1\n", "now:\n")
+    rows = _false_status_rows(monkeypatch, doc)
+    assert not rows[0].get("stale_now")
+    _, drifted = goal_measures.drift_status([], [], rows, "goals.md", "project-goals.md")
+    assert drifted == []
+
+
+def test_a_false_status_still_found_is_read_as_a_count_not_a_stale_one(monkeypatch):
+    rows = _false_status_rows(monkeypatch, FALSE_STATUS_DOC,
+                              board=lambda: (["ideas #193 (Backlog)"], None))
+    assert rows[0]["value"] == 1 and not rows[0].get("stale_now")
+
+
+def test_a_false_status_sweep_that_compared_nothing_does_not_clear_the_count():
+    """No errors and no comparisons is not "found nothing": it looked at nothing."""
+    none = lambda: (None, None)
+    value, detail = goal_measures.measure_nova_false_status(
+        None, None, heartbeats=none, board=none, running=none)
+    assert value is None
+    assert not detail.startswith(goal_measures.FALSE_STATUS_NONE_FOUND)
