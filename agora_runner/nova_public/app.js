@@ -497,7 +497,7 @@
 
   /* How many unread replies there are and which card holds the oldest.
    *
-   * Oldest rather than newest, for the reason `oldestOpenAsk` picks the
+   * Oldest rather than newest, for the reason the ask pill names the
    * oldest ask: the newest card is the one at the top of the feed that he
    * will see anyway, and the one worth pointing at is the one about to
    * scroll out of the twenty-entry window. */
@@ -577,25 +577,6 @@
     paintMailInto(replayed);
     if (mailEl.childNodes.length) mailEl.removeAttribute("hidden");
     else mailEl.setAttribute("hidden", "");
-  }
-
-  /* Comments for a page that does not fetch them.
-   *
-   * Only the journal view calls `fetchAll`, so `haveComments` was false on
-   * every other page and `paintMail` had nothing to count. One uncached read
-   * per navigation, tolerated the same way `fetchAll` tolerates its own: the
-   * badge is not worth an error on a page it is not about. */
-  function refreshMail() {
-    return fetch("/api/comments")
-      .then(json)
-      .then(function (data) {
-        if (!data) return;
-        lastCommentsByCycle = data.byCycle || {};
-        haveComments = true;
-        seedRepliesRead(lastCommentsByCycle);
-        paintMail(false);
-      })
-      .catch(function () { /* leave whatever the last paint put there */ });
   }
 
   function paintMailInto(replayed) {
@@ -1718,14 +1699,6 @@
       open.push(asks[i]);
     }
     return open;
-  }
-
-  /* The oldest of them, or null. Kept as its own name because the pill has
-   * always named exactly one card and still does; `openAsks` is what the
-   * count and the panel beside it read. */
-  function oldestOpenAsk(status, commentsByCycle) {
-    var open = openAsks(status, commentsByCycle);
-    return open.length ? open[open.length - 1] : null;
   }
 
   /* One status field, and where it points.
@@ -11274,26 +11247,6 @@
    * page scrolls the document. Same number, one definition. */
   var STICK_SLOP_PX = 64;
 
-  /* The `/conversation/<id>` page's version of the dock's `atBottom`.
-   *
-   * `.ask-thread` carries no `overflow` or height in `style.css`, so on this
-   * page it is not a scroll container at all -- the document is. Measuring
-   * `thread.scrollTop` here would read 0 forever and answer "at the bottom"
-   * for every position, which is why this is a separate pair of functions
-   * rather than the dock's reused. */
-  function pageScrollTop() {
-    return window.pageYOffset || document.documentElement.scrollTop || 0;
-  }
-
-  function pageAtBottom() {
-    var viewport = window.innerHeight || document.documentElement.clientHeight || 0;
-    return document.documentElement.scrollHeight - viewport - pageScrollTop() <= STICK_SLOP_PX;
-  }
-
-  function scrollPageToBottom() {
-    window.scrollTo(0, document.documentElement.scrollHeight);
-  }
-
   /* "He is reading this here, so do not buzz his phone about it."
    *
    * His capture, `ideas.md` 2026-08-25: *"The new chat is just a wrapper
@@ -11845,11 +11798,6 @@
       dismissVh: STEP_SHEET_DISMISS_VH,
       onDismiss: closeStepSheet
     });
-  }
-
-  function currentStepSheetHeight() {
-    var raw = parseFloat((stepSheet && stepSheet.style.height) || "");
-    return isNaN(raw) ? STEP_SHEET_OPEN_VH : raw;
   }
 
   function setStepSheetHeight(vh, floorVh) {
@@ -12618,8 +12566,6 @@
   function openMessageActions(actions, title, opts) {
     actionSheet.open(actions, title, opts);
   }
-
-  function closeMessageActions() { actionSheet.close(); }
 
   function askPending(progress) {
     var row = el("div", "ask-msg ask-theirs ask-pending");
@@ -17211,81 +17157,6 @@
       return fold;
     }
 
-    /* The form behind "New conversation".
-     *
-     * A name and nothing else. Every new thread is with Nova -- the owner,
-     * issues board #119 on 2026-08-29: *"drop the Agora multi-persona chat
-     * picker from the Nova app entirely, the app should be Nova only, no
-     * Claude/Opus/Gemini/Haiku/Study buddy tabs inside it"*. Threads he
-     * already has with those personas still open from the list; what is
-     * gone is starting another one.
-     */
-    function newForm(done) {
-      var wrap = el("div", "chat-row-edit");
-      var name = document.createElement("input");
-      name.type = "text";
-      name.className = "chat-row-edit-name";
-      name.placeholder = "Optional \u2014 named after your first message";
-      name.setAttribute("aria-label", "Conversation name");
-      wrap.appendChild(name);
-
-      var note = el("p", "chat-row-edit-note", "");
-      var foot = el("div", "chat-row-edit-foot");
-      var save = el("button", "chat-row-edit-save", "Start");
-      save.setAttribute("type", "button");
-      var cancel = el("button", "chat-row-edit-cancel", "Cancel");
-      cancel.setAttribute("type", "button");
-      foot.appendChild(save);
-      foot.appendChild(cancel);
-      wrap.appendChild(foot);
-      wrap.appendChild(note);
-
-      cancel.addEventListener("click", function () { done(false); });
-      name.focus();
-
-      save.addEventListener("click", function () {
-        // Blank is an answer, not a missing field. His capture, issues.md
-        // #139: *"I have to type a conversation title before I can even
-        // start it, but I don't always know what it'll be about."* The
-        // server names it `New chat` and the first message renames it.
-        var wanted = name.value.trim();
-        save.disabled = true;
-        cancel.disabled = true;
-        note.textContent = "starting…";
-        chatWriteFull("/api/conversations/new", { name: wanted })
-          .then(function (answer) {
-            var id = answer.result;
-            // A create that answers 200 without an id is the one failure
-            // this form cannot recover from silently: `switchTo` would open
-            // `?id=undefined`, which 404s, and the composer under it would
-            // refuse every message with "conversationId and text must be
-            // strings". That is exactly what he photographed on 2026-08-27,
-            // because the route answered under `conversationId` while every
-            // other chat write answers under `result`. Say so instead --
-            // the conversation itself was created either way, so the list
-            // is where he can still reach it.
-            if (typeof id !== "string" || !id) {
-              throw new Error("it was created but the server did not say which one — open it from the list");
-            }
-            // Straight into the thread he just made: he started it to say
-            // something, and leaving him on the list would make him find it.
-            // The name the store holds, not the box he typed into: those
-            // differ by exactly the case this whole change is about, and a
-            // header reading "" while the switcher reads "New chat" is the
-            // two-copies-of-one-rule bug wearing a title bar.
-            switchTo({ kind: "conv", id: id, name: answer.name || wanted,
-                       untitled: !wanted });
-            done(false);
-          })
-          .catch(function (err) {
-            save.disabled = false;
-            cancel.disabled = false;
-            note.textContent = "Could not start it: " + err.message;
-          });
-      });
-      return wrap;
-    }
-
     /* The switcher's last answer, kept so re-opening it is not a blank wait.
      *
      * Issue #141: *"loads slowly every single time it's opened, not just on
@@ -17430,8 +17301,7 @@
        * good answer -- leave it blank -- because the thread renames itself
        * from his first message anyway (`autotitle`), so the form was a step
        * between him and typing, to collect something he had no reason to
-       * fill in. It stays in the file for the editor path; nothing here
-       * calls it.
+       * fill in. Nothing called it, so it is gone.
        */
       var start = el("button", "chat-list-fab", "+");
       start.setAttribute("type", "button");

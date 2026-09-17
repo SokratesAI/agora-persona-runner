@@ -786,8 +786,8 @@ describe("a reopen is answered from the cache and confirmed with an etag", () =>
 
   test("a comments read is left on the network -- a path is not a caller", async () => {
     /* `/api/comments` is polled by `fetchAll` exactly like the three that
-     * are on the list, and is fetched unconditionally from three other
-     * places: `refreshMail`, the reply drawer's 8s wait, and the refetch
+     * are on the list, and is fetched unconditionally from two other
+     * places: the reply drawer's 8s wait, and the refetch
      * that runs the moment he posts a comment. None of those ever sends an
      * etag, so none of them would leave this path again -- and the last one
      * would repaint the drawer from the snapshot taken before his comment

@@ -203,7 +203,7 @@ self.addEventListener("fetch", function (event) {
  * **`/api/comments` is deliberately not here, and the reason is the sharper
  * half of the same rule: a path is not a caller.** It is polled by
  * `fetchAll` like the other three -- and *also* fetched unconditionally from
- * three other places in `app.js`: `refreshMail`, the reply drawer's 8s wait,
+ * two other places in `app.js`: the reply drawer's 8s wait,
  * and the refetch that runs the moment he posts a comment. None of those
  * ever sends `If-None-Match`, so none of them would ever leave this path
  * again, and the last one is the expensive one: it would repaint the drawer
