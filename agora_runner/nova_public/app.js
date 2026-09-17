@@ -10624,8 +10624,8 @@
    * keeps every section the tab does not choose, and the refetch after a
    * comment redraws the conversation and nothing else. The cache hangs off
    * `feed` under the project's name, so a different project starts empty,
-   * and a section not drawn this pass stays in it -- that is what carries
-   * a half-typed comment across all -> ideas -> all. */
+   * and a section not drawn this pass stays in it -- what carries a
+   * half-typed comment across all -> ideas -> all. */
   function renderProject(payload) {
     stopPolling();
     markNav();
@@ -10664,7 +10664,7 @@
     var nodes = cache.nodes;
     var rows = [];
     function sigOf(field) {
-      return name + " " + JSON.stringify(
+      return name + "\u0000" + JSON.stringify(
         payload[field] === undefined ? null : payload[field]);
     }
     function section(key, sig, build) {
@@ -10693,7 +10693,7 @@
 
     var tabs = projectTabs(payload);
     var tab = projectTabState(name, tabs);
-    section("tabs", name + " " + tab + " " + JSON.stringify(tabs), function () {
+    section("tabs", name + "\u0000" + tab + "\u0000" + JSON.stringify(tabs), function () {
       return renderProjectTabs(tabs, function () { renderProject(payload); });
     });
 
@@ -10721,12 +10721,12 @@
       var board = boards[key];
       if (!board || !board.total) continue;
       drew = true;
-      section("board-" + key, name + " " + JSON.stringify(board),
+      section("board-" + key, name + "\u0000" + JSON.stringify(board),
         projectBoardBuilder(key, board));
     }
     // Only when he is looking at rows. On the conversation tab there are
-    // none by his own choice, and saying nothing is filed would be the page
-    // arguing with the button he just pressed.
+    // none by his own choice, and saying nothing is filed would argue with
+    // the button he just pressed.
     if (!drew && tab !== "conversation") {
       var none = "Nothing is filed under “" + name + "” yet.";
       section("empty", none, function () { return el("p", "empty", none); });
@@ -11601,7 +11601,7 @@
    * the block for work with no answer under it yet has none, because the
    * server invents that row (`visible_rows`), so it gets a sentinel that no
    * id can collide with. */
-  var STEP_SHEET_PENDING_KEY = " steps-only";
+  var STEP_SHEET_PENDING_KEY = "\u0000steps-only";
   var stepSheetOn = null;
 
   function stepMessageKey(message) {
