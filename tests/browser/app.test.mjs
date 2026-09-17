@@ -417,6 +417,11 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
    * function would never return. */
   const realTimeout = window.setTimeout.bind(window);
   if (install) install(window);
+  /* `mermaid.js` always, `app.js` after it, exactly as index.html orders the
+   * two tags: `appendRichText` calls `window.novaMermaid.split` on every
+   * message on this site, not only the ones carrying a diagram, so a window
+   * without it is not the app. Preact stays opt-in via `install`. */
+  window.eval(readFileSync(join(publicDir, "mermaid.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
   // app.js renders from three resolved promises; let the microtasks drain.
   await new Promise((resolve) => realTimeout(resolve, 0));
