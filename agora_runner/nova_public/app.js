@@ -11434,6 +11434,49 @@
     return button;
   }
 
+  /* Keep a message he just sent on screen until the server has it.
+   *
+   * Issue #233's spike (agora-persona-runner#1200) measured why a sent
+   * message can vanish: the send paints his bubble locally, the next poll
+   * repaints the thread from the server, and a poll that lands before the
+   * server has stored the message draws a thread without it. Keyed diffing
+   * does not fix that in any framework -- the control run lost it under
+   * Preact and Svelte too -- so the merge lives in the data, here, and the
+   * Preact thread will carry it unchanged.
+   *
+   * `pending` is `[{text, sentAt}]` for one thread. A pending send is
+   * settled by a message of his with the same text stamped no earlier than
+   * two minutes before it was sent (phone and server clocks disagree), and
+   * each server message settles at most one send, so saying "ok" twice keeps
+   * both. One the server never shows is dropped after ten minutes rather than
+   * haunting the thread forever. Returns the messages to draw, whether any
+   * send is still unconfirmed, and the pending list to keep. */
+  var PENDING_SEND_SKEW_MS = 120000;
+  var PENDING_SEND_EXPIRES_MS = 600000;
+
+  function mergePendingSends(messages, pending, now) {
+    var used = {};
+    var keep = [];
+    (pending || []).forEach(function (send) {
+      if (now - send.sentAt > PENDING_SEND_EXPIRES_MS) return;
+      var match = -1;
+      (messages || []).forEach(function (message, i) {
+        if (match !== -1 || used[i] || message.sender !== OWNER_RECORD) return;
+        if ((message.text || "").trim() !== send.text.trim()) return;
+        var at = Date.parse(message.createdAt || "");
+        if (!isNaN(at) && at < send.sentAt - PENDING_SEND_SKEW_MS) return;
+        match = i;
+      });
+      if (match === -1) keep.push(send);
+      else used[match] = true;
+    });
+    var drawn = (messages || []).concat(keep.map(function (send) {
+      return { sender: OWNER_RECORD, text: send.text,
+        createdAt: new Date(send.sentAt).toISOString() };
+    }));
+    return { messages: drawn, unconfirmed: keep.length > 0, pending: keep };
+  }
+
   /* What both surfaces do the moment a message goes out: show it, and show
    * that something is coming. Without this the thread sits unchanged for up
    * to a poll interval and the tap reads as having done nothing. */
@@ -15742,6 +15785,8 @@
     var pollHandle = null;
     var loaded = false;
     var lastCount = 0;
+    // Sends the server has not shown back yet, per thread; see `mergePendingSends`.
+    var pendingSends = {};
     var isOpen = false;
     /* One-shot: the *next* paint goes to the newest message whatever the
      * scroll position says, and the paint that uses it clears it. Opening the
@@ -16360,6 +16405,15 @@
        * first paint of the session runs shut, with `lastCount` still 0, so
        * a thread he has read a hundred times lights the dot. A mutation
        * check only ever tests the mutation I thought of. */
+      /* His own sends the server has not echoed yet are drawn at the
+       * bottom, and a thread holding one is still waiting on an answer. */
+      var key = sourceKey();
+      var merged = mergePendingSends(messages, pendingSends[key], Date.now());
+      pendingSends[key] = merged.pending;
+      if (merged.unconfirmed) {
+        messages = merged.messages;
+        payload = Object.assign({}, payload, { messages: messages, waiting: true });
+      }
       if (!isOpen && loaded && messages.length > lastCount) setDot(true);
       lastCount = messages.length;
       /* Both of these are read **before** the repaint and neither can be read
@@ -16522,7 +16576,9 @@
             if (token !== sourceToken) return;
             paint(payload);
             cacheThread(payload);
-            if (payload.waiting) pollChat(attempts + 1);
+            // A send the server has not shown back yet keeps the poll going
+            // too, or a thread whose tail is Nova's would stop confirming it.
+            if (payload.waiting || (pendingSends[sourceKey()] || []).length) pollChat(attempts + 1);
           })
           // A failed poll is not a failed answer, same as `pollConv`.
           .catch(function () {
@@ -17767,6 +17823,9 @@
           // would put it under the wrong name, and polling would then be
           // polling the new thread on the old one's schedule.
           if (token !== sourceToken) return;
+          var sentKey = sourceKey();
+          (pendingSends[sentKey] = pendingSends[sentKey] || []).push(
+            { text: body, sentAt: Date.now() });
           // Paint his question straight away rather than waiting a poll for
           // the server to echo it, for `pollConv`'s reason: a box that has
           // gone blank with nothing to show for it reads as a lost message.
