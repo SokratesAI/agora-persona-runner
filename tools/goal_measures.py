@@ -1425,11 +1425,13 @@ STOP_CONTROLS = {
 #: is two things -- a route the server answers and a button the browser posts
 #: to it -- so both files are read and both halves are required.
 _SITE_MODULE = "agora_runner/nova_site.py"
-#: The browser runs two hand-written files since issue #233 split the chat
-#: dock out of `app.js`. A control that lives in the dock is in the second
-#: one, so reading only the first would report it as missing.
+#: The browser runs several hand-written files since issue #233 started
+#: splitting `app.js`. A control that lives in the dock or behind the attach
+#: button is in one of the others, so reading only `app.js` would report it
+#: as missing.
 _APP_BUNDLE = "agora_runner/nova_public/app.js"
-_APP_BUNDLE_PARTS = (_APP_BUNDLE, "agora_runner/nova_public/chat-dock.js")
+_APP_BUNDLE_PARTS = (_APP_BUNDLE, "agora_runner/nova_public/chat-dock.js",
+                     "agora_runner/nova_public/attach.js")
 
 #: Below this many POST routes, the allowlist parse below has found something
 #: that is not the allowlist. There are over thirty today; the number is a
