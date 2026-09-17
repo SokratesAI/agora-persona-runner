@@ -310,6 +310,9 @@ STATIC_ROUTES = {
     # The costs and retrospective pages and the ECharts layer under them,
     # moved out of `app.js` for issue #233. Loads before `app.js` too.
     "/charts.js": "charts.js",
+    # The diagnostics and settings pages, moved out of `app.js` for issue
+    # #233. Loads before `app.js` too.
+    "/diag.js": "diag.js",
     "/style.css": "style.css",
     "/manifest.webmanifest": "manifest.webmanifest",
     "/sw.js": "sw.js",
@@ -367,6 +370,7 @@ SW_BUILD_INPUTS = (
     "app.js",
     "chat-dock.js",
     "charts.js",
+    "diag.js",
     "thread.js",
     "message.js",
     "mermaid.js",
