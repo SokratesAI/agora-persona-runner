@@ -80,8 +80,13 @@ def planned_done(history_text, entries, today=None):
     if not cycles:
         return {"lines": [], "total": 0, "shown": 0, "share": None,
                 "windowDays": WINDOW_DAYS, "historyFromCycle": None}
+    # A cycle newer than the newest entry may still be running: it has
+    # claimed and not yet written. Starting at the newest entry means a
+    # silent cycle shows as a gap once any later cycle has written, and
+    # never while it might just be unfinished.
+    newest = max(written) if written else max(cycles)
     lines = []
-    for cycle in range(max(cycles), min(cycles) - 1, -1):
+    for cycle in range(newest, min(cycles) - 1, -1):
         entry = written.get(cycle)
         lines.append({
             "cycle": cycle,

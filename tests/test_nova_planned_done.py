@@ -41,10 +41,19 @@ def test_a_cycle_with_no_entry_is_a_gap_line_not_a_missing_line():
 
 def test_a_planned_cycle_that_wrote_nothing_is_still_a_gap():
     """The case the view exists for: it planned, then left no record."""
-    payload = planned_done(_history(_claim(5, "idea-9")), [_entry(4, "x")], today=TODAY)
-    five = payload["lines"][0]
+    payload = planned_done(_history(_claim(5, "idea-9")),
+                           [_entry(6, "later"), _entry(4, "x")], today=TODAY)
+    five = payload["lines"][1]
     assert five["cycle"] == 5 and five["gap"] and five["planned"][0]["item"] == "idea-9"
-    assert payload["share"] == 50.0
+    assert payload["share"] == 66.7
+
+
+def test_a_cycle_newer_than_the_newest_entry_is_not_called_silent():
+    """It may still be running: claimed, entry not written yet."""
+    history = _history(_claim(9, "idea-1"), _claim(8, "idea-2"))
+    payload = planned_done(history, [_entry(8, "done")], today=TODAY)
+    assert [line["cycle"] for line in payload["lines"]] == [8]
+    assert payload["share"] == 100.0
 
 
 def test_the_journals_own_silence_marker_does_not_count_as_showing_up():
