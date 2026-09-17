@@ -174,6 +174,7 @@ CHECKS = (
     "login_handshake",
     "host_memory_trend",
     "host_cpu_ingest",
+    "claim_history",
     "host_cpu_history",
     "memory_headroom",
     "memory_index_health",
@@ -315,6 +316,9 @@ SUBJECT = {
     #: sweep reached, over days, which is the one thing the two above
     #: cannot answer -- they are spot readings of one box.
     "host_cpu_ingest":   ("on-box",  "the sweep's CPU rows, into the durable ledger"),
+    #: Same shape as the ingest above: the claims ledger prunes a released row
+    #: after a day, so this copies it into a history nothing prunes (idea #312).
+    "claim_history":     ("on-box",  "the claims ledger, into its never-pruned history"),
     "host_cpu_history":  ("on-box",  "every swept node's CPU, over days"),
     "memory_headroom":   ("on-box",  "the bridge pod's own node's memory"),
     #: Not the node's memory and not a persona's: MY OWN memory index, the
@@ -516,6 +520,10 @@ CADENCE_HOURS = {
     # `kubectl get pods` and no log read at all, 0.27s, because the skip happens
     # on the Pod name before `kubectl logs`.
     "host_cpu_ingest": 0.0,
+
+    # Every sweep, for the same reason: the claims ledger keeps a released row
+    # for 24 hours, and a sweep that skips copying it loses that plan for good.
+    "claim_history": 0.0,
 
     # Weekly -- a release train, a chart source, an annotation on a workload or
     # a listening port on a box nobody reinstalls between Tuesdays.
