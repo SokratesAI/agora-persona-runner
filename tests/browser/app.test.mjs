@@ -14934,10 +14934,17 @@ describe("the project page", () => {
     // come first and the grip last.
     const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
     assert.match(sheet, /\.project-milestone-move-note \{[^}]*margin-right:\s*auto/);
-    const src = readFileSync(join(publicDir, "app.js"), "utf8");
-    const fn = src.slice(src.indexOf("function milestoneMoveControls"));
-    const body = fn.slice(0, fn.indexOf("\n  }"));
-    assert.ok(body.indexOf("appendChild(note)") < body.indexOf("milestoneDragHandle"),
+    /* The project page moved into `project.js` (issue #233 step 14), and the
+     * closing brace is found at the depth the declaration itself sits at --
+     * a move that only changes indentation must not read as a missing
+     * function, which is how this failed on the way here. */
+    const src = readFileSync(join(publicDir, "project.js"), "utf8");
+    const at = src.match(/^([ ]*)function milestoneMoveControls\(/m);
+    assert.ok(at, "milestoneMoveControls is not in project.js");
+    const fn = src.slice(at.index);
+    const body = fn.slice(0, fn.indexOf("\n" + at[1] + "}"));
+    assert.ok(body.indexOf("appendChild(note)") >= 0
+      && body.indexOf("appendChild(note)") < body.indexOf("milestoneDragHandle"),
       "the milestone note is appended after the grip, so it pushes it left");
   });
 
