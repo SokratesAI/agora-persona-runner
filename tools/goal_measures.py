@@ -696,8 +696,19 @@ def kr_drift_crosses_target(row, value):
     that still counts here.
 
     A written `now` that is not a number always crosses, the blank
-    `has_drifted` was built to fill. A row with no target or direction keeps
-    the strict comparison, because there is no side to be on.
+    `has_drifted` was built to fill. A row with a target but no direction, or
+    a target that is not one number, keeps the strict comparison: it is
+    malformed, and nothing can say which side it is on.
+
+    **A row with no target at all never crosses**, because there is no target
+    to reach or leave, so nothing about it cannot wait for the Monday run. It
+    kept the strict comparison until 2026-09-17, and G5 -- the one goal whose
+    target is left blank on purpose, a rolling share of journal entries --
+    then flapped across a rounding edge: cycle 1731 repaired it 87 -> 88 and
+    the sweep three hours later read 87 again (320 of 366 entries), with
+    nothing wrong. The cost of this, stated rather than hidden: an instrument
+    on a targetless row that collapses is printed on every sweep and raised
+    only by the weekly run.
     Design: nova/resources/ideas/rolling-key-results-judged-weekly.md.
     """
     from agora_runner.project_goals import key_result_short
@@ -706,6 +717,8 @@ def kr_drift_crosses_target(row, value):
         return False
     if _as_number(row.get("now", "")) is None:
         return True
+    if not str(row.get("target", "")).strip():
+        return False
     before = key_result_short(row)
     if before is None:
         return True
