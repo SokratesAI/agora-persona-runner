@@ -335,10 +335,19 @@ function drain() {
  * URL it already used. A test that restates the value it is checking cannot
  * fail when the two sides drift -- it only fails when someone edits the
  * test. Read from app.js, it fails on the drift itself. */
+/* `PAGE_STEP` and `threadUrl` moved to `chat-dock.js` when the dock came out
+ * of `app.js` (issue #233). They are one client, so the source read here is
+ * both files -- reading `app.js` alone leaves these assertions looking at
+ * source that no longer declares what they are about, which is a test that
+ * cannot fail rather than one that passes. */
+function clientSource() {
+  const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "..",
+                   "agora_runner", "nova_public");
+  return ["app.js", "chat-dock.js"]
+    .map((name) => readFileSync(join(dir, name), "utf8")).join("\n");
+}
 const PAGE_STEP = Number(
-  (readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..",
-                     "agora_runner", "nova_public", "app.js"), "utf8")
-    .match(/var PAGE_STEP = (\d+);/) || [])[1]);
+  (clientSource().match(/var PAGE_STEP = (\d+);/) || [])[1]);
 const THREAD = "https://nova.example/api/conversations/thread?id=c-1"
   + "&limit=" + PAGE_STEP;
 
@@ -619,9 +628,7 @@ describe("a browser without a usable Cache API still loads a thread", () => {
  * which is the point: this fails when either side moves, not when this test
  * gets out of date. */
 describe("the worker prefetches the URL the page actually asks for", () => {
-  const appSource = readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "..", "..",
-         "agora_runner", "nova_public", "app.js"), "utf8");
+  const appSource = clientSource();
 
   test("the worker's page size is the page's own PAGE_STEP", () => {
     const workerLimit = Number(constFromSource("THREAD_PAGE_LIMIT"));
