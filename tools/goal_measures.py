@@ -1425,7 +1425,11 @@ STOP_CONTROLS = {
 #: is two things -- a route the server answers and a button the browser posts
 #: to it -- so both files are read and both halves are required.
 _SITE_MODULE = "agora_runner/nova_site.py"
+#: The browser runs two hand-written files since issue #233 split the chat
+#: dock out of `app.js`. A control that lives in the dock is in the second
+#: one, so reading only the first would report it as missing.
 _APP_BUNDLE = "agora_runner/nova_public/app.js"
+_APP_BUNDLE_PARTS = (_APP_BUNDLE, "agora_runner/nova_public/chat-dock.js")
 
 #: Below this many POST routes, the allowlist parse below has found something
 #: that is not the allowlist. There are over thirty today; the number is a
@@ -1533,7 +1537,7 @@ def measure_nova_control_stop_coverage(since, until):
     del since, until
     try:
         source = _repo_file(_SITE_MODULE).read_text()
-        bundle = _repo_file(_APP_BUNDLE).read_text()
+        bundle = "\n".join(_repo_file(p).read_text() for p in _APP_BUNDLE_PARTS)
     except OSError as e:
         return None, (f"could not read the app's own source ({e}), so nothing "
                       "here knows which controls it carries")

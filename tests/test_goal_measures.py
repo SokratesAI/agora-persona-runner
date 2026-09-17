@@ -5408,7 +5408,8 @@ class TestNovaControlStopCoverage:
     branch under it.
     """
 
-    def _app(self, monkeypatch, routes, bundle_routes, *, bundle_prose=()):
+    def _app(self, monkeypatch, routes, bundle_routes, *, bundle_prose=(),
+             dock_routes=()):
         listed = ", ".join(f'"{r}"' for r in routes)
         site = (
             "class H:\n"
@@ -5420,7 +5421,14 @@ class TestNovaControlStopCoverage:
             [f'  fetch("{r}", {{method: "POST"}});' for r in bundle_routes]
             + [f"  /* mentions {r} in prose only */" for r in bundle_prose]
         )
-        files = {gm._SITE_MODULE: site, gm._APP_BUNDLE: bundle}
+        # The browser runs two hand-written files since the chat dock moved
+        # into `chat-dock.js`, and `dock_routes` states the second one. A
+        # button that lives only there has to count, which is what
+        # `test_a_button_only_in_the_chat_dock_counts` proves.
+        dock = "\n".join(f'  fetch("{r}", {{method: "POST"}});'
+                          for r in dock_routes)
+        files = dict(zip(gm._APP_BUNDLE_PARTS, (bundle, dock)))
+        files[gm._SITE_MODULE] = site
 
         class _F:
             def __init__(self, text):
@@ -5436,6 +5444,23 @@ class TestNovaControlStopCoverage:
 
     def _filler(self, n=12):
         return [f"/api/filler/{i}" for i in range(n)]
+
+    def test_a_button_only_in_the_chat_dock_counts(self, monkeypatch):
+        """The dock is the second file the browser runs, not a third party.
+
+        Before the split every button was in `app.js`, so a measure that read
+        only that file was complete. It is not any more -- the dock's stop
+        button moved out with it -- and a measure blind to the second file
+        reports a control he has as one he does not.
+        """
+        served = self._filler() + ["/api/conversations/cancel",
+                                   "/api/heartbeats/enabled",
+                                   "/api/marcus/stop"]
+        self._app(monkeypatch, served,
+                  ["/api/heartbeats/enabled", "/api/marcus/stop"],
+                  dock_routes=["/api/conversations/cancel"])
+        value, detail = gm.measure_nova_control_stop_coverage(None, None)
+        assert value == 100.0, detail
 
     def test_two_of_three_kinds_is_two_thirds(self, monkeypatch):
         served = self._filler() + ["/api/conversations/cancel",
@@ -5519,7 +5544,8 @@ class TestNovaControlStopCoverage:
             def read_text(self):
                 return self._text
 
-        files = {gm._SITE_MODULE: "def do_POST(:\n", gm._APP_BUNDLE: ""}
+        files = dict.fromkeys(gm._APP_BUNDLE_PARTS, "")
+        files[gm._SITE_MODULE] = "def do_POST(:\n"
         monkeypatch.setattr(gm, "_repo_file", lambda rel: _F(files[rel]))
         value, detail = gm.measure_nova_control_stop_coverage(None, None)
         assert value is None

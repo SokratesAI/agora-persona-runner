@@ -304,6 +304,9 @@ PUBLIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova_publ
 # cannot be expressed.
 STATIC_ROUTES = {
     "/app.js": "app.js",
+    # The chat dock, moved out of `app.js` for issue #233. It loads before
+    # `app.js`, which calls it -- see the comment on the call site there.
+    "/chat-dock.js": "chat-dock.js",
     "/style.css": "style.css",
     "/manifest.webmanifest": "manifest.webmanifest",
     "/sw.js": "sw.js",
@@ -356,8 +359,17 @@ STATIC_ROUTES = {
 # rehashed on every foreground return for a library that moves once a
 # year. Being a content hash rather than a timestamp is what keeps a pod
 # restart silent: identical files, identical stamp, no banner.
-SW_BUILD_INPUTS = ("index.html", "app.js", "thread.js", "message.js", "mermaid.js",
-                   "attach.js", "style.css", "sw.js")
+SW_BUILD_INPUTS = (
+    "index.html",
+    "app.js",
+    "chat-dock.js",
+    "thread.js",
+    "message.js",
+    "mermaid.js",
+    "attach.js",
+    "style.css",
+    "sw.js",
+)
 
 # The page routes the server answers with the SPA shell. A module
 # constant rather than a literal inside `do_GET` because `site_check`

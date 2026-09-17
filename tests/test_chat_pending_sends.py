@@ -14,7 +14,7 @@ import textwrap
 
 import pytest
 
-from tests.test_heartbeats_page_polls import APP_JS, extract_function, extract_var
+from tests.test_heartbeats_page_polls import app_source, extract_function, extract_var
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
@@ -22,7 +22,7 @@ SENT_AT = 1_790_000_000_000  # ms
 
 
 def merge(messages, pending, now):
-    source = APP_JS.read_text(encoding="utf-8")
+    source = app_source()
     script = "\n".join([
         extract_var(source, "OWNER_RECORD"),
         extract_var(source, "PENDING_SEND_SKEW_MS"),
@@ -88,7 +88,7 @@ def test_a_send_the_server_never_shows_expires_after_ten_minutes():
 
 
 def test_the_dock_wires_the_merge_into_send_paint_and_poll():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = app_source()
     paint = source[source.index("    function paint(payload) {"):]
     paint = paint[: paint.index("renderAskThread(thread, payload")]
     assert "mergePendingSends(messages, pendingSends[key], Date.now())" in paint
