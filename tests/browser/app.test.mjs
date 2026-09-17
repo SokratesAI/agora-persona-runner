@@ -18212,3 +18212,71 @@ describe("the time on a chat message", () => {
     assert.match(sent.querySelector(".ask-when").textContent, /^\d\d:\d\d$/);
   });
 });
+
+/* The dock with Preact loaded, the way index.html loads it (issue #233,
+ * step 3).
+ *
+ * Every other test in this file evaluates app.js alone, so the bubbles they
+ * assert on are built by `askMessage` by hand -- which is still what a page
+ * without Preact gets. On his phone Preact is there, and the bubble in the
+ * thread is the `Message` component in message.js instead. These run the
+ * real app with both, so the two renderers cannot drift apart unseen.
+ */
+describe("the chat dock with Preact loaded", () => {
+  const withPreact = (window) => {
+    for (const file of ["vendor/preact-htm.js", "message.js", "thread.js"]) {
+      window.eval(readFileSync(join(publicDir, file), "utf8"));
+    }
+  };
+  const open = (messages) => loadAskDock({
+    install: withPreact,
+    ask: { conversationId: "c-preact", waiting: false, messages },
+  });
+  const bubbles = (window) => [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+
+  test("the bubbles are the component's, with stamp, speaker and text", async () => {
+    const window = await open([
+      { id: "1", sender: "Edvard", text: "how many pods?", createdAt: "2026-09-16T05:07:00Z" },
+      { id: "2", sender: "Nova Answers", text: "Seven.", createdAt: "2026-09-16T17:42:30Z" },
+    ]);
+    assert.ok(window.novaMessage && window.novaThread, "Preact did not load into the page");
+    const rows = bubbles(window);
+    assert.equal(rows.length, 2, "the fixture did not render");
+    /* A hand-built bubble sits in a slot of its own; the component's is a
+     * direct child of the thread's root. That is the one thing that tells
+     * the two renderers apart from outside. */
+    for (const row of rows) {
+      assert.equal(row.parentNode.parentNode.id, "chat-thread", "the bubble was hand-built");
+    }
+    assert.deepEqual(rows.map((r) => [...r.children].map((c) => c.className)),
+      [["ask-who", "ask-text", "ask-more"], ["ask-who", "ask-text", "ask-more"]]);
+    assert.deepEqual(rows.map((r) => r.querySelector(".ask-when").textContent), ["05:07", "17:42"]);
+    assert.deepEqual(rows.map((r) => r.querySelector(".ask-who-name").textContent), ["You", "Nova Answers"]);
+    assert.equal(rows[1].querySelector(".ask-text").textContent.trim(), "Seven.");
+  });
+
+  test("the ⋯ opens Copy on both, and Ask again only under an answer", async () => {
+    const window = await open([
+      { id: "1", sender: "Edvard", text: "how many pods?" },
+      { id: "2", sender: "Nova Answers", text: "Seven." },
+    ]);
+    const rows = bubbles(window);
+    assert.ok(await holdFor(window, rows[0], ".ask-copy"));
+    assert.equal(await holdFor(window, rows[0], ".ask-retry"), null);
+    assert.equal((await holdFor(window, rows[1], ".ask-retry")).textContent, "Ask again");
+  });
+
+  test("a running turn is its steps line alone, and the line opens the drawer", async () => {
+    const window = await open([
+      { id: "1", sender: "Edvard", text: "how many pods?" },
+      { id: "", sender: "", text: "", partial: true, stepsOnly: true,
+        steps: [{ kind: "thought", text: "Counting." }] },
+    ]);
+    const lines = [...window.document.querySelectorAll("#chat-thread .ask-msg-steps .ask-steps")];
+    assert.equal(lines.length, 1);
+    assert.match(lines[0].textContent, /Thought/);
+    lines[0].dispatchEvent(new window.Event("click"));
+    const sheet = window.document.querySelector(".step-sheet");
+    assert.ok(sheet && !sheet.hidden, "the steps line opened nothing");
+  });
+});

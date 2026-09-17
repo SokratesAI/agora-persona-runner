@@ -12250,12 +12250,7 @@
     var row = el("div", "ask-msg " + (mine ? "ask-mine" : "ask-theirs")
       + (message.partial ? " ask-partial" : ""));
     var who = el("div", "ask-who");
-    /* The clock time first, so it is the top left of the bubble -- his
-     * capture, `issues.md` 2026-09-16: *"I want to estamps on the chat
-     * messages. A small 24h timestamp in the top left of each bubble."*
-     * It shares the name's one line rather than taking a row of its own:
-     * a phone thread is mostly vertical space and a second dim line per
-     * bubble would cost more of it than the stamp is worth. */
+    // Why each piece is where it is: message.js, which draws this in the thread.
     var when = chatTime(message.createdAt);
     if (when) who.appendChild(el("span", "ask-when", when));
     who.appendChild(el("span", "ask-who-name",
@@ -12267,25 +12262,6 @@
     var body = el("div", "ask-text");
     appendRichText(body, null, message.text);
     row.appendChild(body);
-    /* Copy and "Ask again" open from a `⋯` at the bottom right -- his ask,
-     * 2026-09-07, replacing the press-and-hold I built first.
-     *
-     * The hold was the wrong control and he found out the way you do:
-     * *"I tried to hold the box in between the text, but only the small top
-     * of the bubble opens the edit modal."* It had to exclude `.ask-text`
-     * to leave his selection alone, which left only the name row and a few
-     * pixels of padding as a target -- a gesture with a hit area he had to
-     * hunt for. A button has one, says it is there, and takes nothing away
-     * from the text: selection is the browser's again on the whole bubble.
-     *
-     * The conditions are unchanged and still decided here, where the
-     * message is known: no Copy on a line with nothing to copy (an
-     * attachment-only message has empty `text`, and a Copy that yields an
-     * empty clipboard reads as broken rather than as empty), and no re-ask
-     * unless there is a finished answer with a question above it --
-     * re-asking one still being answered spends a turn to race the one
-     * already running. A message with neither gets no button at all rather
-     * than one that opens an empty drawer. */
     var actions = [];
     if (message.text) actions.push(function () { return askCopyButton(message.text); });
     if (!mine && !message.partial && conversationId && retry && retry.question) {
@@ -12927,8 +12903,10 @@
   function askPaintThread(put, payload, afterSend) {
     var asked = "";
     (payload.messages || []).forEach(function (message) {
-      put(askMessage(message, payload.conversationId, payload.limit,
-        { question: asked, afterSend: afterSend }), (message.id || message.createdAt) + message.sender,
+      var retry = { question: asked, afterSend: afterSend };
+      put(window.novaMessage && window.novaThread ? { message: message, conversationId: payload.conversationId,
+        limit: payload.limit, retry: retry } : askMessage(message, payload.conversationId,
+        payload.limit, retry), (message.id || message.createdAt) + message.sender,
         JSON.stringify([message, asked, payload.conversationId, payload.limit]));
       // Only his lines become the question to re-ask, and the update happens
       // after the row is built: an answer re-asks what was said *above* it,
@@ -12945,7 +12923,10 @@
     refreshStepSheet(payload);
   }
 
-  // thread.js (Preact) keeps unchanged rows.
+  // message.js draws a bubble with these; thread.js (Preact) keeps unchanged rows.
+  window.novaChat = { owner: OWNER_RECORD, chatTime: chatTime, stepsLabel: stepsLabel,
+    openStepSheet: openStepSheet, stepMessageKey: stepMessageKey, appendRichText: appendRichText,
+    askCopyButton: askCopyButton, askRetryButton: askRetryButton, openMessageActions: openMessageActions };
   function renderAskThread(container, payload, afterSend) {
     var rows = [], messages = payload.messages || [];
     function put(node, key, sig) { rows.push({ node: node, key: key, sig: sig }); }

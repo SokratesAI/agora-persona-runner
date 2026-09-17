@@ -49,7 +49,7 @@ var PUSH_CACHE = "nova-push-v1";
  * falls back to the code block `app.js` leaves on screen.
  */
 var SHELL = ["/", "/app.js", "/style.css", "/icon.svg", "/manifest.webmanifest",
-             "/vendor/echarts.min.js", "/vendor/preact-htm.js", "/thread.js"];
+             "/vendor/echarts.min.js", "/vendor/preact-htm.js", "/message.js", "/thread.js"];
 
 self.addEventListener("install", function (event) {
   event.waitUntil(
