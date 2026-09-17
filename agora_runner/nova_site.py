@@ -262,6 +262,7 @@ from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_stop_timings import record as record_stop_timing
+from agora_runner.nova_app_opens import record as record_app_open
 from agora_runner.nova_planned_done import planned_done, render_page as render_planned_done
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_next import (next_payload_from_contents,
@@ -3806,6 +3807,15 @@ def _record_stop_timing(seconds):
         log(f"nova-site: could not record a stop timing of {seconds:.2f}s: {e}")
 
 
+def _record_app_open(user_agent, errors):
+    """Write one app open, logging rather than raising -- same reason as
+    `_record_stop_timing`: the answer has already gone."""
+    try:
+        record_app_open(user_agent, errors)
+    except Exception as e:
+        log(f"nova-site: could not record an app open: {e}")
+
+
 class NovaSiteHandler(BaseHTTPRequestHandler):
     server_version = "nova-site"
 
@@ -6572,7 +6582,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/marcus/stop",
             "/api/pool/decide", "/api/pool/comment", "/api/pool/generate",
             "/api/goal/status", "/api/push/subscribe",
-            "/api/project/comment",
+            "/api/project/comment", "/api/app/open",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -6582,6 +6592,17 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/ask":
             self._post_ask(payload)
+            return
+        if path == "/api/app/open":
+            # Only a real browser is an open (`nova_app_opens`): a cycle's
+            # own probe of this route must not read as him using the app.
+            recorded = opened_by_a_person(self.headers.get("User-Agent"))
+            if recorded:
+                threading.Thread(target=_record_app_open,
+                                 args=(self.headers.get("User-Agent"),
+                                       payload.get("errors")),
+                                 daemon=True).start()
+            self._send_json(202, {"recorded": recorded})
             return
         if path == "/api/push/subscribe":
             ok, body = store_subscription(payload)

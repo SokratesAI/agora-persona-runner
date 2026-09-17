@@ -19,6 +19,24 @@
      means style.css carries one light block instead of the same declarations
      twice, and `renderSettings` in app.js keeps the attribute in step when
      the phone flips at sunset. -->
+<!-- First script on the page, on purpose: it collects every script error
+     from here on, including app.js failing to load or to parse, and the
+     reporter at the bottom sends them once per open (nova_app_opens.py,
+     the owner's "I hate manual tasks", 2026-09-17). Capture phase, because a
+     <script src> that fails to load fires an error that does not bubble. -->
+<script>
+  (function () {
+    var errors = window.__novaOpenErrors = [];
+    window.addEventListener("error", function (e) {
+      var t = e.target;
+      errors.push(t && t !== window && t.src ? "could not load " + t.src
+        : (e.message || "error") + (e.filename ? " at " + e.filename + ":" + e.lineno : ""));
+    }, true);
+    window.addEventListener("unhandledrejection", function (e) {
+      errors.push("unhandled rejection: " + String(e.reason && e.reason.message || e.reason));
+    });
+  })();
+</script>
 <script>
   (function () {
     var pref = "system";
@@ -267,5 +285,16 @@
 </section>
 
 <script src="/app.js"></script>
+<script>
+  window.addEventListener("load", function () {
+    setTimeout(function () {
+      try {
+        fetch("/api/app/open", {method: "POST", keepalive: true,
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({errors: window.__novaOpenErrors || []})});
+      } catch (e) { /* a report that cannot be sent is not worth an error */ }
+    }, 5000);
+  });
+</script>
 </body>
 </html>

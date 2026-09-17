@@ -6476,3 +6476,36 @@ def test_a_raising_cost_ledger_leaves_the_health_line_standing():
     assert health["concerns"] == [
         "the cost ledger carries no quota reading, so I cannot say what the week has spent"
     ]
+
+
+def test_app_open_from_a_probe_is_answered_and_not_recorded():
+    # `_post` sends no User-Agent, which is what curl-less urllib probes look
+    # like to `opened_by_a_person`: a cycle checking the route is not him.
+    with patch.object(nova_site, "_record_app_open") as recorder:
+        status, _, body = _post("/api/app/open", {"errors": []})
+    assert status == 202
+    assert json.loads(body) == {"recorded": False}
+    recorder.assert_not_called()
+
+
+def test_app_open_from_a_browser_records_its_errors():
+    seen = {}
+    with patch.object(nova_site, "opened_by_a_person", return_value=True), \
+         patch.object(nova_site, "_record_app_open",
+                      side_effect=lambda ua, errors: seen.update(errors=errors)):
+        status, _, body = _post("/api/app/open", {"errors": ["TypeError: boom"]})
+        for _ in range(100):
+            if seen:
+                break
+            time.sleep(0.01)
+    assert status == 202
+    assert json.loads(body) == {"recorded": True}
+    assert seen == {"errors": ["TypeError: boom"]}
+
+
+def test_the_page_collects_errors_before_app_js_and_reports_after_it():
+    status, _, body = _get("/")
+    page = body.decode()
+    assert status == 200
+    assert page.index("__novaOpenErrors = []") < page.index('<script src="/app.js">')
+    assert page.index('<script src="/app.js">') < page.index('fetch("/api/app/open"')
