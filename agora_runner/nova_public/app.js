@@ -11480,13 +11480,28 @@
   /* What both surfaces do the moment a message goes out: show it, and show
    * that something is coming. Without this the thread sits unchanged for up
    * to a poll interval and the tap reads as having done nothing. */
-  function askPaintSent(container, text) {
-    container.appendChild(askMessage({ sender: OWNER_RECORD, text: text,
-      createdAt: new Date().toISOString() }));
+  function askPaintSent(container, text, sentAt) {
+    var sent = { sender: OWNER_RECORD, text: text,
+      createdAt: new Date(sentAt || Date.now()).toISOString() };
+    // Keyed as the next poll's merged send will be, so it updates this row.
+    if (window.novaMessage && window.novaThread) {
+      return window.novaThread.append(container, [
+        { node: { message: sent }, key: sent.createdAt + sent.sender, sig: "sent" },
+        { node: { tail: "pending", progress: null }, key: "tail", sig: NaN }]);
+    }
+    container.appendChild(askMessage(sent));
     // The same loader the poll's own bubble draws, rather than a second way
     // of saying the same thing -- this is the one he sees first, in the
     // moment between the tap and the first poll.
     container.appendChild(askPending(null));
+  }
+
+  /* A thread that is one line: "loading…", or why it could not load. */
+  function askPaintNote(container, text) {
+    var line = el("p", "empty", text);
+    if (window.novaThread) return window.novaThread.render(container, [{ node: line, key: "note", sig: text }]);
+    container.textContent = "";
+    container.appendChild(line);
   }
 
   /* --- The work behind an answer, as one line and a drawer ---------------
@@ -16643,8 +16658,7 @@
           // can already read with "could not load" would be the wrong
           // report -- the messages on screen are still true.
           if (!loaded) {
-            thread.textContent = "";
-            thread.appendChild(el("p", "empty", "Could not load the thread: " + err));
+            askPaintNote(thread, "Could not load the thread: " + err);
           }
         });
     }
@@ -17164,7 +17178,7 @@
       thread.textContent = "";
       // Only the thread the cache actually holds paints instantly; every
       // other row in the switcher still shows the placeholder.
-      if (!paintCached()) thread.appendChild(el("p", "empty", "loading…"));
+      if (!paintCached()) askPaintNote(thread, "loading…");
       loadThread();
     }
 
@@ -17811,18 +17825,14 @@
           // polling the new thread on the old one's schedule.
           if (token !== sourceToken) return;
           var sentKey = sourceKey();
+          var sentAt = Date.now();
           (pendingSends[sentKey] = pendingSends[sentKey] || []).push(
-            { text: body, sentAt: Date.now() });
+            { text: body, sentAt: sentAt });
           // Paint his question straight away rather than waiting a poll for
           // the server to echo it, for `pollConv`'s reason: a box that has
           // gone blank with nothing to show for it reads as a lost message.
-          thread.appendChild(askMessage({ sender: OWNER_RECORD, text: body,
-            createdAt: new Date().toISOString() }));
-          // The dock's own optimistic bubble, and the third place this app
-          // painted the word. Same loader as the other two -- missing this
-          // one shipped "Thinking…" to the surface he actually uses while
-          // the other two were already the loader.
-          thread.appendChild(askPending(null));
+          // Same painter as the re-ask; a hand copy here once lost the loader.
+          askPaintSent(thread, body, sentAt);
           // Sending is him asking to be at the bottom, whatever he was
           // rereading a second ago -- so the answer to this question lands on
           // his screen rather than below it.

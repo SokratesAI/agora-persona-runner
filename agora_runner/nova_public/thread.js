@@ -13,11 +13,13 @@
  * `message.js` rather than slotted in: `Message` (step 3), or `Tail` for the
  * loader and the lost-turn card when the props carry `tail` (step 4).
  *
- * Other painters still write straight into the container -- the send
- * bubble, the error line, the loading line -- so anything in it that is not
- * this file's root is removed before each render, exactly as the old
- * `textContent = ""` did, and a root someone else emptied out is remounted
- * rather than diffed against nodes that are no longer on the page.
+ * The send bubble, the error line and the loading line come through here
+ * too (step 5): `append` draws his just-sent message and the loader under
+ * the rows already on screen, and a one-line note is a render of one row.
+ * Anything else still in the container is removed before each render,
+ * exactly as the old `textContent = ""` did, and a root someone else
+ * emptied out is remounted rather than diffed against nodes that are no
+ * longer on the page.
  */
 (function () {
   "use strict";
@@ -65,6 +67,7 @@
     // second), and Preact mismatches rows on a repeated key, so repeats get
     // a count on the end.
     var seen = {};
+    container.novaThreadRows = rows;
     P.render(rows.map(function (r) {
       var key = String(r.key);
       seen[key] = (seen[key] || 0) + 1;
@@ -73,5 +76,15 @@
     }), root);
   }
 
-  window.novaThread = { render: render };
+  /* The rows last drawn plus `extra`, for the moment between his tap and the
+   * next poll. The old loader and a placeholder ("Ask me anything", an
+   * error, "loading…") make way: the send replaces what they said. */
+  function append(container, extra) {
+    var kept = (container.novaThreadRows || []).filter(function (r) {
+      return r.key !== "tail" && r.key !== "empty" && r.key !== "note";
+    });
+    render(container, kept.concat(extra));
+  }
+
+  window.novaThread = { render: render, append: append };
 })();

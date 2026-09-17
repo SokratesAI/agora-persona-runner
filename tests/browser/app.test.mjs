@@ -18280,6 +18280,37 @@ describe("the chat dock with Preact loaded", () => {
     assert.ok(sheet && !sheet.hidden, "the steps line opened nothing");
   });
 
+  /* Step 5: his question, the moment he sends it, and the loader under it
+   * are drawn by the components too, below the bubbles already on screen --
+   * which stay the same nodes. */
+  test("a sent question and its loader are the components', under the thread he had", async () => {
+    const window = await open([
+      { id: "1", sender: "Edvard", text: "how many pods?" },
+      { id: "2", sender: "Nova Answers", text: "Seven." },
+    ]);
+    const first = bubbles(window)[0];
+    window.document.querySelector("#chat-box").value = "and nodes?";
+    window.document.querySelector("#chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const rows = bubbles(window);
+    assert.equal(rows.length, 4, "the send painted nothing, or painted twice");
+    assert.equal(rows[0], first, "the send redrew the bubbles already on screen");
+    assert.ok(rows[2].classList.contains("ask-mine"));
+    assert.equal(rows[2].querySelector(".ask-text").textContent.trim(), "and nodes?");
+    assert.ok(rows[3].classList.contains("ask-pending"), "no sign an answer is coming");
+    for (const row of rows.slice(2)) {
+      assert.equal(row.parentNode.parentNode.id, "chat-thread", "the send was hand-built");
+    }
+  });
+
+  test("a thread that could not load says so in a row of the Preact thread", async () => {
+    const window = await loadAskDock({ install: withPreact, askStatus: 500 });
+    const line = window.document.querySelector("#chat-thread p.empty");
+    assert.ok(line, "no line at all");
+    assert.match(line.textContent, /Could not load the thread/);
+    assert.equal(line.parentNode.parentNode.parentNode.id, "chat-thread", "the error line was hand-painted");
+  });
+
   /* Step 4: the loader under a running turn is the `Tail` component too,
    * with the same three lines the hand-built one carries. */
   test("the loader under a running turn is the component's, with clock, tool and count", async () => {
