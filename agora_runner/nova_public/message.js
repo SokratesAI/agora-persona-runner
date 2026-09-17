@@ -77,5 +77,37 @@
     return html`<div class=${cls}><div class="ask-who">${when ? html`<span class="ask-when">${when}</span>` : null}<span class="ask-who-name">${mine ? "You" : m.sender || "Nova Answers"}</span></div><${Steps} ...${props} /><${RichText} text=${m.text} />${actions.length ? html`<button type="button" class="ask-more" title="Message actions" aria-label="Message actions" onClick=${more}>⋯</button>` : null}</div>`;
   }
 
-  window.novaMessage = { Message: Message };
+  /* A slot that app.js fills with one hand-built node, once, and keeps.
+   * Redrawn only when `sig` changes: the orbit's animation and an "Ask again"
+   * mid-send ("sending…", disabled) must survive the four-second poll, which
+   * used to swap both for fresh nodes. */
+  function Slot(props) { P.Component.call(this, props); }
+  Slot.prototype = Object.create(P.Component.prototype);
+  Slot.prototype.constructor = Slot;
+  Slot.prototype.shouldComponentUpdate = function (next) { return next.sig !== this.props.sig; };
+  Slot.prototype.render = function () { return html`<span class="thread-slot"></span>`; };
+  function place() {
+    this.base.textContent = "";
+    this.base.appendChild(this.props.make());
+  }
+  Slot.prototype.componentDidMount = place;
+  Slot.prototype.componentDidUpdate = place;
+
+  /* The bottom of a thread whose turn is still owed (step 4 of #233): the
+   * loader while it runs -- the clock after `pendingClockAfter` seconds, the
+   * newest tool call once there is one, the orbit before that -- and, once
+   * nothing has arrived for too long, the card saying the turn was lost with
+   * the same "Ask again" the `⋯` menu carries. Same classes askPending and
+   * askLost build by hand; those stay for a page where Preact did not load. */
+  function Tail(props) {
+    var d = window.novaChat, p = props.progress, latest = p && p.latest;
+    if (props.tail === "lost") {
+      var id = props.conversationId, q = props.question;
+      return html`<div class="ask-msg ask-theirs ask-stopped-row"><div class="ask-stopped">${"No answer came back. Nothing has arrived for " + Math.round(props.quietSeconds / 60) + " minutes, so the turn was lost."}</div>${id && q ? html`<${Slot} sig=${id + "\n" + q} make=${function () { return d.askRetryButton(id, q, props.afterSend); }} />` : null}</div>`;
+    }
+    var secs = d.askPendingSeconds(p && p.askedAt);
+    return html`<div class="ask-msg ask-theirs ask-pending">${secs !== null && secs >= d.pendingClockAfter ? html`<div class="ask-pending-head">${d.askElapsed(p.askedAt)}</div>` : null}${latest ? html`<div class="ask-pending-step"><span class="ask-pending-tool">${latest.capability}</span>${latest.detail ? html`<span class="ask-pending-detail">${latest.detail}</span>` : null}</div>` : html`<${Slot} sig="orbit" make=${d.askOrbit} />`}${latest && p.steps > 1 ? html`<div class="ask-pending-count">${p.steps + " steps so far"}</div>` : null}</div>`;
+  }
+
+  window.novaMessage = { Message: Message, Tail: Tail };
 })();
