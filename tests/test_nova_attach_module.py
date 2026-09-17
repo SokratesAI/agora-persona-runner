@@ -41,9 +41,16 @@ def test_app_js_kept_no_copy_of_the_attach_code():
 
 
 def test_every_composer_reaches_the_moved_module():
-    """Four composers mount it; a call site left on the old name is a crash."""
-    app = read("app.js")
-    assert app.count("= window.novaAttach.build({") == 4
+    """Four composers mount it; a call site left on the old name is a crash.
+
+    Both halves of the client, not just `app.js`. The chat dock's composer
+    left this file for `chat-dock.js` on 2026-09-17 and took its call with
+    it, so a count over `app.js` alone reads 3 and says a composer lost its
+    `+` when nothing of the kind happened -- the same way round as the
+    assertions a split makes vacuous.
+    """
+    client = read("app.js") + "\n" + read("chat-dock.js")
+    assert client.count("= window.novaAttach.build({") == 4
 
 
 def test_attach_js_takes_el_from_app_rather_than_copying_it():
