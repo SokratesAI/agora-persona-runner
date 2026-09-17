@@ -1047,11 +1047,6 @@ KEY_RESULT_NO_INSTRUMENT = {
                           "app to do -- a judgement about his experience, not a "
                           "fact on this box; same reason as G2, which is the "
                           "same measure",
-    "nova-kr-trust-cycles-shown": "measures the planned vs. done view, and the "
-                                  "app has no planned-vs-done view yet -- the "
-                                  "journal view shows done only, so a share "
-                                  "taken off it would read a confident 100% "
-                                  "for a view he cannot open",
 }
 
 
@@ -1320,11 +1315,9 @@ def measure_nova_trust_data_fresh(since, until):
     the comparison, so there is no age to report off it; saying so is honest
     and clamping it to 0 would hide a read I cannot trust.
 
-    What it cannot see: whether the page *renders* what the API returns, and
-    whether the plan half of "planned vs. done" is current -- the app has no
-    planned-vs-done view yet, and `nova-kr-trust-cycles-shown` stays
-    uninstrumented for that reason rather than reading a confident 100% off
-    the only view that does exist.
+    What it cannot see: whether the page *renders* what the API returns. The
+    plan half of "planned vs. done" is `nova-kr-trust-cycles-shown`'s, read
+    off `/api/planned` by `measure_nova_trust_cycles_shown`.
     """
     del since, until
     from agora_runner.nova_journal import file_cycle
@@ -1359,6 +1352,42 @@ def measure_nova_trust_data_fresh(since, until):
     return written - shown, (
         f"the app's journal view is dated by cycle {shown}; the newest entry "
         f"in the vault is cycle {written}, over {len(names)} file(s) listed")
+
+
+def measure_nova_trust_cycles_shown(since, until):
+    """`nova-kr-trust-cycles-shown` -- the share of cycles the planned vs. done
+    view shows, read off the view itself (`/api/planned`, idea #312).
+
+    The number is recomputed from `shown` and `total` rather than taken from
+    the payload's `share`, and a payload whose counts cannot be a share is no
+    reading: 0 is this key result's worst value and 100 its target, so a page
+    that answered nothing must not publish either.
+
+    What it cannot see: a cycle older than the window, and whether a cycle
+    that is still running will write. The view starts at the newest entry, so
+    an unfinished cycle is not counted as a gap here either.
+    """
+    del since, until
+    payload, error = _get_json(f"{SITE}/api/planned")
+    if error:
+        return None, (f"the planned vs. done view could not be read, so the "
+                      f"share is unknown rather than 0 -- {error}")
+    if not isinstance(payload, dict):
+        return None, f"{SITE}/api/planned answered something that is not an object"
+    shown, total = payload.get("shown"), payload.get("total")
+    if not (isinstance(shown, int) and isinstance(total, int)
+            and 0 <= shown <= total):
+        return None, (f"{SITE}/api/planned answered shown={shown!r} "
+                      f"total={total!r}, which is not a share")
+    if total == 0:
+        return None, (f"{SITE}/api/planned holds no cycle in its window, so "
+                      "there is no share to take")
+    days = payload.get("windowDays")
+    since_cycle = payload.get("historyFromCycle")
+    return round(100.0 * shown / total, 1), (
+        f"{shown} of {total} cycle(s) in the last {days} days wrote a journal "
+        f"entry, read live from /api/planned; plans are kept from cycle "
+        f"{since_cycle} on")
 
 
 #: The three agent kinds his Control objective names, and the one Nova-app
@@ -5051,6 +5080,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "demos-kr-opened": measure_demos_opened,
     "demos-kr-no-litter": measure_demos_no_litter,
     "nova-kr-trust-data-fresh": measure_nova_trust_data_fresh,
+    "nova-kr-trust-cycles-shown": measure_nova_trust_cycles_shown,
     "nova-kr-control-stop-coverage": measure_nova_control_stop_coverage,
     "nova-kr-control-stop-seconds": measure_nova_control_stop_seconds,
     "nova-kr-scale-blocks-recorded": measure_nova_scale_blocks_recorded,
