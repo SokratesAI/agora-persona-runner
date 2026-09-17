@@ -260,6 +260,7 @@ from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
 from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_rev,
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
+from agora_runner.nova_stop_timings import record as record_stop_timing
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_next import (next_payload_from_contents,
                                     project_milestones, rank)
@@ -3782,6 +3783,15 @@ def _stamp_worker(body, public_dir=None):
     return body + b"\n/* build " + digest.hexdigest()[:16].encode("ascii") + b" */\n"
 
 
+def _record_stop_timing(seconds):
+    """Write one stop timing, logging rather than raising: it runs on a
+    daemon thread after the answer has gone, so there is no caller to tell."""
+    try:
+        record_stop_timing(seconds)
+    except Exception as e:
+        log(f"nova-site: could not record a stop timing of {seconds:.2f}s: {e}")
+
+
 class NovaSiteHandler(BaseHTTPRequestHandler):
     server_version = "nova-site"
 
@@ -5816,6 +5826,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if not isinstance(conversation_id, str):
             self._send_json(400, {"error": "conversationId must be a string"})
             return
+        started = time.monotonic()
         try:
             ok, message = conversation_cancel(conversation_id)
         except Exception as e:
@@ -5830,6 +5841,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
             is_error=not ok,
         )
+        # One real attempt for `nova-kr-control-stop-seconds` (issue #240):
+        # only a stop that reached a running turn, and off the response path,
+        # because a slow vault write must not hold his button.
+        if ok and message == "stopped":
+            threading.Thread(target=_record_stop_timing,
+                             args=(time.monotonic() - started,),
+                             daemon=True).start()
         # `which conversation?` is the one refusal a retry cannot fix --
         # `_post_conversation_send`'s split, same reasoning.
         bad_request = not ok and message.startswith("which conversation")

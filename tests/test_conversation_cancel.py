@@ -130,7 +130,8 @@ def test_the_route_dispatches_to_the_cancel_handler():
     handler._send_json = MagicMock()
     with patch.object(nova_site, "conversation_cancel",
                       return_value=(True, "stopped")) as stop, \
-            patch.object(nova_site, "audit"):
+            patch.object(nova_site, "audit"), \
+            patch.object(nova_site, "_record_stop_timing"):
         handler._post_conversation_cancel({"conversationId": "conv-1"})
     stop.assert_called_once_with("conv-1")
     assert handler._send_json.call_args[0][0] == 200
@@ -158,3 +159,56 @@ def test_a_missing_conversation_id_is_a_400_and_never_calls_the_bridge():
         handler._post_conversation_cancel({})
     stop.assert_not_called()
     assert handler._send_json.call_args[0][0] == 400
+
+
+# ---------------------------------------------------------------------------
+# the stop timing (issue #240, nova-kr-control-stop-seconds)
+# ---------------------------------------------------------------------------
+
+def _stop_with(answer, delay=0.0):
+    import threading
+    import time
+    from agora_runner import nova_site
+    handler = nova_site.NovaSiteHandler.__new__(nova_site.NovaSiteHandler)
+    handler.headers = {}
+    handler._send_json = MagicMock()
+    recorded = threading.Event()
+    seen = []
+
+    def fake_record(seconds):
+        seen.append(seconds)
+        recorded.set()
+
+    def slow_cancel(_conversation_id):
+        time.sleep(delay)
+        return answer
+
+    with patch.object(nova_site, "conversation_cancel", side_effect=slow_cancel), \
+            patch.object(nova_site, "audit"), \
+            patch.object(nova_site, "_record_stop_timing", side_effect=fake_record):
+        handler._post_conversation_cancel({"conversationId": "conv-1"})
+        recorded.wait(2)
+    return seen
+
+
+def test_a_stop_that_stopped_a_turn_records_how_long_the_bridge_took():
+    seen = _stop_with((True, "stopped"), delay=0.2)
+    assert len(seen) == 1
+    assert 0.2 <= seen[0] < 2
+
+
+def test_a_stop_that_found_nothing_running_is_not_an_attempt():
+    assert _stop_with((True, "nothing was running")) == []
+
+
+def test_a_failed_stop_is_not_recorded_as_a_time():
+    assert _stop_with((False, "could not reach the bridge")) == []
+
+
+def test_a_ledger_write_failure_is_logged_and_never_raises():
+    from agora_runner import nova_site
+    with patch.object(nova_site, "record_stop_timing",
+                      side_effect=RuntimeError("couch down")), \
+            patch.object(nova_site, "log") as log:
+        nova_site._record_stop_timing(1.5)
+    assert "1.50s" in log.call_args[0][0]
