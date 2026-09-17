@@ -263,9 +263,14 @@ def test_the_payload_carries_the_score_and_the_width_the_page_draws():
 
 def test_the_control_exists_on_his_project_page_and_posts_the_score():
     """The button is the whole write path, so its absence is the bug."""
-    app = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                       "agora_runner", "nova_public", "app.js")
-    source = open(app, encoding="utf-8").read()
+    # The project page moved out of `app.js` into `project.js` (issue #233
+    # step 14), so this reads the file the page actually lives in now. It
+    # read `app.js` until then and failed with "the button is missing" when
+    # the button had merely moved -- a text-reading test cannot tell those
+    # two apart, so it has to be pointed at the right text.
+    page = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                        "agora_runner", "nova_public", "project.js")
+    source = open(page, encoding="utf-8").read()
     assert "renderProjectSatisfaction" in source
     assert 'fetch("/api/project/satisfaction"' in source
     # Drawn through `section()` since issue #233 step 10, which keeps the

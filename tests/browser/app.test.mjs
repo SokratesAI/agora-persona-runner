@@ -417,23 +417,25 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
    * function would never return. */
   const realTimeout = window.setTimeout.bind(window);
   if (install) install(window);
-  /* `mermaid.js`, `attach.js`, `chat-dock.js`, `charts.js` and `diag.js`
-   * always, `app.js`
+  /* `mermaid.js`, `attach.js`, `chat-dock.js`, `charts.js`, `diag.js` and
+   * `project.js` always, `app.js`
    * after them,
    * exactly as index.html orders the tags: `appendRichText` calls
    * `window.novaMermaid.split` on every message on this site, not only the
    * ones carrying a diagram, every composer here mounts
    * `window.novaAttach.build`, and `app.js` calls `window.novaChatDock` and
-   * `window.novaCharts` and `window.novaDiag` from its own body -- so a
-   * window without the five is not the app, and without them every dock
-   * test would pass against an app with no dock in it and `/costs`,
-   * `/retro` and `/diag` would draw nothing.
+   * `window.novaCharts`, `window.novaDiag` and `window.novaProject` from
+   * its own body -- so a window without the six is not the app, and without
+   * them every dock test would pass against an app with no dock in it and
+   * `/costs`, `/retro`, `/diag`, `/pool` and every project page would draw
+   * nothing.
    * Preact stays opt-in via `install`. */
   window.eval(readFileSync(join(publicDir, "mermaid.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "chat-dock.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "charts.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "diag.js"), "utf8"));
+  window.eval(readFileSync(join(publicDir, "project.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
   // app.js renders from three resolved promises; let the microtasks drain.
   await new Promise((resolve) => realTimeout(resolve, 0));
@@ -14932,10 +14934,17 @@ describe("the project page", () => {
     // come first and the grip last.
     const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
     assert.match(sheet, /\.project-milestone-move-note \{[^}]*margin-right:\s*auto/);
-    const src = readFileSync(join(publicDir, "app.js"), "utf8");
-    const fn = src.slice(src.indexOf("function milestoneMoveControls"));
-    const body = fn.slice(0, fn.indexOf("\n  }"));
-    assert.ok(body.indexOf("appendChild(note)") < body.indexOf("milestoneDragHandle"),
+    /* The project page moved into `project.js` (issue #233 step 14), and the
+     * closing brace is found at the depth the declaration itself sits at --
+     * a move that only changes indentation must not read as a missing
+     * function, which is how this failed on the way here. */
+    const src = readFileSync(join(publicDir, "project.js"), "utf8");
+    const at = src.match(/^([ ]*)function milestoneMoveControls\(/m);
+    assert.ok(at, "milestoneMoveControls is not in project.js");
+    const fn = src.slice(at.index);
+    const body = fn.slice(0, fn.indexOf("\n" + at[1] + "}"));
+    assert.ok(body.indexOf("appendChild(note)") >= 0
+      && body.indexOf("appendChild(note)") < body.indexOf("milestoneDragHandle"),
       "the milestone note is appended after the grip, so it pushes it left");
   });
 

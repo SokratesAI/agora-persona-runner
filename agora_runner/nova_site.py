@@ -313,6 +313,9 @@ STATIC_ROUTES = {
     # The diagnostics and settings pages, moved out of `app.js` for issue
     # #233. Loads before `app.js` too.
     "/diag.js": "diag.js",
+    # The Pool page and the project page, moved out of `app.js` for issue
+    # #233. Loads before `app.js` too.
+    "/project.js": "project.js",
     "/style.css": "style.css",
     "/manifest.webmanifest": "manifest.webmanifest",
     "/sw.js": "sw.js",
@@ -371,6 +374,7 @@ SW_BUILD_INPUTS = (
     "chat-dock.js",
     "charts.js",
     "diag.js",
+    "project.js",
     "thread.js",
     "message.js",
     "mermaid.js",
