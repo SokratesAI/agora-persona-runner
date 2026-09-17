@@ -212,3 +212,65 @@ def test_a_ledger_write_failure_is_logged_and_never_raises():
             patch.object(nova_site, "log") as log:
         nova_site._record_stop_timing(1.5)
     assert "1.50s" in log.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# stopping Marcus (issue #239, nova-kr-control-stop-coverage)
+# ---------------------------------------------------------------------------
+
+def test_stop_marcus_cancels_the_coach_conversation_on_the_bridge():
+    opener = MagicMock(return_value=_Response({"cancelled": 1}))
+    with patch.object(nova_conversations, "CLAUDE_BRIDGE_URL", "http://bridge:8090"), \
+            patch.object(nova_conversations, "CLAUDE_BRIDGE_TOKEN", "tok"), \
+            patch.object(nova_conversations, "MARCUS_COACH_CONVERSATION_ID", "coach-1"), \
+            patch.object(nova_conversations.urllib.request, "urlopen", opener):
+        result = nova_conversations.stop_marcus()
+    assert result == (True, "stopped")
+    request = opener.call_args[0][0]
+    assert request.full_url == "http://bridge:8090/cancel"
+    assert json.loads(request.data) == {"conversation_id": "coach-1"}
+
+
+def test_the_default_coach_conversation_is_the_one_marcus_runs_in():
+    """The id the marcus Deployment carries in MARCUS_COACH_CONVERSATION_ID.
+    A different default here would be a Stop button that always answers
+    "nothing was running"."""
+    assert nova_conversations.MARCUS_COACH_CONVERSATION_ID == \
+        "cc484b5a-ad53-420e-93f1-5efacdfb4760"
+
+
+def _marcus_stop_with(answer):
+    from agora_runner import nova_site
+    handler = nova_site.NovaSiteHandler.__new__(nova_site.NovaSiteHandler)
+    handler.headers = {}
+    handler._send_json = MagicMock()
+    with patch.object(nova_site, "stop_marcus", return_value=answer) as stop, \
+            patch.object(nova_site, "audit"), \
+            patch.object(nova_site.threading, "Thread") as thread:
+        handler._post_marcus_stop()
+    stop.assert_called_once_with()
+    return handler._send_json.call_args[0], thread
+
+
+def test_the_marcus_stop_route_answers_what_the_bridge_stopped():
+    (status, body), thread = _marcus_stop_with((True, "stopped"))
+    assert status == 200 and body == {"ok": True, "message": "stopped"}
+    assert thread.call_args.kwargs["target"].__name__ == "_record_stop_timing"
+
+
+def test_marcus_with_nothing_running_is_a_success_and_not_a_timed_attempt():
+    (status, body), thread = _marcus_stop_with((True, "nothing was running"))
+    assert status == 200 and body["ok"] is True
+    thread.assert_not_called()
+
+
+def test_a_marcus_stop_that_could_not_reach_the_bridge_is_a_502():
+    (status, body), thread = _marcus_stop_with((False, "could not reach the bridge"))
+    assert status == 502 and body["ok"] is False
+    thread.assert_not_called()
+
+
+def test_stop_coverage_reads_all_three_agent_kinds_off_the_real_app():
+    from tools import goal_measures
+    value, detail = goal_measures.measure_nova_control_stop_coverage(None, None)
+    assert value == 100.0, detail

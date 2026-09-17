@@ -13201,6 +13201,49 @@
     livePolls.push(setTimeout(loadHeartbeats, fast ? ASK_POLL_MS : POLL_MS));
   }
 
+  /* Issue #239: Marcus is the third agent he can stop from here. Cycles have
+   * the Stop button and heartbeats the switch below; Marcus runs no heartbeat,
+   * only coach turns in one conversation, so this card ends whichever of those
+   * is running. It answers with what happened -- "nothing was running" is the
+   * common answer and it is still the truth he pressed for. His 20:00
+   * reminder is not a turn and keeps its own switch in the Marcus app.
+   */
+  // Its own classes, styled like a heartbeat row: the page's tests count
+  // `.hb-row`s as heartbeats, and so would anything else reading the page.
+  function marcusStopCard() {
+    var card = el("div", "marcus-stop");
+    card.appendChild(el("div", "marcus-stop-name", "Marcus"));
+    card.appendChild(el("div", "marcus-stop-meta", "Coach turns · no heartbeat"));
+    var actions = el("div", "marcus-stop-actions");
+    var stop = el("button", "marcus-stop-btn", "Stop Marcus");
+    stop.setAttribute("type", "button");
+    stop.addEventListener("click", function () {
+      stop.disabled = true;
+      fetch("/api/marcus/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          stop.disabled = false;
+          if (!result.ok) {
+            window.alert(result.message || result.error || "that did not work");
+          } else {
+            window.alert(result.message === "stopped"
+              ? "Marcus stopped." : "Marcus had nothing running.");
+          }
+        })
+        .catch(function (err) {
+          stop.disabled = false;
+          window.alert("could not reach Nova: " + err);
+        });
+    });
+    actions.appendChild(stop);
+    card.appendChild(actions);
+    return card;
+  }
+
   function renderHeartbeats(payload) {
     stopPolling();
     markNav();
@@ -13214,6 +13257,7 @@
     // Before the empty-list return, not after it: a first heartbeat created
     // from Agora's side should appear here without a reload as well.
     scheduleHeartbeatsPoll(rows);
+    feed.appendChild(marcusStopCard());
 
     if (!rows.length) {
       feed.appendChild(el("p", "empty", "No heartbeats yet."));
