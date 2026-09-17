@@ -327,6 +327,9 @@ STATIC_ROUTES = {
     "/vendor/preact-htm.js": os.path.join("vendor", "preact-htm.js"),
     "/thread.js": "thread.js",
     "/message.js": "message.js",
+    # Diagrams, lifted out of `app.js` whole (issue #233): the code that
+    # reads a ```mermaid block and draws it, and nothing else.
+    "/mermaid.js": "mermaid.js",
 }
 
 # The files an already-open tab is *running*. `_send_static` hashes these
@@ -350,7 +353,8 @@ STATIC_ROUTES = {
 # rehashed on every foreground return for a library that moves once a
 # year. Being a content hash rather than a timestamp is what keeps a pod
 # restart silent: identical files, identical stamp, no banner.
-SW_BUILD_INPUTS = ("index.html", "app.js", "thread.js", "message.js", "style.css", "sw.js")
+SW_BUILD_INPUTS = ("index.html", "app.js", "thread.js", "message.js", "mermaid.js",
+                   "style.css", "sw.js")
 
 # The page routes the server answers with the SPA shell. A module
 # constant rather than a literal inside `do_GET` because `site_check`
