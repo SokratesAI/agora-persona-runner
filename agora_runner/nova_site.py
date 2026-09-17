@@ -262,6 +262,7 @@ from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_stop_timings import record as record_stop_timing
+from agora_runner import nova_app_opens
 from agora_runner.nova_planned_done import planned_done, render_page as render_planned_done
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_next import (next_payload_from_contents,
@@ -3797,6 +3798,15 @@ def _stamp_worker(body, public_dir=None):
     return body + b"\n/* build " + digest.hexdigest()[:16].encode("ascii") + b" */\n"
 
 
+def _record_app_open(user_agent, booted, errors):
+    """Write one app open, logging rather than raising: it runs on a daemon
+    thread after the answer has gone, so there is no caller to tell."""
+    try:
+        nova_app_opens.record(user_agent, booted, errors)
+    except Exception as e:
+        log(f"nova-site: could not record an app open: {e}")
+
+
 def _record_stop_timing(seconds):
     """Write one stop timing, logging rather than raising: it runs on a
     daemon thread after the answer has gone, so there is no caller to tell."""
@@ -6572,7 +6582,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/marcus/stop",
             "/api/pool/decide", "/api/pool/comment", "/api/pool/generate",
             "/api/goal/status", "/api/push/subscribe",
-            "/api/project/comment",
+            "/api/project/comment", "/api/app/opened",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -6582,6 +6592,20 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/ask":
             self._post_ask(payload)
+            return
+        if path == "/api/app/opened":
+            # The Compatibility meter (nova_app_opens): the page reporting
+            # whether it booted in the browser that opened it. Off the
+            # response path, because a slow vault write must not hold a
+            # page that is being closed.
+            opened = nova_app_opens.report(payload)
+            if opened is None:
+                self._send_json(400, {"error": "expected {\"booted\": true|false, \"errors\": [...]}"})
+                return
+            threading.Thread(target=_record_app_open,
+                             args=(self.headers.get("User-Agent") or "",) + opened,
+                             daemon=True).start()
+            self._send_json(200, {"ok": True})
             return
         if path == "/api/push/subscribe":
             ok, body = store_subscription(payload)

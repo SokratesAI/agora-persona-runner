@@ -17871,3 +17871,8 @@ function urlBase64ToUint8Array(base64String) {
   for (var i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
   return output;
 }
+
+/* Last statement on purpose: the opens reporter in index.html reads it, and
+ * it is only reached when every line above parsed and ran without throwing
+ * (nova_app_opens). */
+window.novaBooted = true;

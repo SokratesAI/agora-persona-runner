@@ -2032,8 +2032,12 @@ describe("the vault cannot inject markup", () => {
      * script from growing a second, unexamined sibling. */
     assert.equal(window.document.querySelectorAll(".feed script").length, 0);
     const inline = [...window.document.querySelectorAll("script:not([src])")];
-    assert.equal(inline.length, 1, "the shell grew an inline script nobody reviewed");
+    /* The second is the opens reporter (nova_app_opens, 2026-09-17), which
+     * has to run before app.js because a browser that cannot run app.js is
+     * what it reports. */
+    assert.equal(inline.length, 2, "the shell grew an inline script nobody reviewed");
     assert.match(inline[0].textContent, /nova-theme/);
+    assert.match(inline[1].textContent, /\/api\/app\/opened/);
     assert.equal(window.document.querySelectorAll("img").length, 0);
     assert.match(cards(window)[0].textContent, /<script>/);
   });
