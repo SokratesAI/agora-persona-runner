@@ -6,6 +6,7 @@ loop has now shipped twice.
 """
 
 import types
+from unittest.mock import MagicMock
 import json
 import sys
 from collections import Counter
@@ -5675,9 +5676,45 @@ conversation: 0af15d7d
         assert (gm.KEY_RESULT_FETCH_MEASURERS["nova-kr-scale-blocks-recorded"]
                 is gm.measure_nova_scale_blocks_recorded)
 
-    def test_stop_seconds_states_why_it_has_no_instrument(self):
-        reason = gm.KEY_RESULT_NO_INSTRUMENT["nova-kr-control-stop-seconds"]
-        assert "five real attempts" in reason
+    def test_stop_seconds_has_an_instrument_now(self):
+        assert "nova-kr-control-stop-seconds" not in gm.KEY_RESULT_NO_INSTRUMENT
+        assert (gm.KEY_RESULT_FETCH_MEASURERS["nova-kr-control-stop-seconds"]
+                is gm.measure_nova_control_stop_seconds)
+
+    @staticmethod
+    def _got(stdout, returncode=0, stderr=""):
+        done = MagicMock(stdout=stdout, returncode=returncode, stderr=stderr)
+        return lambda *a, **k: done
+
+    def test_stop_seconds_is_the_median_of_the_newest_five(self):
+        from agora_runner.nova_stop_timings import dumps
+        rows = [{"at": f"2026-09-17T0{i}:00:00+00:00", "seconds": s}
+                for i, s in enumerate([60.0, 1.0, 2.0, 9.0, 3.0, 4.0])]
+        value, detail = gm.measure_nova_control_stop_seconds(
+            None, None, runner=self._got(dumps(rows)))
+        # the oldest, 60s, has aged out of the newest five
+        assert value == 3.0
+        assert "newest 5" in detail
+
+    def test_stop_seconds_gives_no_number_under_five_attempts(self):
+        from agora_runner.nova_stop_timings import dumps
+        rows = [{"at": "2026-09-17T01:00:00+00:00", "seconds": 1.0}] * 4
+        value, detail = gm.measure_nova_control_stop_seconds(
+            None, None, runner=self._got(dumps(rows)))
+        assert value is None
+        assert "4 of the 5" in detail
+
+    def test_stop_seconds_with_no_ledger_is_no_number_not_zero(self):
+        value, detail = gm.measure_nova_control_stop_seconds(
+            None, None, runner=self._got("[not found: x]\n"))
+        assert value is None
+        assert "no stop has been recorded" in detail
+
+    def test_stop_seconds_unreadable_vault_is_no_number(self):
+        value, detail = gm.measure_nova_control_stop_seconds(
+            None, None, runner=self._got("", returncode=1, stderr="boom"))
+        assert value is None
+        assert "exited 1" in detail
 
 
 # -- nova-kpi-false-status ----------------------------------------------------

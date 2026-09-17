@@ -1052,12 +1052,6 @@ KEY_RESULT_NO_INSTRUMENT = {
                                   "journal view shows done only, so a share "
                                   "taken off it would read a confident 100% "
                                   "for a view he cannot open",
-    "nova-kr-control-stop-seconds": "is a median over five real attempts he "
-                                    "makes from his own phone -- a stopwatch "
-                                    "on his thumb, not a fact on this box; "
-                                    "the closest thing here would time a "
-                                    "`curl`, which is not what he agreed to "
-                                    "measure",
 }
 
 
@@ -1437,6 +1431,41 @@ def _bundle_posts_to(bundle_text, route):
     what a bare substring search would count as a shipped button.
     """
     return (f'"{route}"' in bundle_text) or (f"'{route}'" in bundle_text)
+
+
+def measure_nova_control_stop_seconds(since, until, runner=subprocess.run,
+                                      tool=None):
+    """Median seconds his Stop button took to stop a turn, newest five. Seconds.
+
+    Reads the ledger `nova_site` appends to on every Stop that reached a
+    running turn (`agora_runner.nova_stop_timings`, issue #240). A level over
+    his newest attempts rather than a window, so it drops the window.
+
+    **No number until five stops are recorded**, and never 0: 0 is this
+    measure's best value, and an unreadable or empty ledger would otherwise
+    publish a perfect stop time off attempts nobody made.
+    """
+    del since, until
+    from agora_runner.nova_stop_timings import (STOP_TIMINGS_PATH, load,
+                                                median_of_newest)
+    tool = tool or VAULT_TOOL             # defined further down this module
+    try:
+        done = runner([sys.executable, tool, "get", STOP_TIMINGS_PATH],
+                      capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"could not read {STOP_TIMINGS_PATH}: {exc}"
+    out = done.stdout or ""
+    if done.returncode != 0:
+        return None, (f"{tool} get {STOP_TIMINGS_PATH} exited "
+                      f"{done.returncode}: {(done.stderr or '').strip()[:200]}")
+    if out.startswith("[not found"):
+        return None, ("no stop has been recorded yet -- the ledger is written "
+                      "the first time his Stop button reaches a running turn")
+    try:
+        rows = load(out)
+    except ValueError as exc:
+        return None, f"{STOP_TIMINGS_PATH} could not be parsed: {exc}"
+    return median_of_newest(rows)
 
 
 def measure_nova_control_stop_coverage(since, until):
@@ -5023,6 +5052,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "demos-kr-no-litter": measure_demos_no_litter,
     "nova-kr-trust-data-fresh": measure_nova_trust_data_fresh,
     "nova-kr-control-stop-coverage": measure_nova_control_stop_coverage,
+    "nova-kr-control-stop-seconds": measure_nova_control_stop_seconds,
     "nova-kr-scale-blocks-recorded": measure_nova_scale_blocks_recorded,
     "infra-kr-outlives-the-box": measure_infra_outlives_the_box,
     "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
