@@ -3412,7 +3412,7 @@
     return card;
   }
 
-  /* The recap card, pinned above the feed.
+  /* The recap card, drawn on the landing page.
    *
    * The owner, capture 2026-09-04, 🔴 Immediately: "I want a stick Journal
    * card at the top that summarizes the last 12 hours. Keep it short as I
@@ -3422,66 +3422,16 @@
    * It draws what the server says and computes nothing: the bullets, the
    * time it was written and whether that is stale all come down in the
    * payload, because a number on the screen should have one definition
-   * and one test. Drawn only on the unfiltered, all-cycles feed -- on
-   * `/asks` and on a single-cycle page the reader has asked a narrower
-   * question and a twelve-hour summary is not an answer to it.
+   * and one test.
    *
    * A recap that is missing draws nothing at all rather than an empty
    * card. He asked for a glance, and an empty box is a thing to read.
    */
-  /* Fetched on its own rather than inside `fetchAll`, and that is the
-   * design rather than a convenience.
-   *
-   * It was in `fetchAll` first, and two poll tests caught what that costs:
-   * a journal request that never resolves is a real state the page is
-   * built to survive, and `Promise.all` turned it into a recap that never
-   * resolves either -- so the poll never finished and never re-armed its
-   * timer. The recap is not part of the journal round trip. It changes
-   * when a cycle rewrites one vault document, not every thirty seconds,
-   * so re-fetching it on every poll would be waste even if it were safe.
-   *
-   * Fetched once per page load and cached in `recapPayload`; a failure
-   * leaves the card absent, which is the same outcome as no recap having
-   * been written yet. */
-  var recapPayload = null;
-  var recapPending = false;
-  var recapWanted = false;
-
-  function ensureRecap() {
-    if (recapPayload || recapPending) return;
-    recapPending = true;
-    fetch("/api/recap", { cache: "no-store" })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (payload) {
-        recapPending = false;
-        recapPayload = payload;
-        placeRecap();
-      })
-      .catch(function () { recapPending = false; });
-  }
-
-  /* Put the card at the top of whatever the feed currently holds. Called
-   * from `render` (the card is already cached) and from the fetch landing
-   * after a render (it was not). Both guarded by `recapWanted`, which the
-   * render sets, so a fetch that lands after a tap onto `/asks` or a
-   * single cycle does not paint a twelve-hour summary over it. */
-  function placeRecap() {
-    if (!recapWanted || !recapPayload) return;
-    if (document.querySelector(".recap")) return;
-    var card = renderRecap(recapPayload);
-    if (!card) return;
-    /* Below the search box and above the feed. It went above the box for
-     * half an hour on 2026-09-08 at his ask and came straight back at his
-     * next one -- the box collapsed to a single 44px button that morning,
-     * so the thing it was making room above stopped taking any room.
-     *
-     * Still outside the feed rather than its first child: `render` empties
-     * the feed on every paint, and a card that survives the paint is a card
-     * that does not flicker on the thirty-second poll. `placeRecap` is
-     * guarded on there being no `.recap` already, and the `recapWanted`
-     * branch in `render` takes it down. */
-    feed.parentNode.insertBefore(card, feed);
-  }
+  /* The twelve-hour summary is the landing page's card and nothing else's,
+   * his ask 2026-09-13: *"Remove the 12 hour summary from all pages than the
+   * homepage."* `renderHome` draws it from its own payload, so the feed's
+   * copy -- its own `/api/recap` fetch, a cache and a placer -- had nothing
+   * left that could reach it. */
 
   /* A bullet's text, with whatever it points at as a real tap target.
    *
@@ -3777,18 +3727,11 @@
     };
     /* The twelve-hour summary belongs to the landing page alone, his ask
      * 2026-09-13: *"Remove the 12 hour summary from all pages than the
-     * homepage."* `renderHome` draws its own copy and this page draws
-     * none, so the flag is false rather than conditional -- and the card
-     * sits above the search box, outside the feed, so the feed's own
-     * clear no longer reaches it. Taken down by hand. */
-    recapWanted = false;
-    if (recapWanted) {
-      ensureRecap();
-      placeRecap();
-    } else {
-      var stale = document.querySelector(".recap");
-      if (stale) stale.remove();
-    }
+     * homepage."* `renderHome` draws its own copy and this page draws none.
+     * The card sits above the search box, outside the feed, so the feed's
+     * own clear never reached it. Taken down by hand. */
+    var stale = document.querySelector(".recap");
+    if (stale) stale.remove();
     /* A comments failure should cost the bubbles, not the feed -- but
      * tolerating it silently made a 502 look like "nobody has commented",
      * a more convincing lie than "this did not load". `null` comes only
