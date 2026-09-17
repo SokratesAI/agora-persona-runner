@@ -17326,9 +17326,16 @@
       // older one could land second and become the cache -- which used to
       // cost one wrong repaint and would now cost every later open too.
       var token = ++listToken;
+      /* Under Preact a refresh after a rename, an archive or a move leaves
+       * the list he is looking at up until the answer lands (issue #233,
+       * step 7). Blanking it to "loading…" is the whole-list flash he
+       * reported; the fold the change touched is redrawn when it arrives,
+       * and the row he acted on is already gone or sliding out. */
+      var drawn = fresh && window.novaThread && listEl.novaThreadRows
+        && listEl.novaThreadRows.length > 1;
       if (listCache) {
         renderList(listCache);
-      } else {
+      } else if (!drawn) {
         renderShell();
         listEl.appendChild(el("p", "empty", "loading…"));
       }
@@ -17373,6 +17380,7 @@
     /* The two rows that are there whatever the listing says. */
     function renderShell() {
       listEl.textContent = "";
+      listEl.novaThreadRows = null;
       // The label is the button's own text, not a `.chat-list-name` child:
       // that class means "a conversation is called this", and anything
       // reading the list -- a stylesheet, a test, a future feature counting
@@ -17457,14 +17465,32 @@
     }
 
     function renderList(payload) {
-      renderShell();
       var folders = payload.folders || [];
       var models = payload.models || [];
       var rows = (payload.conversations || []).filter(function (row) {
         return (row.tags || []).indexOf("nova-ask") === -1;
       });
+      /* Under Preact the switcher's folds go through `thread.js` (issue
+       * #233, step 7): a fold keyed by its name whose rows, folders, models
+       * and current thread did not change keeps the node already on screen
+       * -- with the open or shut he gave it -- so an archive or a rename
+       * redraws the one fold it touched instead of the whole list. The
+       * `+` is kept for the life of the dock the same way. */
+      var drawn = window.novaThread ? [] : null;
+      if (drawn) {
+        var fab = listEl.novaListFab;
+        if (!fab) {
+          renderShell();
+          fab = listEl.novaListFab = listEl.firstChild;
+        }
+        drawn.push({ node: fab, key: "fab", sig: "fab" });
+      } else {
+        renderShell();
+      }
       if (!rows.length) {
-        listEl.appendChild(el("p", "empty", "No other conversations yet."));
+        var none = el("p", "empty", "No other conversations yet.");
+        if (drawn) window.novaThread.render(listEl, drawn.concat([{ node: none, key: "empty", sig: NaN }]));
+        else listEl.appendChild(none);
         return;
       }
       // `cycleThread` is `nova_conversations.conversations()`'s own flag
@@ -17491,14 +17517,18 @@
           holdToEdit(node, function () {
             if (listEl.querySelector(".chat-row-edit")) return;
             var editor = rowEditor(row, folders, models, function (changed) {
-              if (changed) loadList(true);
-              else if (editor.parentNode) editor.parentNode.replaceChild(node, editor);
+              if (changed) {
+                // Out first, so the repaint that lands is not refused for
+                // an editor still on screen.
+                if (editor.parentNode) editor.parentNode.removeChild(editor);
+                loadList(true);
+              } else if (editor.parentNode) editor.parentNode.replaceChild(node, editor);
             });
             body.replaceChild(editor, node);
           });
           body.appendChild(node);
         });
-        listEl.appendChild(fold);
+        return fold;
       }
 
       /* His folders, each as its own fold.
@@ -17562,9 +17592,20 @@
       }
 
       folds.sort(function (a, b) { return foldRank(b.group) - foldRank(a.group); });
+      var here = source.kind === "conv" ? source.id : "";
       folds.forEach(function (fold) {
-        fill(listFold(fold.name, fold.group.length, fold.open), fold.group);
+        if (!drawn) {
+          listEl.appendChild(fill(listFold(fold.name, fold.group.length, fold.open), fold.group));
+          return;
+        }
+        var sig = JSON.stringify([fold.open, here, folders, models, fold.group]);
+        var kept = (listEl.novaThreadRows || []).filter(function (r) {
+          return r.key === "fold:" + fold.name && r.sig === sig;
+        })[0];
+        drawn.push({ key: "fold:" + fold.name, sig: sig,
+          node: kept ? kept.node : fill(listFold(fold.name, fold.group.length, fold.open), fold.group) });
       });
+      if (drawn) window.novaThread.render(listEl, drawn);
     }
 
     /* The close animation has to finish before `hidden` lands, because
