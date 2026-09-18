@@ -316,6 +316,9 @@ STATIC_ROUTES = {
     # The Notes page, moved out of `app.js` for issue #233. Loads before
     # `app.js` too.
     "/notes.js": "notes.js",
+    # The home page and the galaxy, moved out of `app.js` for issue #233.
+    # Loads before `app.js` too.
+    "/home.js": "home.js",
     "/diag.js": "diag.js",
     # The Pool page and the project page, moved out of `app.js` for issue
     # #233. Loads before `app.js` too.
@@ -379,6 +382,7 @@ SW_BUILD_INPUTS = (
     "charts.js",
     "beats.js",
     "notes.js",
+    "home.js",
     "diag.js",
     "project.js",
     "thread.js",
