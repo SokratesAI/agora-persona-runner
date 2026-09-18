@@ -1474,3 +1474,43 @@ def test_every_other_node_gets_the_same_measurement():
     text = " ".join(lines)
     assert "BUDGET  server2" in text
     assert "Right now 1 of them hold 200Mi resident" in text
+
+
+# Idea #236: the vault CouchDB died on 09-02 with exit 255 and nothing kept
+# its logs. With `terminationMessagePolicy: FallbackToLogsOnError` the kubelet
+# copies the tail of the log into `terminated.message`; these print it.
+def _terminated_with(message, reason="Error", exit_code=255, at="2026-08-29T07:45:00Z"):
+    out = _terminated(reason, exit_code, at)
+    out["terminated"]["message"] = message
+    return out
+
+
+def test_a_fresh_death_prints_its_last_log_lines_whole():
+    msg = "[error] 2026-08-29T07:44:59 eheap_alloc: Cannot allocate\nKernel pid terminated\n"
+    pods = [_pod(namespace="obsidian", name="couchdb-x",
+                 containers=[_container(name="couchdb", ready=True, restarts=1,
+                                        last=_terminated_with(msg))])]
+    lines, status = wh.report(pods, [], NOW)
+    body = "\n".join(lines)
+    assert status == 2
+    assert "last log lines:" in body
+    assert "      | [error] 2026-08-29T07:44:59 eheap_alloc: Cannot allocate" in body
+    assert "      | Kernel pid terminated" in body
+    # Under its own death line, not floating somewhere else in the report.
+    assert body.index("obsidian/couchdb-x") < body.index("last log lines:")
+
+
+def test_an_old_death_keeps_its_last_log_lines_in_the_history_section():
+    pods = [_pod(containers=[_container(ready=True, restarts=1,
+                                        last=_terminated_with("boom", at="2026-08-28T10:00:00Z"))])]
+    lines, status = wh.report(pods, [], NOW)
+    body = "\n".join(lines)
+    assert status == 0
+    assert "DIED AND RECOVERED" in body and "      | boom" in body
+
+
+def test_a_death_without_a_message_prints_no_log_block():
+    pods = [_pod(containers=[_container(ready=True, restarts=1,
+                                        last=_terminated("OOMKilled", 137, "2026-08-29T07:45:00Z"))])]
+    lines, _ = wh.report(pods, [], NOW)
+    assert "last log lines:" not in "\n".join(lines)
