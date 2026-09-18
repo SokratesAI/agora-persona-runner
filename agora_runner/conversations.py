@@ -137,7 +137,8 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
 
     def on_text(chunk, is_final):
         options = pending_options.take(conversation["id"]) if is_final else None
-        _status, message_id = notify(conversation["id"], chunk, persona["name"], push=is_final, options=options)
+        extra = {"options": options} if options else {}
+        _status, message_id = notify(conversation["id"], chunk, persona["name"], push=is_final, **extra)
         if message_id:
             posted_ids.append(message_id)
 

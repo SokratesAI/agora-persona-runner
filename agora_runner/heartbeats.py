@@ -757,8 +757,9 @@ def run_heartbeat(heartbeat):
             # keeps notifying, and only a literal false mutes -- matching the
             # `push === false` check the notify route already does.
             push = heartbeat.get("pushNotifications") is not False
+            options = pending_options.take(conversation_id)
             notify(conversation_id, reply, persona["name"], push=push,
-                   options=pending_options.take(conversation_id))
+                   **({"options": options} if options else {}))
             result = f"replied {len(reply)} chars"
             if not chip_posted:
                 # Chip was withheld up front because this run might have

@@ -1,4 +1,4 @@
-"""Answers a persona offers Edvard as buttons, held until its turn's reply posts.
+"""Answers a persona offers the owner as buttons, held until its turn's reply posts.
 
 Idea #164, slice 3. Agora stores `options` on a message (agora#98) and the
 Nova app draws one button per option -- but only on the newest message in
