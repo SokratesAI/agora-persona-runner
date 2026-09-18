@@ -6379,9 +6379,11 @@ def test_terminal_exec_timeout_kills_the_whole_process_group(runner, tmp_path):
     with patch.object(tools_terminal, "TERMINAL_WORKSPACE", str(tmp_path)):
         result = runner.terminal_exec({
             "command": f"sleep 60 & echo $! > {pidfile}; sleep 60",
-            "timeout": 1,
+            # Not 1: on a GitHub runner `bash -lc` took over a second to read
+            # its profile, and the kill landed before the pid was written.
+            "timeout": 5,
         })
-    assert "timed out after 1s" in result
+    assert "timed out after 5s" in result
     background = int(pidfile.read_text().strip())
     for _ in range(50):
         if not _pid_alive(background):
