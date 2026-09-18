@@ -34,16 +34,21 @@ CHAT_DOCK_JS = _PUBLIC / "chat-dock.js"
 #: Every function this file brace-matches out of "the app's source" --
 #: `scheduleHeartbeatsPoll`, `loadHeartbeats` -- lives here now.
 BEATS_JS = _PUBLIC / "beats.js"
+# The ask thread's helpers (issue #233). First in `app_source`, because
+# `app.js` now binds the same names as `var X = askModule.X;` and
+# `extract_var` takes the first declaration it finds.
+ASK_JS = _PUBLIC / "ask.js"
 
 
 def app_source() -> str:
-    """`app.js`, `chat-dock.js` and `beats.js`, the files the browser runs."""
-    return (APP_JS.read_text(encoding="utf-8") + "\n"
+    """`ask.js`, `app.js`, `chat-dock.js` and `beats.js`, the files the browser runs."""
+    return (ASK_JS.read_text(encoding="utf-8") + "\n"
+            + APP_JS.read_text(encoding="utf-8") + "\n"
             + CHAT_DOCK_JS.read_text(encoding="utf-8") + "\n"
             + BEATS_JS.read_text(encoding="utf-8"))
 # Read off the shipped file so the bound under test is the real one.
 ASK_POLL_MAX_VALUE = int(
-    [ln.strip() for ln in APP_JS.read_text(encoding="utf-8").splitlines()
+    [ln.strip() for ln in ASK_JS.read_text(encoding="utf-8").splitlines()
      if ln.strip().startswith("var ASK_POLL_MAX = ")][0].split("=")[1].strip(" ;")
 )
 
