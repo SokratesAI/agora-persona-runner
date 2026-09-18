@@ -607,10 +607,31 @@ def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
 #: alone.
 PAGE_AFTER_HOURS = 4.0
 
-#: One message per unchanged set of waiting asks per day. The key is the set,
-#: so a new ask opening is a new message the same hour; the same set waiting
-#: another day is one reminder, not one every cycle.
+#: The notify window for one page. It no longer decides whether an ask is
+#: paged again -- `_paged_before` does, and says never.
 PAGE_DEDUPE_HOURS = 24.0
+
+KEY_PREFIX = "asks-waiting:"
+
+
+def _paged_before(state):
+    """Every ask (first 8 of its conversation id) any earlier page named.
+
+    One Telegram message per ask, ever. His words on Telegram, 2026-09-18
+    19:36: *"I might use days or weeks to answer these as they are quite hard
+    questions. It is good that you send me alerts for this type on telegram,
+    but only once per the same thing. Else the alert will fatigue and i will
+    turn it off."* The key used to be the whole waiting set, re-sent daily, so
+    each ask that opened or closed changed the set and re-sent the old
+    questions with it: the same two #227 threads went out at 13:59 and again
+    at 19:25 that day. Reading the ids back out of the old set keys means an
+    ask already paged under that scheme is not paged a second time now.
+    """
+    ids = set()
+    for key in state:
+        if key.startswith(KEY_PREFIX):
+            ids.update(i for i in key[len(KEY_PREFIX):].split(",") if i)
+    return ids
 
 
 def page_text(stale):
@@ -637,7 +658,15 @@ def page(waiting, silenced, out=sys.stdout, send=None, now=None,
                    key=lambda row: -row[2])
     if not stale:
         return None
-    key = "asks-waiting:" + ",".join(sorted(cid[:8] for _n, cid, _a in stale))
+    paged = _paged_before(notify.load_state(state_path or notify.DEFAULT_STATE))
+    fresh = [row for row in stale if row[1][:8] not in paged]
+    if not fresh:
+        print(f"TELEGRAM — {len(stale)} ask(s) waiting {PAGE_AFTER_HOURS:g}h+: "
+              "held: each was already sent to him once, and one message per "
+              "ask is all he wants", file=out)
+        return notify.HELD
+    stale = fresh
+    key = KEY_PREFIX + ",".join(sorted(cid[:8] for _n, cid, _a in stale))
     status, line = notify.notify(page_text(stale), key,
                                  dedupe_hours=PAGE_DEDUPE_HOURS, now=now,
                                  send=send,
