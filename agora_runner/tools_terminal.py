@@ -1,6 +1,7 @@
 """terminal_exec -- unrestricted shell in this pod (Issues.md #1, terminalExec capability)."""
 
 import os
+import signal
 import subprocess
 
 from agora_runner.log import log
@@ -17,7 +18,8 @@ from agora_runner.log import log
 # token. Deliberately unrestricted -- no verb/flag allowlist like
 # kubectl_read/github_read -- the whole point is letting a persona skip a
 # purpose-built tool and fix it directly when it's buggy or missing. The
-# only guardrails are a timeout (never hangs the poll loop forever) and
+# only guardrails are a timeout (never hangs the poll loop forever, and
+# kills the command's whole process group, not just its shell) and
 # output truncation (never blows the context window); every invocation
 # is logged unconditionally (not debug-gated) and audited with the full
 # command, since this is the single highest-blast-radius tool here.
@@ -26,6 +28,46 @@ TERMINAL_EXEC_TIMEOUT_DEFAULT = 60
 TERMINAL_EXEC_TIMEOUT_MAX = 300
 TERMINAL_EXEC_OUTPUT_MAX = 8000
 TERMINAL_WORKSPACE = "/tmp/agent-workspace"
+# Seconds a timed-out command's process group gets between SIGTERM and SIGKILL.
+TERMINAL_EXEC_KILL_GRACE = 1
+
+
+def _signal_group(pgid, sig):
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def _run_in_own_group(cmd, timeout, cwd):
+    """Run `cmd` in a new session, so a timeout can kill everything it
+    started. `subprocess.run(timeout=)` kills only the direct child: measured
+    Cycle 1829 on the live runner pod, `sleep 97 & sleep 30` with timeout 2
+    left both sleeps running, reparented to run.py. A runaway command kept
+    eating the pod's 512Mi and 200m CPU after the tool had already answered
+    "timed out", and the pod's cgroup has memory.oom.group=1, so an OOM there
+    kills every persona's turn at once. SIGTERM first so traps can run, then
+    SIGKILL -- the order OpenHands' agent-server bash_service uses. A child
+    that calls setsid itself leaves the group and is out of reach here."""
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _signal_group(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=TERMINAL_EXEC_KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+        _signal_group(proc.pid, signal.SIGKILL)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def terminal_exec(args):
@@ -53,9 +95,7 @@ def terminal_exec(args):
     os.makedirs(cwd, exist_ok=True)
     log(f"terminal_exec: running (timeout={timeout}s, cwd={cwd}): {command[:300]!r}")
     try:
-        result = subprocess.run(
-            ["bash", "-lc", command], capture_output=True, text=True, timeout=timeout, cwd=cwd,
-        )
+        result = _run_in_own_group(["bash", "-lc", command], timeout=timeout, cwd=cwd)
     except subprocess.TimeoutExpired:
         log(f"terminal_exec: timed out after {timeout}s: {command[:300]!r}")
         return f"[terminal_exec: timed out after {timeout}s]"

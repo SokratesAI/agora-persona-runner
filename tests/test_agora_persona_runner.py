@@ -48,6 +48,7 @@ import sys
 import agora_runner
 import agora_runner.log
 import agora_runner.audit
+from agora_runner import tools_terminal
 # agora_runner/__init__.py's flat re-export shadows these two submodules'
 # own attribute slot on the package with the like-named function each one's
 # main export happens to share (agora_runner.log ends up being the log()
@@ -6238,7 +6239,7 @@ def test_terminal_exec_rejects_invalid_args(runner):
 
 
 def test_terminal_exec_runs_command_and_reports_exit_code(runner):
-    def fake_run(cmd, capture_output, text, timeout, cwd):
+    def fake_run(cmd, timeout, cwd):
         assert cmd == ["bash", "-lc", "echo hi"]
         class R:
             stdout = "hi\n"
@@ -6246,34 +6247,34 @@ def test_terminal_exec_runs_command_and_reports_exit_code(runner):
             returncode = 0
         return R()
 
-    with patch.object(runner.subprocess, "run", side_effect=fake_run):
+    with patch.object(tools_terminal, "_run_in_own_group", side_effect=fake_run):
         result = runner.terminal_exec({"command": "echo hi"})
     assert result == "[exit 0]\nhi\n"
 
 
 def test_terminal_exec_reports_nonzero_exit(runner):
-    def fake_run(cmd, capture_output, text, timeout, cwd):
+    def fake_run(cmd, timeout, cwd):
         class R:
             stdout = ""
             stderr = "not found\n"
             returncode = 127
         return R()
 
-    with patch.object(runner.subprocess, "run", side_effect=fake_run):
+    with patch.object(tools_terminal, "_run_in_own_group", side_effect=fake_run):
         result = runner.terminal_exec({"command": "nope"})
     assert result.startswith("[exit 127]")
     assert "not found" in result
 
 
 def test_terminal_exec_no_output_reports_exit_code_only(runner):
-    def fake_run(cmd, capture_output, text, timeout, cwd):
+    def fake_run(cmd, timeout, cwd):
         class R:
             stdout = ""
             stderr = ""
             returncode = 0
         return R()
 
-    with patch.object(runner.subprocess, "run", side_effect=fake_run):
+    with patch.object(tools_terminal, "_run_in_own_group", side_effect=fake_run):
         result = runner.terminal_exec({"command": "true"})
     assert result == "[exit 0, no output]"
 
@@ -6281,7 +6282,7 @@ def test_terminal_exec_no_output_reports_exit_code_only(runner):
 def test_terminal_exec_clamps_timeout_to_max(runner):
     captured = {}
 
-    def fake_run(cmd, capture_output, text, timeout, cwd):
+    def fake_run(cmd, timeout, cwd):
         captured["timeout"] = timeout
         class R:
             stdout = ""
@@ -6289,7 +6290,7 @@ def test_terminal_exec_clamps_timeout_to_max(runner):
             returncode = 0
         return R()
 
-    with patch.object(runner.subprocess, "run", side_effect=fake_run):
+    with patch.object(tools_terminal, "_run_in_own_group", side_effect=fake_run):
         runner.terminal_exec({"command": "sleep 1", "timeout": 99999})
     assert captured["timeout"] == runner.TERMINAL_EXEC_TIMEOUT_MAX
 
@@ -6297,7 +6298,7 @@ def test_terminal_exec_clamps_timeout_to_max(runner):
 def test_terminal_exec_defaults_timeout_when_unset_or_invalid(runner):
     captured = {}
 
-    def fake_run(cmd, capture_output, text, timeout, cwd):
+    def fake_run(cmd, timeout, cwd):
         captured["timeout"] = timeout
         class R:
             stdout = ""
@@ -6305,16 +6306,16 @@ def test_terminal_exec_defaults_timeout_when_unset_or_invalid(runner):
             returncode = 0
         return R()
 
-    with patch.object(runner.subprocess, "run", side_effect=fake_run):
+    with patch.object(tools_terminal, "_run_in_own_group", side_effect=fake_run):
         runner.terminal_exec({"command": "echo hi", "timeout": "not-a-number"})
     assert captured["timeout"] == runner.TERMINAL_EXEC_TIMEOUT_DEFAULT
 
 
 def test_terminal_exec_times_out_gracefully(runner):
-    def fake_run(cmd, capture_output, text, timeout, cwd):
+    def fake_run(cmd, timeout, cwd):
         raise runner.subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
-    with patch.object(runner.subprocess, "run", side_effect=fake_run):
+    with patch.object(tools_terminal, "_run_in_own_group", side_effect=fake_run):
         result = runner.terminal_exec({"command": "sleep 999", "timeout": 5})
     assert "timed out after 5s" in result
 
@@ -6329,7 +6330,7 @@ def test_terminal_exec_rejects_cwd_escape(runner):
 def test_terminal_exec_uses_workspace_subdir(runner):
     captured = {}
 
-    def fake_run(cmd, capture_output, text, timeout, cwd):
+    def fake_run(cmd, timeout, cwd):
         captured["cwd"] = cwd
         class R:
             stdout = "ok"
@@ -6337,7 +6338,7 @@ def test_terminal_exec_uses_workspace_subdir(runner):
             returncode = 0
         return R()
 
-    with patch.object(runner.subprocess, "run", side_effect=fake_run):
+    with patch.object(tools_terminal, "_run_in_own_group", side_effect=fake_run):
         runner.terminal_exec({"command": "ls", "cwd": "myrepo"})
     assert captured["cwd"] == f"{runner.TERMINAL_WORKSPACE}/myrepo"
 
@@ -6345,21 +6346,66 @@ def test_terminal_exec_uses_workspace_subdir(runner):
 def test_terminal_exec_truncates_long_output(runner):
     huge = "x" * (runner.TERMINAL_EXEC_OUTPUT_MAX + 500)
 
-    def fake_run(cmd, capture_output, text, timeout, cwd):
+    def fake_run(cmd, timeout, cwd):
         class R:
             stdout = huge
             stderr = ""
             returncode = 0
         return R()
 
-    with patch.object(runner.subprocess, "run", side_effect=fake_run):
+    with patch.object(tools_terminal, "_run_in_own_group", side_effect=fake_run):
         result = runner.terminal_exec({"command": "cat bigfile"})
     assert "truncated" in result
     assert str(len(huge)) in result
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A killed child of ours that nobody reaped yet is a zombie, not alive.
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            return "\nState:\tZ" not in f.read()
+    except FileNotFoundError:
+        return False
+
+
+def test_terminal_exec_timeout_kills_the_whole_process_group(runner, tmp_path):
+    # Real subprocess, no fake: the bug was in what subprocess.run leaves
+    # behind. Before Cycle 1829 both sleeps below outlived the timeout.
+    pidfile = tmp_path / "pids"
+    with patch.object(tools_terminal, "TERMINAL_WORKSPACE", str(tmp_path)):
+        result = runner.terminal_exec({
+            "command": f"sleep 60 & echo $! > {pidfile}; sleep 60",
+            # Not 1: on a GitHub runner `bash -lc` took over a second to read
+            # its profile, and the kill landed before the pid was written.
+            "timeout": 5,
+        })
+    assert "timed out after 5s" in result
+    background = int(pidfile.read_text().strip())
+    for _ in range(50):
+        if not _pid_alive(background):
+            break
+        time.sleep(0.1)
+    assert not _pid_alive(background), "backgrounded child survived the timeout"
+
+
+def test_terminal_exec_normal_exit_leaves_a_detached_child_running(runner, tmp_path):
+    # The group kill is for timeouts only: a command that finishes on time
+    # and left a redirected background job keeps it, as before.
+    with patch.object(tools_terminal, "TERMINAL_WORKSPACE", str(tmp_path)):
+        result = runner.terminal_exec({"command": "sleep 30 >/dev/null 2>&1 & echo $!", "timeout": 10})
+    pid = int(result.split("\n")[1].strip())
+    try:
+        assert _pid_alive(pid)
+    finally:
+        os.kill(pid, signal.SIGKILL)
+
+
 def test_terminal_exec_missing_binary_degrades_gracefully(runner):
-    with patch.object(runner.subprocess, "run", side_effect=FileNotFoundError()):
+    with patch.object(runner.subprocess, "Popen", side_effect=FileNotFoundError()):
         result = runner.terminal_exec({"command": "echo hi"})
     assert "terminal_exec error" in result
 
