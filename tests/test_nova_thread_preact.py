@@ -244,7 +244,8 @@ def test_message_js_is_served_offline_and_loads_between_preact_and_thread_js():
 
 
 def test_app_js_hands_messages_to_the_component_and_its_helpers_over():
-    app = read("app.js")
+    # The thread painter and `window.novaChat` moved to `askthread.js` (issue #233).
+    app = read("askthread.js")
     assert "window.novaMessage && window.novaThread ? { message: message" in app
     for name in ("chatTime", "stepsLabel", "openStepSheet", "stepMessageKey", "appendRichText",
                  "askCopyButton", "askRetryButton", "openMessageActions"):
@@ -350,7 +351,8 @@ def tails():
 
 
 def test_app_js_hands_the_tail_to_the_component():
-    app = read("app.js")
+    # The thread painter and `window.novaChat` moved to `askthread.js` (issue #233).
+    app = read("askthread.js")
     assert '{ tail: lost ? "lost" : "pending"' in app
     for name in ("askPendingSeconds", "askElapsed", "askOrbit"):
         assert name + ": " + name in app

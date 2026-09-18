@@ -88,5 +88,6 @@ def test_it_is_bound_before_the_load_time_readers():
     `app.js` loads. Bound any later, they get `undefined`."""
     app = read("app.js")
     bound = app.index("var askModule = window.novaAsk")
-    assert bound < app.index("window.novaChat = {")
+    # `window.novaChat` is built inside `askthread.js`, when it is bound.
+    assert bound < app.index("var askThreadModule = window.novaAskThread")
     assert bound < app.index("window.novaBeats({")
