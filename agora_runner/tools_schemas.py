@@ -436,6 +436,27 @@ def client_tool_schemas(caps, active_step=None):
                 "required": ["target", "text"],
             },
         })
+        tools.append({
+            "name": "ask_edvard",
+            "description": (
+                "Offer Edvard 2 to 6 short answers as buttons he can tap under your reply "
+                "in the Nova app, like a multiple-choice question. Call it once, then end "
+                "your reply on the question itself: the buttons are attached to your "
+                "reply, the last message of this turn, and a tap sends the label back to "
+                "you as his next message. Typing an answer still works. Use it when the "
+                "answer really is one of a few choices -- yes/no, which of these -- not "
+                "for open questions. Each answer is one line of at most 80 characters, "
+                "no repeats. A second call in the same turn replaces the first."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "options": {"type": "array", "items": {"type": "string"},
+                                "minItems": 2, "maxItems": 6},
+                },
+                "required": ["options"],
+            },
+        })
     # Reading another conversation is read-only, and until now the only way
     # to grant it was `manageAgora`, which also hands out create_persona,
     # create_heartbeat and create_workflow. So the owner's "read that other
@@ -710,6 +731,7 @@ TOOL_TO_CAPABILITY = {
     "github_comment": "githubWrite",
     "merge_pr": "githubMerge",
     "nova_capture": "novaCapture",
+    "ask_edvard": "novaCapture",
 }
 
 
