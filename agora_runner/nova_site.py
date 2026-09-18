@@ -328,6 +328,9 @@ STATIC_ROUTES = {
     # The ask thread's helpers, moved out of `app.js` for issue #233. Loads
     # before `app.js` too.
     "/ask.js": "ask.js",
+    # The composer's model picker, moved out of `app.js` for issue #233.
+    # Loads before `app.js` too.
+    "/models.js": "models.js",
     "/diag.js": "diag.js",
     # The Pool page and the project page, moved out of `app.js` for issue
     # #233. Loads before `app.js` too.
@@ -395,6 +398,7 @@ SW_BUILD_INPUTS = (
     "plan.js",
     "steps.js",
     "ask.js",
+    "models.js",
     "diag.js",
     "project.js",
     "thread.js",
