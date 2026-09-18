@@ -659,3 +659,66 @@ def test_a_401_with_a_token_present_is_a_real_refusal(monkeypatch):
     ok, detail = ask_watch.nudge("c1", newest=_msg("Nova", ts=QUIET_TS), now=NOW)
     assert ok is False
     assert detail == "notify returned HTTP 401"
+
+
+# --- paging him on Telegram when an ask has waited ---------------------------
+# His words on the cycle 1811 card, 2026-09-18: "if the whole system stands
+# still and just waiting for me, that is critical and worth a telegram message!"
+
+from zoneinfo import ZoneInfo
+
+AFTERNOON = datetime(2026, 9, 18, 14, 0, tzinfo=ZoneInfo("Europe/Oslo"))
+
+
+def _sender(sent):
+    def send(text, url):
+        sent.append(text)
+        return 0, "sent"
+    return send
+
+
+def test_an_ask_waiting_past_the_threshold_pages_him_once_a_day(tmp_path):
+    sent, state = [], str(tmp_path / "state.json")
+    waiting = [("Nova needs you — Yes or no, keep the goals?", "0256140f-aaaa", 20.3)]
+    first = ask_watch.page(waiting, [], out=io.StringIO(), send=_sender(sent),
+                           now=AFTERNOON, state_path=state)
+    again = ask_watch.page(waiting, [], out=io.StringIO(), send=_sender(sent),
+                           now=AFTERNOON, state_path=state)
+    assert (first, again) == (0, 3)
+    assert len(sent) == 1
+    assert "keep the goals?" in sent[0] and "20.3h ago" in sent[0]
+
+
+def test_a_fresh_ask_does_not_page(tmp_path):
+    sent = []
+    code = ask_watch.page([("n", "c1", ask_watch.PAGE_AFTER_HOURS - 0.1)], [],
+                          out=io.StringIO(), send=_sender(sent), now=AFTERNOON,
+                          state_path=str(tmp_path / "s.json"))
+    assert code is None and sent == []
+
+
+def test_a_new_ask_joining_the_set_pages_again(tmp_path):
+    sent, state = [], str(tmp_path / "state.json")
+    old = ("old", "aaaaaaaa-1", 30.0)
+    ask_watch.page([old], [], out=io.StringIO(), send=_sender(sent),
+                   now=AFTERNOON, state_path=state)
+    ask_watch.page([old], [("new", "bbbbbbbb-2", 5.0)], out=io.StringIO(),
+                   send=_sender(sent), now=AFTERNOON, state_path=state)
+    assert len(sent) == 2 and "new" in sent[1]
+
+
+def test_main_pages_only_with_the_flag(monkeypatch):
+    monkeypatch.setattr(ask_watch, "read_goals", lambda path=None: (None, None, True))
+    monkeypatch.setattr(ask_watch, "agora_get", _fake_get(
+        [_row("c1")], {"c1": (200, {"messages": [_msg(ask_watch.SENDER, "q?")]})}))
+    calls = []
+    monkeypatch.setattr(ask_watch, "page", lambda w, s: calls.append((w, s)))
+    ask_watch.main([])
+    assert calls == []
+    ask_watch.main(["--notify"])
+    assert len(calls) == 1 and calls[0][0][0][1] == "c1"
+
+
+def test_preflight_runs_it_with_notify():
+    from tools import preflight
+    assert preflight.CHECK_ARGS["ask_watch"] == ["--notify"]

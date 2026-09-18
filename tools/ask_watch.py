@@ -598,6 +598,55 @@ def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
     return 0
 
 
+#: How long an ask of mine may wait on him before it is worth a Telegram
+#: message. His words on the cycle 1811 card, 2026-09-18: *"if the whole
+#: system stands still and just waiting for me, that is critical and worth a
+#: telegram message!"* The three #227 goal threads had waited 20 hours by
+#: then with nothing but an Agora push behind them. Four hours is past one
+#: working session of his, so an ask he is merely about to answer is left
+#: alone.
+PAGE_AFTER_HOURS = 4.0
+
+#: One message per unchanged set of waiting asks per day. The key is the set,
+#: so a new ask opening is a new message the same hour; the same set waiting
+#: another day is one reminder, not one every cycle.
+PAGE_DEDUPE_HOURS = 24.0
+
+
+def page_text(stale):
+    """The Telegram body for asks that have waited past PAGE_AFTER_HOURS."""
+    lines = [f"{len(stale)} question(s) of mine have waited on you for hours. "
+             "My cycles work on other things meanwhile, but these stay stuck "
+             "until you answer in its Agora thread:"]
+    for name, _cid, age in stale:
+        lines.append(f"- {' '.join(name.split())[:160]} ({_age(age)})")
+    return "\n".join(lines)
+
+
+def page(waiting, silenced, out=sys.stdout, send=None, now=None,
+         state_path=None):
+    """Tell him on Telegram that asks have waited past PAGE_AFTER_HOURS.
+
+    Returns the notify exit status, or None when nothing was old enough.
+    Never changes the check's own exit code: a page that could not be sent
+    is printed, and the waiting asks are already reported above it.
+    """
+    from tools import notify
+    stale = sorted((row for row in list(waiting) + list(silenced)
+                    if row[2] is not None and row[2] >= PAGE_AFTER_HOURS),
+                   key=lambda row: -row[2])
+    if not stale:
+        return None
+    key = "asks-waiting:" + ",".join(sorted(cid[:8] for _n, cid, _a in stale))
+    status, line = notify.notify(page_text(stale), key,
+                                 dedupe_hours=PAGE_DEDUPE_HOURS, now=now,
+                                 send=send,
+                                 state_path=state_path or notify.DEFAULT_STATE)
+    print(f"TELEGRAM — {len(stale)} ask(s) waiting {PAGE_AFTER_HOURS:g}h+: {line}",
+          file=out)
+    return status
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
@@ -615,6 +664,11 @@ def main(argv=None):
     parser.add_argument(
         "--because", metavar="TEXT", default="",
         help="one line for --resolve: where he answered and what it changed")
+    parser.add_argument(
+        "--notify", action="store_true",
+        help=f"send him one Telegram message when an ask has waited "
+             f"{PAGE_AFTER_HOURS:g}h or more (once a day per unchanged set, "
+             f"never in quiet hours)")
     args = parser.parse_args(argv)
     if args.resolve:
         rows, problem = messages(args.resolve)
@@ -625,11 +679,13 @@ def main(argv=None):
         print(f"{'resolved' if ok else 'NOT resolved'} — {detail}")
         return 0 if ok else 1
     markdown, problem, from_this_pod = read_goals(args.goals)
-    return report(
-        *check(goals_markdown=markdown,
-               goals_problem=None if from_this_pod else problem,
-               goals_unreadable=problem if from_this_pod else None),
-        do_nudge=args.nudge)
+    found = check(goals_markdown=markdown,
+                  goals_problem=None if from_this_pod else problem,
+                  goals_unreadable=problem if from_this_pod else None)
+    code = report(*found, do_nudge=args.nudge)
+    if args.notify and found[0] is not None:
+        page(found[1], found[2])
+    return code
 
 
 if __name__ == "__main__":

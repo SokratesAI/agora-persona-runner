@@ -660,6 +660,11 @@ CHECK_ARGS = {
     # cycle can fix, so a finding that only ever lands in preflight output is
     # a finding read exclusively by the party that cannot act on it.
     "credential_recovery": ["--notify"],
+    # The third, 2026-09-18, on his cycle 1811 card: *"if the whole system
+    # stands still and just waiting for me, that is critical and worth a
+    # telegram message!"* An ask of mine waiting 4h+ on him pages him once a
+    # day; the Agora push it opened with is not enough on its own.
+    "ask_watch": ["--notify"],
 }
 
 
