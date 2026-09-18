@@ -246,6 +246,35 @@ def _id_range(prefix):
     })
 
 
+# LiveSync's content chunks. They are nearly every row in both databases
+# (~117k of ~120k on 2026-09-18) and no file id starts with this, so a
+# whole-vault listing skips their key range rather than parsing them.
+_CHUNK_ID_PREFIX = "h:"
+
+
+def _list_ids(db, prefix):
+    """`(status, data)` of `_all_docs` over `prefix`'s key range.
+
+    An empty prefix asks for everything below `h:` and everything from
+    `h;` up, which is the same file rows minus the chunks. Measured
+    2026-09-18 from the bridge: the one-range listing of the whole vault
+    peaked at 109 MiB resident, most of what a `vault_search` cost the
+    runner (issue #130)."""
+    if prefix:
+        return couch_req("GET", f"{db}/_all_docs?{_id_range(prefix)}")
+    after_chunks = _CHUNK_ID_PREFIX[:-1] + chr(ord(_CHUNK_ID_PREFIX[-1]) + 1)
+    rows = []
+    for query in (
+        {"endkey": json.dumps(_CHUNK_ID_PREFIX), "inclusive_end": "false"},
+        {"startkey": json.dumps(after_chunks)},
+    ):
+        status, data = couch_req("GET", f"{db}/_all_docs?{urllib.parse.urlencode(query)}")
+        if status != 200:
+            return status, data
+        rows.extend(data.get("rows", []))
+    return 200, {"rows": rows}
+
+
 class VaultFiles(dict):
     """A vault read that remembers what it could not see.
 
@@ -315,7 +344,7 @@ def _vault_file_docs(prefix=""):
     keys_by_db = {}
     unreadable = []
     for db in dbs_for_prefix(prefix):
-        status, data = couch_req("GET", f"{db}/_all_docs?{_id_range(prefix)}")
+        status, data = _list_ids(db, prefix)
         if status != 200:
             # Before routing there was one database, so this returned {} —
             # visibly, uselessly empty. With two, one failing leaves the
@@ -1250,6 +1279,16 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
     because the two are always read together and one flag is enough."""
     filedocs = _vault_file_docs(prefix)
     unreadable = list(filedocs.unreadable)
+    out, mtimes = _assemble_files(filedocs, prefix, unreadable)
+    files = VaultFiles(out, unreadable=unreadable)
+    return (files, mtimes) if with_mtimes else files
+
+
+def _assemble_files(filedocs, prefix, unreadable):
+    """`({path: content}, {path: mtime})` for the file docs in `filedocs`,
+    fetching their content chunks. What could not be read is appended to
+    `unreadable`. Split out of `vault_bulk_fetch` so `vault_iter_files` can
+    run it over a slice of the vault at a time."""
     # Grouped by the database of the file doc that points at them. A flat
     # set across both would send Nova's chunk ids to the owner's database,
     # find nothing, and surface as every Nova file coming back empty.
@@ -1327,8 +1366,38 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
             path = doc.get("path") or doc_id
             out[path] = content
             mtimes[path] = doc.get("mtime")
-    files = VaultFiles(out, unreadable=unreadable)
-    return (files, mtimes) if with_mtimes else files
+    return out, mtimes
+
+
+# How many files `vault_iter_files` holds at once. The whole vault in one
+# `vault_bulk_fetch` held ~250Mi resident in the runner for the ~35s a
+# search took (Prometheus, 2026-09-18 15:12 Oslo: 88 -> 295Mi, three times,
+# one per vault_search a chat persona ran), against a 512Mi limit -- two
+# searches at once is the runner's OOM kill (issue #130).
+ITER_BATCH_FILES = 200
+
+
+def vault_iter_files(prefix="", unreadable=None, batch=None, skip=None):
+    """Yield `(path, content)` for every vault file under `prefix`, in path
+    order, holding only `batch` files' content in memory at a time.
+
+    Same reads and same omissions as `vault_bulk_fetch`; what it could not
+    read is appended to `unreadable` as it goes, so a caller that stops
+    early is told only about the part it actually looked at. `skip(path,
+    doc)` drops a file before its content is fetched."""
+    if unreadable is None:
+        unreadable = []
+    batch = batch or ITER_BATCH_FILES
+    filedocs = _vault_file_docs(prefix)
+    unreadable.extend(filedocs.unreadable)
+    ordered = sorted(
+        ((doc_id, doc) for doc_id, doc in filedocs.items()
+         if not (skip and skip(doc.get("path") or doc_id, doc))),
+        key=lambda kv: kv[1].get("path") or kv[0])
+    for start in range(0, len(ordered), batch):
+        out, _ = _assemble_files(dict(ordered[start:start + batch]), prefix, unreadable)
+        for path in sorted(out):
+            yield path, out[path]
 
 
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
@@ -1371,15 +1440,25 @@ def vault_search(query, prefix="", max_results=20):
         pattern = re.compile(query, re.IGNORECASE)
     except re.error:
         pattern = re.compile(re.escape(query), re.IGNORECASE)
-    files = vault_bulk_fetch(prefix)
-    note = unreadable_note(files, "vault_search")
+    from agora_runner.nova_uploads import UPLOAD_PREFIX
+
+    def binary(path, doc):
+        # base64 is not text a pattern can meaningfully match, and it is 34
+        # of the vault's 86 MB (2026-09-18): Obsidian's binary attachments
+        # (`newnote`, the PDFs) and the app's uploads (base64 in `plain`).
+        return doc.get("type") == "newnote" or path.lower().startswith(UPLOAD_PREFIX)
+
+    unreadable = []
     results = []
-    for path, content in sorted(files.items()):
+    for path, content in vault_iter_files(prefix, unreadable, skip=binary):
         for lineno, line in enumerate(content.splitlines(), start=1):
             if pattern.search(line):
                 results.append(f"{path}:{lineno}: {line.strip()[:200]}")
                 if len(results) >= max_results:
-                    return note + "\n".join(results)
+                    break
+        if len(results) >= max_results:
+            break
+    note = unreadable_note(VaultFiles({}, unreadable=unreadable), "vault_search")
     if results:
         return note + "\n".join(results)
     return note + f"[vault_search: no matches for {query!r}]"

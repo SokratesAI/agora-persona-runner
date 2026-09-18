@@ -5209,6 +5209,54 @@ def test_vault_search_no_matches(runner):
     assert "no matches" in result
 
 
+def test_vault_iter_files_yields_what_bulk_fetch_returns_in_path_order(runner):
+    with patch.object(runner.vault, "couch_req", side_effect=_fake_vault_couch_req):
+        whole = runner.vault_bulk_fetch("")
+        walked = list(runner.vault.vault_iter_files("", batch=1))
+    assert walked == sorted(whole.items())
+
+
+def test_vault_search_stops_fetching_once_it_has_enough(runner):
+    """Issue #130: a search used to hold the whole vault in the runner at
+    once (~250Mi live). It now reads a batch of files at a time and stops
+    at `max_results`, so the files after the hit are never fetched."""
+    asked = []
+
+    def spy(method, path, body=None):
+        if method == "POST":
+            asked.extend(k for k in body["keys"] if k.startswith("chunk:"))
+        return _fake_vault_couch_req(method, path, body)
+
+    with patch.object(runner.vault, "couch_req", side_effect=spy), \
+            patch.object(runner.vault, "ITER_BATCH_FILES", 1):
+        result = runner.vault_search("Inbox", max_results=1)
+    assert result == "inbox.md:1: # Inbox"
+    assert asked == ["chunk:inbox"]
+
+
+def test_vault_search_never_fetches_a_binary(runner):
+    """A PDF (`newnote`) and an app upload are base64; searching them only
+    cost the runner memory. Neither's content is fetched at all."""
+    from agora_runner.nova_uploads import UPLOAD_PREFIX
+    upload = UPLOAD_PREFIX + "x.jpg"
+    docs = {"r.pdf": {"path": "r.pdf", "type": "newnote", "children": ["chunk:pdf"]},
+            upload: {"path": upload, "type": "plain", "children": ["chunk:up"]}}
+    chunks = {"chunk:pdf": "Hello world", "chunk:up": "Hello world"}
+    asked = []
+
+    def spy(method, path, body=None):
+        if method == "POST":
+            asked.extend(k for k in body["keys"] if k.startswith("chunk:"))
+        return _fake_vault_couch_req(method, path, body)
+
+    with patch.dict(_VAULT_TOOLS_FILEDOCS, docs), patch.dict(_VAULT_TOOLS_CHUNKS, chunks), \
+            patch.object(runner.vault, "couch_req", side_effect=spy):
+        result = runner.vault_search("hello world")
+    assert "notes/a.md" in result
+    assert "r.pdf" not in result and upload not in result
+    assert "chunk:pdf" not in asked and "chunk:up" not in asked
+
+
 def test_vault_query_frontmatter_filters_by_field_and_value(runner):
     with patch.object(runner.vault, "couch_req", side_effect=_fake_vault_couch_req):
         result = runner.vault_query_frontmatter("status", "active")
