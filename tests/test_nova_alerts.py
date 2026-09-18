@@ -174,9 +174,12 @@ def test_the_browser_router_and_the_view_agree_on_the_name():
 def test_every_state_word_is_spelled_out_beside_its_colour():
     """`personality.md`: if a reader has to know a colour code to know what
     I said, I have not said it."""
-    app = (ROOT / "agora_runner" / "nova_public" / "app.js").read_text()
-    assert "Firing" in app
-    assert "Pending" in app
+    # The labels are drawn by the alerts page, which lives in `beats.js`
+    # since issue #233. Matching the bare word in `app.js` passed on a
+    # comment in the rich-text renderer until that moved out too.
+    beats = (ROOT / "agora_runner" / "nova_public" / "beats.js").read_text()
+    assert ' Firing"' in beats
+    assert ' Pending"' in beats
     css = (ROOT / "agora_runner" / "nova_public" / "style.css").read_text()
     assert ".alert-firing { border-left-color: var(--danger); }" in css
     assert ".alert-pending { border-left-color: var(--warn); }" in css

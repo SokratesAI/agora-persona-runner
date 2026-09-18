@@ -33,12 +33,15 @@ def test_mermaid_js_is_precached_and_stamped():
 
 def test_app_js_kept_no_copy_of_the_drawing_code():
     """The move has to be a move. A copy left behind is two renderers."""
+    # The one caller, `appendRichText`, moved on into `richtext.js` (#233).
     app = read("app.js")
+    richtext = read("richtext.js")
     for gone in ("function splitMermaidBlocks", "function mermaidNode",
                  "function ensureMermaid", "function mermaidSvg"):
         assert gone not in app, gone
-    assert "window.novaMermaid.split(" in app
-    assert "window.novaMermaid.node(" in app
+        assert gone not in richtext, gone
+    assert "window.novaMermaid.split(" in richtext
+    assert "window.novaMermaid.node(" in richtext
 
 
 def test_mermaid_js_takes_el_from_app_rather_than_copying_it():
