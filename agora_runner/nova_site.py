@@ -294,6 +294,8 @@ from agora_runner.nova_sources import (
 from agora_runner import board_records
 from agora_runner import board_publish
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
+from agora_runner.tools_mcp import handle_http_streaming as handle_mcp_streaming
+from agora_runner.tools_mcp import sse_frame
 from agora_runner.vault import database_health
 
 PUBLIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova_public")
@@ -6614,9 +6616,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "bad content-length"})
             return
         try:
-            status, payload = handle_mcp_http(
-                self.headers.get("Authorization", ""), self.rfile.read(length)
-            )
+            body = self.rfile.read(length)
+            # Progress on a long call, as invoke_server does -- tools_mcp has why.
+            if handle_mcp_streaming(self.headers.get("Authorization", ""), body,
+                                    self.headers.get("Accept", ""),
+                                    self._start_mcp_stream, self._send_mcp_event):
+                return
+            status, payload = handle_mcp_http(self.headers.get("Authorization", ""), body)
         except Exception as e:
             log(f"nova-site /mcp failed: {e}")
             self._send_json(500, {"error": str(e)[:300]})
@@ -6627,6 +6633,17 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self._send_json(status, payload)
+
+    def _start_mcp_stream(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.close_connection = True
+
+    def _send_mcp_event(self, message):
+        self.wfile.write(sse_frame(message))
+        self.wfile.flush()
 
     def do_POST(self):
         with request_span(self.command or "POST", self.path, getattr(self, "headers", None)) as recorder:

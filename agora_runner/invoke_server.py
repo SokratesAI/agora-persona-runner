@@ -15,6 +15,8 @@ from agora_runner.turns import build_system
 from agora_runner.reply import generate_reply
 from agora_runner.tool_activity import report as report_tool_activity
 from agora_runner.tools_mcp import handle_http as handle_mcp
+from agora_runner.tools_mcp import handle_http_streaming as handle_mcp_streaming
+from agora_runner.tools_mcp import sse_frame
 
 # Every POST below reads `Content-Length` bytes off the wire before it has
 # decided anything about the caller, so an unbounded read is an allocation
@@ -137,6 +139,10 @@ class InvokeHandler(BaseHTTPRequestHandler):
         if body is None:
             return
         try:
+            if handle_mcp_streaming(self.headers.get("Authorization", ""), body,
+                                    self.headers.get("Accept", ""),
+                                    self._start_event_stream, self._send_event):
+                return
             status, payload = handle_mcp(self.headers.get("Authorization", ""), body)
         except Exception as e:
             log(f"/mcp failed: {e}")
@@ -148,6 +154,19 @@ class InvokeHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self._send(status, payload)
+
+    def _start_event_stream(self):
+        """Headers for an MCP event stream. No Content-Length, so the body
+        ends when the connection closes -- this server speaks HTTP/1.0."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.close_connection = True
+
+    def _send_event(self, message):
+        self.wfile.write(sse_frame(message))
+        self.wfile.flush()
 
     def do_POST(self):
         # The whole POST path in one span, wrapped rather than opened
