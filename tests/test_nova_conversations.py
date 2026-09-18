@@ -1192,3 +1192,21 @@ def test_waiting_is_blind_with_a_zero_count_when_the_heartbeats_cannot_be_read()
                          return_value=None):
         answer = convs.waiting()
         assert answer["count"] == 0 and answer["blind"] is True
+
+
+def test_options_a_persona_offered_reach_the_bubble_and_nothing_else_does():
+    """Idea #164, slice 2: Agora stores `options` on a `/notify` message
+    (agora#98), and the thread has to hand them to the app or no button can
+    ever be drawn. A field that is not a list of strings is dropped rather
+    than drawn as buttons that say `[object Object]`."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Nova", "text": "Merge it?", "options": ["Yes", "No"]},
+        {"id": "b", "sender": "Nova", "text": "Plain."},
+        {"id": "c", "sender": "Nova", "text": "Odd.", "options": [1, 2]},
+        {"id": "d", "sender": "Nova", "text": "Also odd.", "options": "Yes"},
+    ])
+    rows = {m["id"]: m for m in payload["messages"]}
+    assert rows["a"]["options"] == ["Yes", "No"]
+    assert "options" not in rows["b"]
+    assert "options" not in rows["c"]
+    assert "options" not in rows["d"]

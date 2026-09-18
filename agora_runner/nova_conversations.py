@@ -306,6 +306,12 @@ def visible_rows(messages):
             "createdAt": m.get("ts") or m.get("createdAt") or "",
             "partial": False,
         }
+        # Tappable answers a persona offered with its question (idea #164;
+        # Agora validates them on `/notify`, agora#98). Passed through only
+        # as a list of strings, so a malformed field draws no buttons.
+        options = m.get("options")
+        if isinstance(options, list) and options and all(isinstance(o, str) for o in options):
+            row["options"] = list(options)
         # Steps belong to what the persona said after them, never to what he
         # said next: a block that runs into one of his messages is his turn
         # ending, not the start of the next one, so it stands alone.
