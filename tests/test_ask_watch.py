@@ -1,7 +1,8 @@
 """`tools.ask_watch` -- does a cycle find out that he answered?"""
 
 import io
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 
 from agora_runner import http_util
 from agora_runner import nudge_ask
@@ -677,14 +678,18 @@ def _sender(sent):
     return send
 
 
-def test_an_ask_waiting_past_the_threshold_pages_him_once_a_day(tmp_path):
+def test_an_ask_waiting_past_the_threshold_pages_him_once_ever(tmp_path):
     sent, state = [], str(tmp_path / "state.json")
     waiting = [("Nova needs you — Yes or no, keep the goals?", "0256140f-aaaa", 20.3)]
     first = ask_watch.page(waiting, [], out=io.StringIO(), send=_sender(sent),
                            now=AFTERNOON, state_path=state)
     again = ask_watch.page(waiting, [], out=io.StringIO(), send=_sender(sent),
                            now=AFTERNOON, state_path=state)
-    assert (first, again) == (0, 3)
+    # A week later it is still waiting, and still not sent again: he said
+    # hard questions can take weeks, and a repeat is what makes him mute it.
+    week = ask_watch.page(waiting, [], out=io.StringIO(), send=_sender(sent),
+                          now=AFTERNOON + timedelta(days=7), state_path=state)
+    assert (first, again, week) == (0, 3, 3)
     assert len(sent) == 1
     assert "keep the goals?" in sent[0] and "20.3h ago" in sent[0]
 
@@ -705,6 +710,21 @@ def test_a_new_ask_joining_the_set_pages_again(tmp_path):
     ask_watch.page([old], [("new", "bbbbbbbb-2", 5.0)], out=io.StringIO(),
                    send=_sender(sent), now=AFTERNOON, state_path=state)
     assert len(sent) == 2 and "new" in sent[1]
+    # Only the new ask: the old one was already sent once.
+    assert "- old" not in sent[1]
+
+
+def test_an_ask_paged_under_the_old_set_key_is_not_paged_again(tmp_path):
+    # The live state on 2026-09-18 held set keys like this one; those asks
+    # were already sent and must not go out again when the set changes.
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"asks-waiting:0af15d7d,3f42afbc": {
+        "last_sent": "2026-09-18T13:59:06+02:00", "urgent": False}}))
+    sent = []
+    code = ask_watch.page([("goals", "0af15d7d-x", 30.0), ("kpi", "3f42afbc-y", 30.0)],
+                          [], out=io.StringIO(), send=_sender(sent),
+                          now=AFTERNOON + timedelta(days=2), state_path=str(state))
+    assert code == 3 and sent == []
 
 
 def test_main_pages_only_with_the_flag(monkeypatch):
