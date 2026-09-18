@@ -2536,3 +2536,104 @@ def test_an_added_line_that_looks_like_a_diff_header_is_not_one(content_repo):
     assert tidy_workspace._content_landed(str(root), clone, "main",
                                           "nova/diff-in-a-fixture",
                                           _head_sha(root, clone, "nova/diff-in-a-fixture")) == (0, 2)
+
+
+# `follow_base`: the shared checkout sat on a branch merged as #1159, 77
+# commits behind, for two days (Cycle 1812), and every serialized cycle ran
+# its opening tools from it. Each test below is one reason it must NOT move.
+
+
+def _head(repo):
+    return _git_out(repo, "rev-parse", "HEAD")
+
+
+def _entry(root):
+    [entry] = tidy_workspace.survey_checkouts(str(root))
+    return entry
+
+
+def test_a_landed_branch_is_put_back_on_the_base(squash_merged):
+    root, repo = squash_merged
+    entry = _entry(root)
+    assert entry["verdict"] == "leftover"
+
+    line = tidy_workspace.follow_base(str(root), entry, min_idle_minutes=0)
+
+    assert _head(repo) == _git_out(repo, "rev-parse", "origin/main")
+    assert "moved from branch nova/feature" in line
+    assert _git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+
+
+def test_a_checkout_a_live_cycle_just_moved_is_left_alone(squash_merged):
+    """The reflog says HEAD moved seconds ago -- a cycle may be working here."""
+    root, repo = squash_merged
+    before = _head(repo)
+
+    assert tidy_workspace.follow_base(str(root), _entry(root)) is None
+    assert _head(repo) == before
+
+
+def test_uncommitted_work_is_never_moved(squash_merged):
+    root, repo = squash_merged
+    (repo / "draft.txt").write_text("half done\n", encoding="utf-8")
+    before = _head(repo)
+
+    assert tidy_workspace.follow_base(str(root), _entry(root),
+                                      min_idle_minutes=0) is None
+    assert _head(repo) == before
+
+
+def test_unfinished_work_is_never_moved(squash_merged):
+    root, repo = squash_merged
+    _commit(repo, "more.txt", "not merged anywhere\n")
+    before = _head(repo)
+    entry = _entry(root)
+    assert entry["verdict"] == "unfinished"
+
+    assert tidy_workspace.follow_base(str(root), entry,
+                                      min_idle_minutes=0) is None
+    assert _head(repo) == before
+
+
+def test_dry_run_says_so_and_moves_nothing(squash_merged):
+    root, repo = squash_merged
+    before = _head(repo)
+
+    line = tidy_workspace.follow_base(str(root), _entry(root), dry_run=True,
+                                      min_idle_minutes=0)
+
+    assert line.startswith("repo: would move")
+    assert _head(repo) == before
+
+
+def test_only_the_shared_root_is_moved(squash_merged, monkeypatch, capsys):
+    """A concurrent cycle's own worktree is its working copy: the sweep reports
+    it and leaves it where it is."""
+    root, repo = squash_merged
+    before = _head(repo)
+    args = ["--root", str(root), "--no-gh", "--no-demos",
+            "--min-loose-file-age-minutes", "0"]
+
+    tidy_workspace.main(args)
+    assert _head(repo) == before
+
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(root))
+    tidy_workspace.main(args)
+    assert _head(repo) == _git_out(repo, "rev-parse", "origin/main")
+    assert "moved from branch nova/feature" in capsys.readouterr().out
+
+
+def test_a_branch_that_is_only_behind_is_fast_forwarded(squash_merged):
+    """Not detached: a `main` that is merely behind keeps its branch, so a
+    later `git pull` in it still works."""
+    root, repo = squash_merged
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "fetch", "-q", "origin")
+    entry = _entry(root)
+    assert entry["verdict"] == "clean" and entry["ahead"] == 0
+
+    line = tidy_workspace.follow_base(str(root), entry, min_idle_minutes=0)
+
+    assert "fast-forwarded" in line
+    assert _git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+    assert _head(repo) == _git_out(repo, "rev-parse", "origin/main")
