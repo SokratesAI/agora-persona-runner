@@ -440,6 +440,7 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
   window.eval(readFileSync(join(publicDir, "beats.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "notes.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "home.js"), "utf8"));
+  window.eval(readFileSync(join(publicDir, "plan.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "project.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
   // app.js renders from three resolved promises; let the microtasks drain.
