@@ -14,7 +14,7 @@ import textwrap
 
 import pytest
 
-from tests.test_heartbeats_page_polls import app_source, extract_function, extract_var
+from tests.test_heartbeats_page_polls import APP_JS, app_source, extract_function, extract_var
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
@@ -24,7 +24,9 @@ SENT_AT = 1_790_000_000_000  # ms
 def merge(messages, pending, now):
     source = app_source()
     script = "\n".join([
-        extract_var(source, "OWNER_RECORD"),
+        # From `app.js` alone: `ask.js` comes first in `app_source` and
+        # declares it too, as `var OWNER_RECORD = shared.OWNER_RECORD;`.
+        extract_var(APP_JS.read_text(encoding="utf-8"), "OWNER_RECORD"),
         extract_var(source, "PENDING_SEND_SKEW_MS"),
         extract_var(source, "PENDING_SEND_EXPIRES_MS"),
         extract_function(source, "mergePendingSends"),
