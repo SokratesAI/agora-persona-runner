@@ -166,6 +166,7 @@ Of the supporting controls those reports name:
 import json
 import secrets
 import threading
+import time
 import traceback
 
 from agora_runner.log import log, debug_log
@@ -271,9 +272,111 @@ def handle_http(auth_header, body):
         return 400, {"error": "invalid json body"}
     if not isinstance(request, dict):
         return 400, {"error": "jsonrpc request must be an object"}
+    return handle(_bearer(auth_header), request)
+
+
+def _bearer(auth_header):
     auth = auth_header or ""
-    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-    return handle(token, request)
+    return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+
+# How often a tool call still in flight tells the client it is alive.
+# Claude Code aborts a call to an HTTP MCP server that sends "no response or
+# progress" for 300 seconds (`qr=300000` in the 2.1.272 binary, overridable
+# only by CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT), and `terminal_exec` alone
+# accepts a 300-second timeout -- so a long call was cut off at the one
+# moment it was about to answer, and the model saw "sent no response or
+# progress; aborting" for a command that was still running. Each progress
+# notification resets that clock (`onprogress` sets its idle start to now).
+# 30 seconds is the interval `claude mcp serve` itself adopted in 2.1.271.
+PROGRESS_INTERVAL_SECONDS = 30
+
+
+def sse_frame(message):
+    """One JSON-RPC message as a Streamable HTTP server-sent event."""
+    return b"event: message\ndata: " + json.dumps(message).encode() + b"\n\n"
+
+
+def _progress_token(request):
+    params = request.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    token = meta.get("progressToken") if isinstance(meta, dict) else None
+    if isinstance(token, bool) or not isinstance(token, (str, int)):
+        return None
+    return token
+
+
+def handle_http_streaming(auth_header, body, accept, start, emit, interval=None):
+    """Answer a `tools/call` as an event stream with progress on a timer.
+
+    Returns False, having sent nothing, for every request this does not
+    apply to -- the caller then answers it with `handle_http` exactly as
+    before. It applies only when all four hold: the client accepts
+    `text/event-stream` (the Streamable HTTP spec lets the server choose
+    either shape then), the request is a `tools/call` with an id, the
+    client asked for progress by sending `_meta.progressToken`, and the
+    bearer token is a live grant. The last one is checked first so an
+    unauthorised call still gets its plain 401 rather than a 200 stream.
+
+    Otherwise `start()` sends the headers straight away, the call runs on a
+    worker thread, and every `interval` seconds it is still running
+    `emit()` sends a `notifications/progress` for it. The final JSON-RPC
+    response is the last event. Returns True once the stream has been
+    answered, or has failed after the headers went out -- nothing can be
+    sent back then, so a broken pipe is logged, not raised.
+    """
+    if "text/event-stream" not in (accept or "").lower():
+        return False
+    try:
+        request = json.loads(body or b"{}")
+    except Exception:
+        return False
+    if not isinstance(request, dict) or request.get("method") != "tools/call":
+        return False
+    if request.get("id") is None:
+        return False
+    progress_token = _progress_token(request)
+    if progress_token is None:
+        return False
+    token = _bearer(auth_header)
+    with _lock:
+        if token not in _grants:
+            return False
+
+    if interval is None:
+        interval = PROGRESS_INTERVAL_SECONDS
+    box = {}
+
+    def run():
+        try:
+            box["reply"] = handle(token, request)
+        except Exception as e:
+            log(f"mcp tools/call raised outside the tool: {e}\n{traceback.format_exc()}")
+            box["reply"] = _error(request.get("id"), -32603, f"internal error: {e}")
+
+    worker = threading.Thread(target=run, name="mcp-tools-call", daemon=True)
+    worker.start()
+    started = time.monotonic()
+    beats = 0
+    try:
+        start()
+        while True:
+            worker.join(interval)
+            if not worker.is_alive():
+                break
+            beats += 1
+            elapsed = int(time.monotonic() - started)
+            emit({"jsonrpc": "2.0", "method": "notifications/progress", "params": {
+                "progressToken": progress_token,
+                "progress": beats,
+                "message": f"still running ({elapsed}s)",
+            }})
+        _, payload = box["reply"]
+        emit(payload)
+    except Exception as e:
+        log(f"mcp stream for {request.get('params', {}).get('name', '?')} broke after "
+            f"{beats} progress event(s): {type(e).__name__}: {e}")
+    return True
 
 
 def handle(token, request):

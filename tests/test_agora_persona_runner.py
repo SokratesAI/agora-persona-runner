@@ -7800,6 +7800,101 @@ def test_mcp_endpoint_sends_no_body_for_a_notification(clean_mcp_grants):
     assert "payload" not in sent
 
 
+def _slow_call(progress_token=7):
+    params = {"name": "terminal_exec", "arguments": {"command": "sleep"}}
+    if progress_token is not None:
+        params["_meta"] = {"progressToken": progress_token}
+    return {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": params}
+
+
+def _sse_messages(raw):
+    out = []
+    for frame in raw.decode().split("\n\n"):
+        if not frame.strip():
+            continue
+        lines = frame.split("\n")
+        assert lines[0] == "event: message"
+        assert lines[1].startswith("data: ")
+        out.append(json.loads(lines[1][len("data: "):]))
+    return out
+
+
+def test_mcp_long_call_streams_progress_then_the_result(clean_mcp_grants):
+    """Claude Code aborts an HTTP MCP call that sends nothing for 300s, and
+    terminal_exec accepts a 300s timeout. Progress on a timer is what keeps
+    a slow call alive; the result is still the last message."""
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    events, started = [], []
+
+    def fake_execute(name, args, p, conversation_id, active_step=None):
+        time.sleep(0.35)
+        return "done after a while"
+
+    with patch.object(clean_mcp_grants, "execute_tool", side_effect=fake_execute):
+        answered = clean_mcp_grants.handle_http_streaming(
+            f"Bearer {token}", json.dumps(_slow_call()).encode(),
+            "application/json, text/event-stream",
+            lambda: started.append(True), events.append, interval=0.1)
+
+    assert answered is True
+    assert started == [True]
+    progress, result = events[:-1], events[-1]
+    assert len(progress) >= 2
+    assert all(e["method"] == "notifications/progress" for e in progress)
+    assert all(e["params"]["progressToken"] == 7 for e in progress)
+    assert [e["params"]["progress"] for e in progress] == list(range(1, len(progress) + 1))
+    assert "id" not in progress[0]
+    assert result["id"] == 9
+    assert result["result"]["content"] == [{"type": "text", "text": "done after a while"}]
+
+
+def test_mcp_fast_call_streams_only_the_result(clean_mcp_grants):
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    events = []
+    with patch.object(clean_mcp_grants, "execute_tool", return_value="quick"):
+        assert clean_mcp_grants.handle_http_streaming(
+            f"Bearer {token}", json.dumps(_slow_call()).encode(), "text/event-stream",
+            lambda: None, events.append, interval=5) is True
+    assert [e.get("id") for e in events] == [9]
+
+
+@pytest.mark.parametrize("accept,request_body,good_token", [
+    ("application/json", _slow_call(), True),
+    ("application/json, text/event-stream", _slow_call(progress_token=None), True),
+    ("application/json, text/event-stream", {"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                                             "params": {"_meta": {"progressToken": 1}}}, True),
+    ("application/json, text/event-stream", _slow_call(), False),
+])
+def test_mcp_streaming_declines_and_sends_nothing(clean_mcp_grants, accept, request_body, good_token):
+    """Anything that did not ask for progress keeps the plain JSON answer --
+    and a bad token keeps its 401 rather than getting a 200 stream."""
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    sent = []
+    with patch.object(clean_mcp_grants, "execute_tool") as execute:
+        answered = clean_mcp_grants.handle_http_streaming(
+            f"Bearer {token if good_token else 'wrong'}", json.dumps(request_body).encode(),
+            accept, lambda: sent.append("start"), sent.append, interval=0.01)
+    assert answered is False
+    assert sent == []
+    execute.assert_not_called()
+
+
+def test_mcp_endpoint_answers_a_progress_request_as_an_event_stream(clean_mcp_grants):
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    handler, sent = _mcp_handler(_slow_call(), token)
+    handler.headers["Accept"] = "application/json, text/event-stream"
+    headers = []
+    handler.send_header = lambda k, v: headers.append((k, v))
+    handler.wfile = io.BytesIO()
+    with patch.object(clean_mcp_grants, "execute_tool", return_value="streamed"):
+        handler.do_POST()
+    assert sent["status"] == 200
+    assert "payload" not in sent
+    assert ("Content-Type", "text/event-stream") in headers
+    messages = _sse_messages(handler.wfile.getvalue())
+    assert messages[-1]["result"]["content"][0]["text"] == "streamed"
+
+
 # --- claude_cli hands the grant to the bridge ---
 
 def test_claude_cli_generate_sends_an_mcp_block_for_a_capable_persona(runner, clean_mcp_grants):
