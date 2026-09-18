@@ -1332,7 +1332,27 @@ def test_read_thresholds_takes_the_nodes_own_kubelet_values():
         assert argv == ["kubectl", "get", "--raw", "/api/v1/nodes/server2/proxy/configz"]
         return subprocess.CompletedProcess(argv, 0, json.dumps(_configz()), "")
 
-    assert disk_health.read_thresholds("server2", runner=run) == {"nodefs": 5.0, "imagefs": 15.0}
+    assert disk_health.read_thresholds("server2", runner=run) == {
+        "nodefs": 5.0, "imagefs": 15.0, "imagefs_eviction": 5.0}
+
+
+def test_image_gc_band_is_not_a_finding_when_the_kubelet_evicts_lower():
+    """server2, 2026-09-18: 19.6% free, GC at 15%, eviction at 5%. The kubelet
+    holds a merging node in the 15..20% band itself, so this must not raise --
+    and the same disk under 10% free still must."""
+    thresholds = {"nodefs": 5.0, "imagefs": 15.0, "imagefs_eviction": 5.0}
+    for free_gib, verdict in ((19.6, "GC BAND"), (9.0, "FILLING")):
+        fs = {"capacityBytes": 100 * GIB, "availableBytes": free_gib * GIB,
+              "usedBytes": (100 - free_gib) * GIB}
+        printed = []
+        findings = disk_health.report("server2", {"nodefs": fs, "imagefs": dict(fs)}, [],
+                                      out=printed.append, trend_read=False,
+                                      thresholds=thresholds)
+        image = [line for line in printed if "server2 imagefs:" in line]
+        assert image and image[0].lstrip().startswith(verdict), image
+        assert findings == (0 if verdict == "GC BAND" else 2), (verdict, findings)
+    # without an imagefs eviction point the upstream rule still holds: 15% + 5%
+    assert disk_health.raises_at("imagefs", {"nodefs": 5.0, "imagefs": 15.0}) == 20.0
 
 
 def test_read_thresholds_refuses_a_config_it_cannot_read_rather_than_half_reading_it():
