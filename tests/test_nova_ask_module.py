@@ -69,7 +69,10 @@ def test_every_name_the_module_borrows_is_passed_in():
     call = call[:call.index("})") + 2]
     for name in SHARED:
         assert "var %s = shared.%s;" % (name, name) in module, name
-        assert re.search(r"\b%s: %s,?" % (name, name), call), name
+        # `askMessage` and `askPending` live in `bubble.js`, bound after this
+        # module, so they arrive as call-time wrappers rather than values.
+        assert re.search(r"\b%s: (%s,?|function \(\) \{ return %s\.apply\()"
+                         % (name, name, name), call), name
 
 
 def test_every_name_handed_back_is_bound_in_app_js():
