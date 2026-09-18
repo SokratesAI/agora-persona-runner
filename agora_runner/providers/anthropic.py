@@ -180,7 +180,7 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
             messages.append({"role": "user", "content": results})
             billed += used
             if spent + billed >= ANTHROPIC_DAY_TOKEN_CEILING:
-                notice = _day_notice(model_id, spent + billed, f"Stopped before round {_round + 1}")
+                notice = _day_notice(model_id, spent + billed, f"Stopped before round {_round + 2}")
                 log(f"anthropic day ceiling: model={model_id} spent={spent + billed} rounds={_round + 1}")
                 if on_text:
                     on_text(notice, True)
