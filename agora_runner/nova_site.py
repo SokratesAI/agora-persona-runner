@@ -331,6 +331,9 @@ STATIC_ROUTES = {
     # The composer's model picker, moved out of `app.js` for issue #233.
     # Loads before `app.js` too.
     "/models.js": "models.js",
+    # The rich-text renderer, moved out of `app.js` for issue #233.
+    # Loads before `app.js` too.
+    "/richtext.js": "richtext.js",
     "/diag.js": "diag.js",
     # The Pool page and the project page, moved out of `app.js` for issue
     # #233. Loads before `app.js` too.
@@ -399,6 +402,7 @@ SW_BUILD_INPUTS = (
     "steps.js",
     "ask.js",
     "models.js",
+    "richtext.js",
     "diag.js",
     "project.js",
     "thread.js",

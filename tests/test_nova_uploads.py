@@ -210,11 +210,15 @@ def test_a_real_write_failure_is_not_swallowed_as_a_duplicate():
 
 
 def _app_js():
-    # `app.js` plus the chat dock, which is its own file since issue #233.
+    # `app.js` plus the chat dock and the rich-text renderer, which are
+    # their own files since issue #233.
     with open(CHAT_DOCK_JS, encoding="utf-8") as handle:
         dock = handle.read()
+    with open(os.path.join(os.path.dirname(APP_JS), "richtext.js"),
+              encoding="utf-8") as handle:
+        richtext = handle.read()
     with open(APP_JS, encoding="utf-8") as handle:
-        return handle.read() + "\n" + dock
+        return handle.read() + "\n" + dock + "\n" + richtext
 
 
 def _attach_js():
