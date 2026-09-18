@@ -12,6 +12,7 @@ from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.agora_api import fetch_persona
 from agora_runner.turns import build_system, decide_turn, merge_history
 from agora_runner.reply import generate_reply
+from agora_runner import pending_options
 
 
 # conversation id -> consecutive speak() failure count. Persists across
@@ -56,7 +57,7 @@ def prune_message_window_cache(known_ids):
         del _message_window_cache[conversation_id]
 
 
-def notify(conversation_id, text, sender, system=False, push=True, thinking=False):
+def notify(conversation_id, text, sender, system=False, push=True, thinking=False, options=None):
     """`push` (2026-07-24, live streaming): False posts the message
     without sending a phone push -- used for every chunk but the last
     in a streamed turn, so watching a turn arrive doesn't ring the
@@ -64,11 +65,12 @@ def notify(conversation_id, text, sender, system=False, push=True, thinking=Fals
     thinking chunk -- rendered distinctly, excluded from every LLM
     context the same as `system`/`activity` (turns.py). Returns (status,
     message_id); message_id is None on any failure response (no message
-    was ever appended)."""
-    status, body = agora_internal(
-        "POST", f"/conversations/{conversation_id}/notify",
-        {"text": text, "sender": sender, "system": system, "push": push, "thinking": thinking},
-    )
+    was ever appended). `options` (idea #164): answers the Nova app draws
+    as buttons under this message -- see pending_options."""
+    payload = {"text": text, "sender": sender, "system": system, "push": push, "thinking": thinking}
+    if options:
+        payload["options"] = list(options)
+    status, body = agora_internal("POST", f"/conversations/{conversation_id}/notify", payload)
     message_id = (body.get("message") or {}).get("id")
     return status, message_id
 
@@ -129,8 +131,13 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
     # the owner is the only signal decide_turn has).
     posted_ids = []
 
+    # Options an `ask_edvard` call offered ride on the turn's last message,
+    # the only one the Nova app draws live buttons on (pending_options).
+    pending_options.clear(conversation["id"])
+
     def on_text(chunk, is_final):
-        _status, message_id = notify(conversation["id"], chunk, persona["name"], push=is_final)
+        options = pending_options.take(conversation["id"]) if is_final else None
+        _status, message_id = notify(conversation["id"], chunk, persona["name"], push=is_final, options=options)
         if message_id:
             posted_ids.append(message_id)
 

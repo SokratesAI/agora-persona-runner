@@ -9,6 +9,7 @@ from collections import OrderedDict
 from agora_runner.log import debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
+from agora_runner import pending_options
 from agora_runner.vault import (
     vault_read_path, vault_read_path_rev, vault_write_path, vault_append_path,
     vault_list_prefix, vault_search,
@@ -408,6 +409,16 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             # this is the existing convention reused rather than a second
             # one invented next to it. tools_mcp maps it to MCP's isError.
             return message if ok else f"FAILED: {message}"
+        if name == "ask_edvard":
+            options = args.get("options")
+            error = pending_options.offer(conversation_id, options)
+            audit(persona_name, conversation_id, "ask_edvard",
+                  " | ".join(str(o) for o in options) if isinstance(options, list) else str(options),
+                  is_error=bool(error))
+            if error:
+                return f"FAILED: {error}"
+            return (f"{len(options)} buttons will be drawn under your reply. End the reply "
+                    "on the question they answer; his tap comes back as his next message.")
         if name == "save_memory":
             memory = str(args.get("memory", ""))
             persona_id = persona.get("id")

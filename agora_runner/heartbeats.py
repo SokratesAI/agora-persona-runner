@@ -28,7 +28,7 @@ from agora_runner.conversations import notify
 from agora_runner.workflows import run_workflow_heartbeat
 from agora_runner.conversation_rotation import cycle_tag, rotate_cycle_conversation
 from agora_runner.deferred import ANSWERED_LIVE_CAPABILITY
-from agora_runner import dropped_ticks
+from agora_runner import dropped_ticks, pending_options
 
 # How many previous cycle-conversations the pending-message lookback may
 # walk back through, and how much of the owner's text it may carry into one
@@ -739,6 +739,7 @@ def run_heartbeat(heartbeat):
         # exists to remove. `detail` is the rotated-into conversation when
         # rotation ran, which is the one the turn actually posts to. Empty
         # or absent falls back to the persona, same as everywhere else.
+        pending_options.clear(conversation_id)
         reply = generate_reply(persona, caps, system, history, conversation_id,
                                 model_override=detail.get("model") or None,
                                 sticky=False, unattended=True)
@@ -756,7 +757,8 @@ def run_heartbeat(heartbeat):
             # keeps notifying, and only a literal false mutes -- matching the
             # `push === false` check the notify route already does.
             push = heartbeat.get("pushNotifications") is not False
-            notify(conversation_id, reply, persona["name"], push=push)
+            notify(conversation_id, reply, persona["name"], push=push,
+                   options=pending_options.take(conversation_id))
             result = f"replied {len(reply)} chars"
             if not chip_posted:
                 # Chip was withheld up front because this run might have
