@@ -4,7 +4,8 @@ import base64
 import json
 
 from agora_runner.config import (ANTHROPIC_API_KEY, ANTHROPIC_MAX_OUTPUT_TOKENS, ANTHROPIC_NO_THINKING_TOGGLE,
-                                 ANTHROPIC_TURN_TOKEN_CEILING, TOOL_ROUNDS_MAX)
+                                 ANTHROPIC_DAY_TOKEN_CEILING, ANTHROPIC_TURN_TOKEN_CEILING, TOOL_ROUNDS_MAX)
+from agora_runner import metered_day
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import http_json, fetch_attachment_bytes
 from agora_runner.tools_schemas import client_tool_schemas
@@ -42,6 +43,14 @@ def _billed_tokens(resp):
     usage = resp.get("usage") or {}
     return sum(int(usage.get(key) or 0) for key in (
         "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+
+
+def _day_notice(model_id, spent, lead="Not started"):
+    return (
+        f"{lead}: the metered API has billed {spent:,} tokens today (Oslo), past the daily "
+        f"ceiling of {ANTHROPIC_DAY_TOKEN_CEILING:,} (ANTHROPIC_DAY_TOKEN_CEILING), which covers every "
+        f"persona together. Move this persona to 'claude-cli:{model_id}', or wait for midnight."
+    )
 
 
 def anthropic_generate(model_id, thinking, system, history, caps, persona, conversation_id, on_text=None,
@@ -90,6 +99,16 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
     if betas:
         headers["anthropic-beta"] = ",".join(betas)
 
+    # The day's total is read once, before the first round, and this turn's own
+    # rounds are added to it locally -- one vault read per turn, not per round.
+    spent = metered_day.spent_today()
+    if spent >= ANTHROPIC_DAY_TOKEN_CEILING:
+        notice = _day_notice(model_id, spent)
+        log(f"anthropic day ceiling: model={model_id} spent={spent}")
+        if on_text:
+            on_text(notice, True)
+        return notice
+
     messages = [{"role": m["role"], "content": _anthropic_content(m)} for m in history]
     billed = 0
     for _round in range(TOOL_ROUNDS_MAX + 1):
@@ -123,6 +142,8 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
             # genuine request problem), which a bare status code can't.
             log(f"anthropic {status} detail for model={model_id}: {json.dumps(resp)[:500]}")
             raise RuntimeError(f"anthropic {status}: {json.dumps(resp)[:300]}")
+        used = _billed_tokens(resp)
+        metered_day.add(used)
 
         # Every text block in THIS round, joined -- same reasoning as the
         # final-round join below (a round can carry a preamble across
@@ -157,7 +178,13 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
             # Content passed back verbatim — required for thinking blocks.
             messages.append({"role": "assistant", "content": resp["content"]})
             messages.append({"role": "user", "content": results})
-            billed += _billed_tokens(resp)
+            billed += used
+            if spent + billed >= ANTHROPIC_DAY_TOKEN_CEILING:
+                notice = _day_notice(model_id, spent + billed, f"Stopped before round {_round + 1}")
+                log(f"anthropic day ceiling: model={model_id} spent={spent + billed} rounds={_round + 1}")
+                if on_text:
+                    on_text(notice, True)
+                return notice
             if billed >= ANTHROPIC_TURN_TOKEN_CEILING:
                 # Ends the turn with a reply rather than raising: a raised turn
                 # is retried by conversations.py (3 at once, then ~15 a day),
@@ -227,6 +254,7 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
     )
     if status != 200:
         raise RuntimeError(f"anthropic salvage {status}: {json.dumps(resp)[:200]}")
+    metered_day.add(_billed_tokens(resp))
     text = "\n".join(
         block["text"].strip() for block in resp.get("content", [])
         if block.get("type") == "text" and block.get("text", "").strip()
