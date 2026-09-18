@@ -265,4 +265,5 @@ def _metered_day_in_memory(monkeypatch):
     monkeypatch.setattr(metered_day, "vault_read_path_rev", read)
     monkeypatch.setattr(metered_day, "vault_write_path", write)
     monkeypatch.setattr(metered_day, "_local", {})
+    monkeypatch.setattr(metered_day, "_local_usd", {})
     return store

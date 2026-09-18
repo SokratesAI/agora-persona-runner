@@ -4,8 +4,9 @@ import base64
 import json
 
 from agora_runner.config import (ANTHROPIC_API_KEY, ANTHROPIC_MAX_OUTPUT_TOKENS, ANTHROPIC_NO_THINKING_TOGGLE,
-                                 ANTHROPIC_DAY_TOKEN_CEILING, ANTHROPIC_TURN_TOKEN_CEILING, TOOL_ROUNDS_MAX)
-from agora_runner import metered_day
+                                 ANTHROPIC_DAY_TOKEN_CEILING, ANTHROPIC_DAY_USD_CEILING,
+                                 ANTHROPIC_TURN_TOKEN_CEILING, TOOL_ROUNDS_MAX)
+from agora_runner import metered_day, metered_price
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import http_json, fetch_attachment_bytes
 from agora_runner.tools_schemas import client_tool_schemas
@@ -43,6 +44,14 @@ def _billed_tokens(resp):
     usage = resp.get("usage") or {}
     return sum(int(usage.get(key) or 0) for key in (
         "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+
+
+def _day_usd_notice(model_id, usd, lead="Not started"):
+    return (
+        f"{lead}: the metered API has billed ${usd:.2f} today (Oslo), past the daily "
+        f"ceiling of ${ANTHROPIC_DAY_USD_CEILING:.2f} (ANTHROPIC_DAY_USD_CEILING), which covers every "
+        f"persona together. Move this persona to 'claude-cli:{model_id}', or wait for midnight."
+    )
 
 
 def _day_notice(model_id, spent, lead="Not started"):
@@ -101,16 +110,18 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
 
     # The day's total is read once, before the first round, and this turn's own
     # rounds are added to it locally -- one vault read per turn, not per round.
-    spent = metered_day.spent_today()
-    if spent >= ANTHROPIC_DAY_TOKEN_CEILING:
-        notice = _day_notice(model_id, spent)
-        log(f"anthropic day ceiling: model={model_id} spent={spent}")
+    spent, spent_usd = metered_day.totals_today()
+    if spent >= ANTHROPIC_DAY_TOKEN_CEILING or spent_usd >= ANTHROPIC_DAY_USD_CEILING:
+        notice = (_day_notice(model_id, spent) if spent >= ANTHROPIC_DAY_TOKEN_CEILING
+                  else _day_usd_notice(model_id, spent_usd))
+        log(f"anthropic day ceiling: model={model_id} spent={spent} usd={spent_usd:.4f}")
         if on_text:
             on_text(notice, True)
         return notice
 
     messages = [{"role": m["role"], "content": _anthropic_content(m)} for m in history]
     billed = 0
+    billed_usd = 0.0
     for _round in range(TOOL_ROUNDS_MAX + 1):
         final_round = _round == TOOL_ROUNDS_MAX
         body = {
@@ -143,7 +154,8 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
             log(f"anthropic {status} detail for model={model_id}: {json.dumps(resp)[:500]}")
             raise RuntimeError(f"anthropic {status}: {json.dumps(resp)[:300]}")
         used = _billed_tokens(resp)
-        metered_day.add(used)
+        used_usd = metered_price.round_usd(model_id, resp.get("usage"))
+        metered_day.add(used, used_usd)
 
         # Every text block in THIS round, joined -- same reasoning as the
         # final-round join below (a round can carry a preamble across
@@ -179,6 +191,13 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
             messages.append({"role": "assistant", "content": resp["content"]})
             messages.append({"role": "user", "content": results})
             billed += used
+            billed_usd += used_usd
+            if spent_usd + billed_usd >= ANTHROPIC_DAY_USD_CEILING:
+                notice = _day_usd_notice(model_id, spent_usd + billed_usd, f"Stopped before round {_round + 2}")
+                log(f"anthropic day usd ceiling: model={model_id} usd={spent_usd + billed_usd:.4f} rounds={_round + 1}")
+                if on_text:
+                    on_text(notice, True)
+                return notice
             if spent + billed >= ANTHROPIC_DAY_TOKEN_CEILING:
                 notice = _day_notice(model_id, spent + billed, f"Stopped before round {_round + 2}")
                 log(f"anthropic day ceiling: model={model_id} spent={spent + billed} rounds={_round + 1}")

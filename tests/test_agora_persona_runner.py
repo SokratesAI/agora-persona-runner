@@ -9799,6 +9799,63 @@ def test_anthropic_turn_stops_when_its_rounds_cross_the_day(runner, _metered_day
     assert len(calls) == 1
 
 
+def test_metered_price_prices_each_kind_of_token_at_its_own_rate():
+    """Tokens are not a price: the same million costs $0.20 or $50 depending
+    on the model and the kind of token (idea #249)."""
+    from agora_runner.metered_price import round_usd
+    assert round_usd("claude-haiku-4-5-20251001", {"input_tokens": 1_000_000}) == pytest.approx(1.0)
+    assert round_usd("claude-opus-5", {"output_tokens": 1_000_000}) == pytest.approx(25.0)
+    assert round_usd("claude-fable-5-1", {"output_tokens": 1_000_000}) == pytest.approx(50.0)
+    assert round_usd("claude-sonnet-5", {"cache_read_input_tokens": 1_000_000}) == pytest.approx(0.2)
+    assert round_usd("claude-sonnet-4-6", {"cache_creation_input_tokens": 1_000_000}) == pytest.approx(3.75)
+    # Opus 4.1 is the old Opus rate, not the 4.5+ one its prefix shares.
+    assert round_usd("claude-opus-4-1-20250805", {"input_tokens": 1_000_000}) == pytest.approx(15.0)
+    # A 1-hour cache write is 2x, not 1.25x.
+    one_hour = {"cache_creation_input_tokens": 1_000_000,
+                "cache_creation": {"ephemeral_1h_input_tokens": 1_000_000}}
+    assert round_usd("claude-opus-5", one_hour) == pytest.approx(10.0)
+    # A model the table has never heard of is never cheaper than the dearest one.
+    assert round_usd("claude-something-new", {"output_tokens": 1_000_000}) == pytest.approx(75.0)
+    assert round_usd("claude-opus-5", None) == 0
+
+
+def test_anthropic_turn_not_started_once_the_days_dollars_are_spent(runner, _metered_day_in_memory):
+    """Far under the token ceiling, over the dollar one: the turn is refused."""
+    from agora_runner import metered_day
+    metered_day.add(10, 2.5)
+    metered_day._local.clear()
+    metered_day._local_usd.clear()
+    with patch.object(runner.providers.anthropic, "http_json") as http:
+        result = _haiku_turn(runner)
+    assert "billed $2.50 today" in result
+    assert "ANTHROPIC_DAY_USD_CEILING" in result
+    assert "claude-cli:claude-haiku-4-5-20251001" in result
+    http.assert_not_called()
+    stored = json.loads(_metered_day_in_memory["content"])
+    assert stored["usd"] == {metered_day.today(): 2.5}
+
+
+def test_anthropic_turn_stops_when_its_rounds_cross_the_days_dollars(runner, _metered_day_in_memory):
+    """$1.50 spent today, and one Haiku round of 600,000 input tokens bills
+    $0.60 more, so the second round is never sent -- though 600,700 tokens is
+    well inside the token ceiling."""
+    from agora_runner import metered_day
+    metered_day.add(700, 1.5)
+    calls = []
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+        calls.append(body)
+        return _tool_round(600_000)
+
+    with patch.object(runner.providers.anthropic, "execute_tool", return_value="ok"), \
+         patch.object(runner.providers.anthropic, "http_json", side_effect=fake_http_json):
+        result = _haiku_turn(runner)
+    assert result.startswith("Stopped before round 2")
+    assert "billed $2.10 today" in result
+    assert len(calls) == 1
+    assert metered_day.totals_today() == (600_700, pytest.approx(2.1, abs=0.01))
+
+
 def test_metered_day_unreadable_vault_falls_back_to_the_pods_own_count(runner, monkeypatch):
     """Never to zero: a vault hiccup must not reopen a spent day."""
     from agora_runner import metered_day

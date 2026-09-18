@@ -7,7 +7,8 @@ per-day ceiling needs the count kept across turns and across pod restarts, so
 it lives in a vault document rather than in this process.
 
 The count is one number per Oslo calendar day, summed over every persona,
-because the balance it guards is summed the same way. A read that fails falls
+kept twice -- tokens under `days` and US dollars under `usd` -- because the
+balance it guards is summed the same way. A read that fails falls
 back to what this process has counted itself -- never to zero, which would
 reopen the day the moment the vault hiccups -- and a write that fails is
 logged and dropped: a turn that has already been billed must still get its
@@ -32,46 +33,57 @@ ATTEMPTS = 2
 # What this process has counted, per day. Only the fallback when the vault
 # cannot be read.
 _local = {}
+_local_usd = {}
 
 
 def today():
     return datetime.now(OSLO).strftime("%Y-%m-%d")
 
 
-def _parse(content):
+def _parse(content, key="days"):
     try:
-        days = json.loads(content or "{}").get("days")
+        days = json.loads(content or "{}").get(key)
     except (ValueError, AttributeError):
         return {}
     return days if isinstance(days, dict) else {}
 
 
-def spent_today():
-    """Tokens billed on the metered API so far today, across every persona."""
+def totals_today():
+    """(tokens, dollars) billed on the metered API so far today, across every persona."""
     day = today()
     try:
         content, _rev = vault_read_path_rev(PATH)
     except Exception as exc:
         log(f"metered_day: could not read {PATH} ({exc}); using this pod's own count")
-        return _local.get(day, 0)
-    stored = int(_parse(content).get(day) or 0)
-    return max(stored, _local.get(day, 0))
+        return _local.get(day, 0), _local_usd.get(day, 0.0)
+    tokens = int(_parse(content).get(day) or 0)
+    usd = float(_parse(content, "usd").get(day) or 0)
+    return max(tokens, _local.get(day, 0)), max(usd, _local_usd.get(day, 0.0))
 
 
-def add(tokens):
-    """Add a turn's billed tokens to today's total. Never raises."""
-    if tokens <= 0:
+def spent_today():
+    """Tokens billed on the metered API so far today, across every persona."""
+    return totals_today()[0]
+
+
+def add(tokens, usd=0.0):
+    """Add a round's billed tokens and dollars to today's totals. Never raises."""
+    if tokens <= 0 and usd <= 0:
         return
     day = today()
     _local[day] = _local.get(day, 0) + tokens
+    _local_usd[day] = _local_usd.get(day, 0.0) + usd
     for _attempt in range(ATTEMPTS):
         try:
             content, rev = vault_read_path_rev(PATH)
             days = _parse(content)
+            dollars = _parse(content, "usd")
             days[day] = int(days.get(day) or 0) + tokens
+            dollars[day] = round(float(dollars.get(day) or 0) + usd, 6)
             # A week is enough to see a pattern; older days only grow the file.
             keep = sorted(days)[-7:]
-            body = json.dumps({"days": {d: days[d] for d in keep}}, indent=1) + "\n"
+            body = json.dumps({"days": {d: days[d] for d in keep},
+                               "usd": {d: dollars[d] for d in sorted(dollars)[-7:]}}, indent=1) + "\n"
             result = vault_write_path(PATH, body, if_rev=rev, allow_shrink=True)
         except Exception as exc:
             result = f"FAILED({exc})"
