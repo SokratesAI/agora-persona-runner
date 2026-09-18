@@ -1,6 +1,6 @@
 """Turn a vault topic's raw sources into a written wiki -- idea #9.
 
-Edvard's shape, ideas.md #9: *"use the Vault to create a folder about a
+The owner's shape, ideas.md #9: *"use the Vault to create a folder about a
 topic. In that folder two folders are created, one for all 'raw' files
 gathered from webscraping research or other downloads and the other folder
 for the generated llm wiki that the agent created."*
@@ -8,7 +8,7 @@ for the generated llm wiki that the agent created."*
     projects/sokrates/wiki/<topic>/raw/    anything you drop in: notes, scraped pages
     projects/sokrates/wiki/<topic>/wiki/   written by this tool, regenerated whole
 
-The folder is in his Obsidian vault on purpose (it is not under a
+The folder is in the owner's Obsidian vault on purpose (it is not under a
 `NOVA_DB_FOLDERS` prefix), so the wiki reaches his phone.
 
     python3 -m tools.llm_wiki <topic>             # regenerate wiki/ from raw/
