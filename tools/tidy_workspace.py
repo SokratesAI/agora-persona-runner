@@ -1649,13 +1649,14 @@ def _sweep_one(root, args):
 
 def follow_base(root, entry, dry_run=False,
                 min_idle_minutes=MIN_LOOSE_FILE_AGE_MINUTES, now=None):
-    """Put a checkout whose work has all landed back on its base, detached.
+    """Put a checkout whose work has all landed back on its base.
 
     Measured Cycle 1812: `/data/workspace/agora-persona-runner` was parked on
     `nova/nudge-guard-travels-with-the-primitive`, merged as #1159 on 09-16
     and 77 commits behind `origin/main`. This sweep printed `[leftover]` for it
     every cycle for two days and changed nothing, so every serialized cycle's
-    `preflight` and `top_board_rows` ran two-day-old code and said so nowhere.
+    `preflight` and `top_board_rows` ran two-day-old code. `preflight`'s own
+    `source_revision` line said BEHIND the whole time, and I walked past it.
     Three memories of mine describe the same trap from three sides (a roll tool
     printing "nothing to roll" off last week's code was one). Reporting it a
     fourth way is the detector the prompt says to stop writing; this removes
