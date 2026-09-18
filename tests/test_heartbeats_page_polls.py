@@ -30,12 +30,17 @@ APP_JS = _PUBLIC / "app.js"
 #: both -- a dock assertion against `app.js` alone now passes on source that
 #: does not contain the dock.
 CHAT_DOCK_JS = _PUBLIC / "chat-dock.js"
+#: And the Heartbeats page itself moved out for the same issue (step 15).
+#: Every function this file brace-matches out of "the app's source" --
+#: `scheduleHeartbeatsPoll`, `loadHeartbeats` -- lives here now.
+BEATS_JS = _PUBLIC / "beats.js"
 
 
 def app_source() -> str:
-    """`app.js` and `chat-dock.js`, the two files the browser runs."""
+    """`app.js`, `chat-dock.js` and `beats.js`, the files the browser runs."""
     return (APP_JS.read_text(encoding="utf-8") + "\n"
-            + CHAT_DOCK_JS.read_text(encoding="utf-8"))
+            + CHAT_DOCK_JS.read_text(encoding="utf-8") + "\n"
+            + BEATS_JS.read_text(encoding="utf-8"))
 # Read off the shipped file so the bound under test is the real one.
 ASK_POLL_MAX_VALUE = int(
     [ln.strip() for ln in APP_JS.read_text(encoding="utf-8").splitlines()
@@ -96,7 +101,7 @@ def run_poll_harness(rows, fail_fetch=False, view="heartbeats", seeded=(), ticks
     if node is None:  # pragma: no cover - CI has node; a dev box may not
         pytest.skip("node is not installed")
 
-    source = APP_JS.read_text(encoding="utf-8")
+    source = app_source()
     harness = textwrap.dedent(
         """
 __CONSTANTS__

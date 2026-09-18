@@ -417,17 +417,19 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
    * function would never return. */
   const realTimeout = window.setTimeout.bind(window);
   if (install) install(window);
-  /* `mermaid.js`, `attach.js`, `chat-dock.js`, `charts.js`, `diag.js` and
-   * `project.js` always, `app.js`
+  /* `mermaid.js`, `attach.js`, `chat-dock.js`, `charts.js`, `beats.js`,
+   * `diag.js` and `project.js` always, `app.js`
    * after them,
    * exactly as index.html orders the tags: `appendRichText` calls
    * `window.novaMermaid.split` on every message on this site, not only the
    * ones carrying a diagram, every composer here mounts
    * `window.novaAttach.build`, and `app.js` calls `window.novaChatDock` and
-   * `window.novaCharts`, `window.novaDiag` and `window.novaProject` from
-   * its own body -- so a window without the six is not the app, and without
+   * `window.novaCharts`, `window.novaBeats`, `window.novaDiag` and
+   * `window.novaProject` from
+   * its own body -- so a window without the seven is not the app, and without
    * them every dock test would pass against an app with no dock in it and
-   * `/costs`, `/retro`, `/diag`, `/pool` and every project page would draw
+   * `/costs`, `/retro`, `/diag`, `/heartbeats`, `/catalog`, `/alerts`,
+   * `/pool` and every project page would draw
    * nothing.
    * Preact stays opt-in via `install`. */
   window.eval(readFileSync(join(publicDir, "mermaid.js"), "utf8"));
@@ -435,6 +437,7 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
   window.eval(readFileSync(join(publicDir, "chat-dock.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "charts.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "diag.js"), "utf8"));
+  window.eval(readFileSync(join(publicDir, "beats.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "project.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
   // app.js renders from three resolved promises; let the microtasks drain.
