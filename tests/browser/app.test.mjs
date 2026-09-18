@@ -448,6 +448,7 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
   window.eval(readFileSync(join(publicDir, "bubble.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "askthread.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "rowedit.js"), "utf8"));
+  window.eval(readFileSync(join(publicDir, "cycle.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "project.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
   // app.js renders from three resolved promises; let the microtasks drain.
@@ -2063,6 +2064,7 @@ describe("the vault cannot inject markup", () => {
     window.eval(readFileSync(join(publicDir, "bubble.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "askthread.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "rowedit.js"), "utf8"));
+    window.eval(readFileSync(join(publicDir, "cycle.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     assert.equal(window.pwned, undefined);
@@ -2214,6 +2216,7 @@ describe("a payload cached before the brief existed", () => {
     window.eval(readFileSync(join(publicDir, "bubble.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "askthread.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "rowedit.js"), "utf8"));
+    window.eval(readFileSync(join(publicDir, "cycle.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 

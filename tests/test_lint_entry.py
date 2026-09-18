@@ -952,7 +952,7 @@ def test_the_check_asks_the_renderers_question_not_the_raw_field():
 
 
 def test_clean_title_matches_the_renderer():
-    """`clean_title` is a hand-copy of `cleanTitle` in `app.js` and
+    """`clean_title` is a hand-copy of `cleanTitle` in `cycle.js` and
     nothing else enforces that it stays one. Pin the four rules against
     the literal JS source: if the JS moves and Python does not, this
     fails rather than the two silently disagreeing on the owner's cards."""
@@ -960,11 +960,11 @@ def test_clean_title_matches_the_renderer():
     from agora_runner import nova_journal
 
     js = open(
-        os.path.join(os.path.dirname(nova_journal.__file__), "nova_public", "app.js"),
+        os.path.join(os.path.dirname(nova_journal.__file__), "nova_public", "cycle.js"),
         encoding="utf-8",
     ).read()
     start = js.index("function cleanTitle(")
-    body = js[start:js.index("\n  }", start)]
+    body = js[start:js.index("\n    }", start)]
     for fragment in (
         r'.replace(/^[\s·—–-]+/, "")',
         r'.replace(/\(\s*\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2})?\s*\)/g, "")',
