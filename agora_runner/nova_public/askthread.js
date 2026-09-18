@@ -41,13 +41,17 @@
      * flat list with no reply-to on them, so position is the only link there is,
      * and reading it here is what keeps `askMessage` from needing the list. */
     function askPaintThread(put, payload, afterSend) {
-      var asked = "";
-      (payload.messages || []).forEach(function (message) {
+      var asked = "", messages = payload.messages || [], newest = -1;
+      // Only the newest finished message can still be answered with a tap:
+      // anything said after a question -- his reply included -- has moved on.
+      messages.forEach(function (message, i) { if (!message.partial) newest = i; });
+      messages.forEach(function (message, i) {
         var retry = { question: asked, afterSend: afterSend };
+        var answerable = i === newest && message.sender !== OWNER_RECORD;
         put(window.novaMessage && window.novaThread ? { message: message, conversationId: payload.conversationId,
-          limit: payload.limit, retry: retry } : askMessage(message, payload.conversationId,
+          limit: payload.limit, retry: retry, answerable: answerable } : askMessage(message, payload.conversationId,
           payload.limit, retry), (message.id || message.createdAt) + message.sender,
-          JSON.stringify([message, asked, payload.conversationId, payload.limit]));
+          JSON.stringify([message, asked, payload.conversationId, payload.limit, answerable]));
         // Only his lines become the question to re-ask, and the update happens
         // after the row is built: an answer re-asks what was said *above* it,
         // and two answers in a row both point at the same question.

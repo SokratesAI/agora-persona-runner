@@ -74,7 +74,49 @@
       d.openMessageActions(actions.map(function (make) { return make(); }));
     }
     var cls = "ask-msg " + (mine ? "ask-mine" : "ask-theirs") + (m.partial ? " ask-partial" : "");
-    return html`<div class=${cls}><div class="ask-who">${when ? html`<span class="ask-when">${when}</span>` : null}<span class="ask-who-name">${mine ? "You" : m.sender || "Nova Answers"}</span></div><${Steps} ...${props} /><${RichText} text=${m.text} />${actions.length ? html`<button type="button" class="ask-more" title="Message actions" aria-label="Message actions" onClick=${more}>⋯</button>` : null}</div>`;
+    var options = !mine && m.options && m.options.length && props.conversationId ? m.options : null;
+    var live = !!props.answerable;
+    return html`<div class=${cls}><div class="ask-who">${when ? html`<span class="ask-when">${when}</span>` : null}<span class="ask-who-name">${mine ? "You" : m.sender || "Nova Answers"}</span></div><${Steps} ...${props} /><${RichText} text=${m.text} />${options ? html`<${Slot} sig=${JSON.stringify([props.conversationId, options, live])} make=${function () { return optionButtons(props.conversationId, options, live, retry && retry.afterSend); }} />` : null}${actions.length ? html`<button type="button" class="ask-more" title="Message actions" aria-label="Message actions" onClick=${more}>⋯</button>` : null}</div>`;
+  }
+
+  /* The answers a persona offered with its question, one button each (idea
+   * #164, slice 2). A tap sends the label as his reply, exactly as if he had
+   * typed it, so the persona needs nothing new to read it. Only the newest
+   * message's buttons are live; once anything has been said after it they
+   * stay on screen greyed, as a record of what was offered. Built by hand
+   * inside a `Slot` so a tap's disabled state survives the four-second poll. */
+  function optionButtons(conversationId, options, live, afterSend) {
+    var el = window.novaChat.el, row = el("div", "ask-options" + (live ? "" : " ask-options-spent"));
+    var buttons = options.map(function (label) {
+      var button = el("button", "ask-option", label);
+      button.type = "button";
+      button.disabled = !live;
+      button.addEventListener("click", function () {
+        if (button.disabled) return;
+        // The whole row goes quiet on the first tap: two answers to one
+        // question are two turns, and the second contradicts the first.
+        buttons.forEach(function (b) { b.disabled = true; });
+        button.classList.add("ask-option-picked");
+        fetch("/api/conversations/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversationId: conversationId, text: label }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (result) {
+            if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
+            if (afterSend) afterSend(label);
+          })
+          .catch(function () {
+            // Nothing was sent, so the choice is his to make again.
+            buttons.forEach(function (b) { b.disabled = false; });
+            button.classList.remove("ask-option-picked");
+          });
+      });
+      row.appendChild(button);
+      return button;
+    });
+    return row;
   }
 
   /* A slot that app.js fills with one hand-built node, once, and keeps.

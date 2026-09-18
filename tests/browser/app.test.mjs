@@ -18228,6 +18228,42 @@ describe("the chat dock with Preact loaded", () => {
     }
   });
 
+  /* Idea #164, slice 2: a persona's question can carry answers he taps. */
+  test("the newest question's options are buttons, and a tap sends the label once", async () => {
+    const window = await open([
+      { id: "1", sender: "Edvard", text: "ship it?" },
+      { id: "2", sender: "Nova", text: "Merge #780 now?", options: ["Yes", "No, wait"] },
+    ]);
+    const buttons = [...bubbles(window)[1].querySelectorAll(".ask-options .ask-option")];
+    assert.deepEqual(buttons.map((b) => b.textContent), ["Yes", "No, wait"]);
+    assert.ok(buttons.every((b) => !b.disabled), "the newest question's buttons must be live");
+    assert.equal(bubbles(window)[0].querySelector(".ask-options"), null, "his own message grew buttons");
+    const before = window.posted.length;
+    buttons[1].dispatchEvent(new window.Event("click"));
+    buttons[0].dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const posts = window.posted.slice(before);
+    assert.equal(posts.length, 1, "two taps must be one answer");
+    assert.equal(posts[0].url, "/api/conversations/send");
+    assert.deepEqual(posts[0].body, { conversationId: "c-preact", text: "No, wait" });
+    assert.ok(buttons.every((b) => b.disabled), "the row stayed tappable after an answer went");
+  });
+
+  test("options on a question already answered are drawn greyed and cannot be tapped", async () => {
+    const window = await open([
+      { id: "2", sender: "Nova", text: "Merge #780 now?", options: ["Yes", "No"] },
+      { id: "3", sender: "Edvard", text: "Yes" },
+    ]);
+    const row = bubbles(window)[0].querySelector(".ask-options");
+    assert.ok(row && row.classList.contains("ask-options-spent"), "an old question lost its record of what was offered");
+    const buttons = [...row.querySelectorAll(".ask-option")];
+    assert.ok(buttons.length === 2 && buttons.every((b) => b.disabled));
+    const before = window.posted.length;
+    buttons[0].dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, before, "a spent option sent something");
+  });
+
   test("a thread that could not load says so in a row of the Preact thread", async () => {
     const window = await loadAskDock({ install: withPreact, askStatus: 500 });
     const line = window.document.querySelector("#chat-thread p.empty");
