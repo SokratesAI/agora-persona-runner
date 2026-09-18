@@ -6753,171 +6753,30 @@
   }) : {};
   var paintModelPicker = modelsModule.paintModelPicker;
 
-  /* One loop for both threads. It carries the last thing he said forward so
-   * every answer knows the question it came from -- the messages arrive as a
-   * flat list with no reply-to on them, so position is the only link there is,
-   * and reading it here is what keeps `askMessage` from needing the list. */
-  function askPaintThread(put, payload, afterSend) {
-    var asked = "";
-    (payload.messages || []).forEach(function (message) {
-      var retry = { question: asked, afterSend: afterSend };
-      put(window.novaMessage && window.novaThread ? { message: message, conversationId: payload.conversationId,
-        limit: payload.limit, retry: retry } : askMessage(message, payload.conversationId,
-        payload.limit, retry), (message.id || message.createdAt) + message.sender,
-        JSON.stringify([message, asked, payload.conversationId, payload.limit]));
-      // Only his lines become the question to re-ask, and the update happens
-      // after the row is built: an answer re-asks what was said *above* it,
-      // and two answers in a row both point at the same question.
-      if (message.sender === OWNER_RECORD && message.text) asked = message.text;
-    });
-    /* Held for `askLost`, which draws after this loop and needs the same
-     * question the `⋯` menu's "Ask again" would send. One source, so the two
-     * cannot disagree about what gets re-asked. */
-    lastAskedQuestion = asked;
-    // Last, and outside the loop: the sheet is one node on <body> rather
-    // than something inside a message, so it is repainted once against the
-    // whole payload and not once per row.
-    refreshStepSheet(payload);
-  }
-
-  // message.js draws a bubble with these; thread.js (Preact) keeps unchanged rows.
-  window.novaChat = { owner: OWNER_RECORD, el: el, chatTime: chatTime, stepsLabel: stepsLabel,
-    openStepSheet: openStepSheet, stepMessageKey: stepMessageKey, appendRichText: appendRichText,
-    askCopyButton: askCopyButton, askRetryButton: askRetryButton, openMessageActions: openMessageActions,
-    askPendingSeconds: askPendingSeconds, askElapsed: askElapsed, askOrbit: askOrbit,
-    pendingClockAfter: PENDING_CLOCK_AFTER_SECONDS };
-  function renderAskThread(container, payload, afterSend) {
-    var rows = [], messages = payload.messages || [];
-    function put(node, key, sig) { rows.push({ node: node, key: key, sig: sig }); }
-    if (!messages.length) {
-      put(el("p", "empty", "Ask me anything. I answer here, in a minute or so."), "empty", "");
-    } else {
-      askPaintThread(put, payload, afterSend);
-      if (payload.waiting || tailIsWorking(messages)) {
-        var lost = lostTurn(payload, messages);
-        // As props, message.js draws the tail and keeps its nodes across polls.
-        put(window.novaMessage && window.novaThread ? { tail: lost ? "lost" : "pending",
-          progress: payload.progress, conversationId: payload.conversationId, quietSeconds: lost,
-          question: lastAskedQuestion, afterSend: afterSend } : lost ? askLost(payload.conversationId,
-          lost, afterSend) : askPending(payload.progress), "tail", NaN);
-      }
-    }
-    if (window.novaThread) return window.novaThread.render(container, rows);
-    container.textContent = "";
-    rows.forEach(function (r) { container.appendChild(r.node); });
-  }
-
-  /* How long a turn may go with nothing arriving before the page stops
-   * claiming it is running.
-   *
-   * Ten minutes and not one, because a turn legitimately goes quiet: a long
-   * Bash call, a subagent, a model thinking before it reaches for anything.
-   * The bound is on SILENCE, not on the turn -- a turn narrating steps every
-   * few seconds can run its full 45 minutes and never trip this. */
-  var LOST_TURN_AFTER_SECONDS = 600;
-
-  // The newest thing he said in the thread being painted; see `askPaintThread`.
-  var lastAskedQuestion = "";
-
-  /* Has this turn gone silent long enough to call it lost?
-   *
-   * His report, 2026-09-08: *"I sent you a message, got a warning on my
-   * phone and you never responded and was just loading forever. Your pod
-   * restarted but now you are up again."*
-   *
-   * The cause was a bridge rollout -- `strategy: Recreate` on a
-   * ReadWriteOnce volume, so the old pod is taken down before the new one
-   * starts and there is a real window with no bridge at all. That window is
-   * structural and cannot be designed away here.
-   *
-   * What can be fixed here is the lie. The loader spins on `waiting`, and
-   * `waiting` is a claim about the last message being his -- which stays
-   * true forever when the turn was never picked up. So the page told him
-   * something was happening for as long as he left it open. This is the
-   * bound at which it stops saying that.
-   *
-   * Returns the seconds of silence, or 0 for "still working". Measured from
-   * the newest thing in the thread rather than from his message: a turn that
-   * ran for twenty minutes and then died has been silent for however long it
-   * has been silent, not twenty minutes. */
-  function lostTurn(payload, messages) {
-    var newest = Date.parse((payload.progress && payload.progress.askedAt) || "");
-    (messages || []).forEach(function (message) {
-      var at = Date.parse(message.createdAt || "");
-      if (!isNaN(at) && (isNaN(newest) || at > newest)) newest = at;
-      (message.steps || []).forEach(function (step) {
-        var stepAt = Date.parse(step.endedAt || step.at || "");
-        if (!isNaN(stepAt) && (isNaN(newest) || stepAt > newest)) newest = stepAt;
-      });
-    });
-    // No usable stamp anywhere is not evidence of silence. An older payload
-    // carries none, and calling a live turn lost is the same lie pointing
-    // the other way.
-    if (isNaN(newest)) return 0;
-    var quiet = Math.round((Date.now() - newest) / 1000);
-    return quiet >= LOST_TURN_AFTER_SECONDS ? quiet : 0;
-  }
-
-  /* What the loader becomes when the turn stopped answering.
-   *
-   * It says the one thing he needs -- nothing is coming -- and offers the
-   * one action that helps. `askRetryButton` is the same control the `⋯`
-   * menu carries, so re-asking is one implementation rather than two that
-   * can disagree about what gets sent. */
-  function askLost(conversationId, quietSeconds, afterSend) {
-    var row = el("div", "ask-msg ask-theirs ask-stopped-row");
-    row.appendChild(el("div", "ask-stopped",
-      "No answer came back. Nothing has arrived for "
-      + Math.round(quietSeconds / 60) + " minutes, so the turn was lost."));
-    var asked = lastAskedQuestion;
-    if (conversationId && asked) {
-      row.appendChild(askRetryButton(conversationId, asked, afterSend));
-    }
-    return row;
-  }
-
-  /* How long a steps-only tail may go without a new step and still count as
-   * a turn in flight. Generous on purpose: a single tool call can run for
-   * minutes (a test suite, a CI wait), and a loader that gave up on a turn
-   * that was merely thinking would be a worse lie than the one this fixes. */
-  var TAIL_WORKING_WITHIN_SECONDS = 300;
-
-  /* Is the bottom of the thread a block of work with nothing said after it?
-   *
-   * His question, 2026-09-08, with a screenshot of a reply followed by a
-   * bare "Used 10 tools" and no loader: *"You seem to be working on
-   * something, but after sending a message? There is no spinner, just some
-   * tool usage that are displayed below your output. Not sure if this is by
-   * design or a bug?"*
-   *
-   * Half of each. The row itself is deliberate -- `visible_rows` emits a
-   * steps-only row for narration with no message after it, which is what
-   * stops mid-turn work being drawn as a second chat bubble. The missing
-   * loader is not. `payload.waiting` is computed from SETTLED messages
-   * only, deliberately: it drives the poll, and a passage arriving mid-turn
-   * must not read as "answered" and stop it. But the page used the same
-   * flag to decide whether to draw the loader, so a thread visibly making
-   * tool calls under a finished reply reported nothing at all.
-   *
-   * Bounded by the newest step's own timestamp, because the other case this
-   * row exists for is a cycle that narrated for an hour and died. A loader
-   * spinning forever over that would be the same class of untruth. Steps
-   * have carried `at` since 2026-09-07, so the question is answerable here.
-   */
-  function tailIsWorking(messages) {
-    var last = messages[messages.length - 1];
-    if (!last || !last.stepsOnly) return false;
-    var steps = last.steps || [];
-    var newest = 0;
-    steps.forEach(function (step) {
-      var at = Date.parse(step.endedAt || step.at || "");
-      if (!isNaN(at) && at > newest) newest = at;
-    });
-    // No usable stamp is not evidence of staleness -- an older payload
-    // carries none at all, and the block is still the newest thing here.
-    if (!newest) return true;
-    return (Date.now() - newest) / 1000 <= TAIL_WORKING_WITHIN_SECONDS;
-  }
+  /* The ask thread renderer lives in `askthread.js` (issue #233). Bound here,
+   * where the block used to sit, after `bubble.js` and every other name it
+   * borrows. The guard is for a cached tab that has `app.js` from this build
+   * and no `askthread.js` yet. */
+  var askThreadModule = window.novaAskThread ? window.novaAskThread({
+    OWNER_RECORD: OWNER_RECORD,
+    PENDING_CLOCK_AFTER_SECONDS: PENDING_CLOCK_AFTER_SECONDS,
+    appendRichText: appendRichText,
+    askCopyButton: askCopyButton,
+    askElapsed: askElapsed,
+    askMessage: askMessage,
+    askOrbit: askOrbit,
+    askPending: askPending,
+    askPendingSeconds: askPendingSeconds,
+    askRetryButton: askRetryButton,
+    chatTime: chatTime,
+    el: el,
+    openMessageActions: openMessageActions,
+    openStepSheet: openStepSheet,
+    refreshStepSheet: refreshStepSheet,
+    stepMessageKey: stepMessageKey,
+    stepsLabel: stepsLabel,
+  }) : {};
+  var renderAskThread = askThreadModule.renderAskThread;
 
   /* The Conversations page is gone -- his ask, 2026-09-07: *"I only use
    * that chat modal for the conversations, never the /chat page. So

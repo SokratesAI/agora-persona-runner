@@ -337,6 +337,9 @@ STATIC_ROUTES = {
     # The chat bubble renderer, moved out of `app.js` for issue #233.
     # Loads before `app.js` too.
     "/bubble.js": "bubble.js",
+    # The ask thread renderer, moved out of `app.js` for issue #233.
+    # Loads before `app.js` too.
+    "/askthread.js": "askthread.js",
     "/diag.js": "diag.js",
     # The Pool page and the project page, moved out of `app.js` for issue
     # #233. Loads before `app.js` too.
@@ -407,6 +410,7 @@ SW_BUILD_INPUTS = (
     "models.js",
     "richtext.js",
     "bubble.js",
+    "askthread.js",
     "diag.js",
     "project.js",
     "thread.js",
