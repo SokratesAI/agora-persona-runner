@@ -1532,8 +1532,9 @@ def _sweep_one(root, args):
     # to tidy is exactly the cycle that most needs to be told a checkout is
     # holding unfinished work, and "nothing to tidy" above it reads like an
     # all-clear for the whole workspace.
-    for entry in survey_checkouts(root, fetch=not args.no_fetch,
-                                  ask_github=not args.no_gh):
+    survey = survey_checkouts(root, fetch=not args.no_fetch,
+                              ask_github=not args.no_gh)
+    for entry in survey:
         # Said even for a clone the survey then calls clean, because "clean"
         # off a ref that could not be refreshed is the reassuring answer with
         # nothing behind it -- the shape of failure this whole function was
@@ -1633,6 +1634,87 @@ def _sweep_one(root, args):
             print("    could not list which files differ -- `git diff "
                   "--name-only` failed, so the absence of a list above "
                   "says nothing")
+
+    # Only the shared checkout. A concurrent cycle's own worktree is its
+    # working copy and moving it would move the floor under a live cycle; the
+    # shared one is where every serialized cycle runs `preflight`,
+    # `top_board_rows` and the roll tools from, and nothing else ever moves it.
+    if root == SHARED_WORKSPACE:
+        for entry in survey:
+            moved = follow_base(root, entry, dry_run=args.dry_run,
+                                min_idle_minutes=args.min_loose_file_age_minutes)
+            if moved:
+                print(moved)
+
+
+def follow_base(root, entry, dry_run=False,
+                min_idle_minutes=MIN_LOOSE_FILE_AGE_MINUTES, now=None):
+    """Put a checkout whose work has all landed back on its base, detached.
+
+    Measured Cycle 1812: `/data/workspace/agora-persona-runner` was parked on
+    `nova/nudge-guard-travels-with-the-primitive`, merged as #1159 on 09-16
+    and 77 commits behind `origin/main`. This sweep printed `[leftover]` for it
+    every cycle for two days and changed nothing, so every serialized cycle's
+    `preflight` and `top_board_rows` ran two-day-old code and said so nowhere.
+    Three memories of mine describe the same trap from three sides (a roll tool
+    printing "nothing to roll" off last week's code was one). Reporting it a
+    fourth way is the detector the prompt says to stop writing; this removes
+    the state instead.
+
+    Acts only when nothing can be lost: `clean` or `leftover`, no uncommitted
+    file, no commit only the remote has, a verdict the commit graph decided
+    rather than two clocks, and HEAD not moved for `min_idle_minutes` -- the
+    same measured turn cap the loose-file guard uses, so a cycle that has just
+    checked out a fresh branch here is left alone. A branch that is merely
+    behind is fast-forwarded, so `git pull` keeps working; a landed branch is
+    detached at the base rather than switched to `main`, because `main` is
+    often checked out in another worktree and git refuses a second. Returns
+    the line to print, or None when it did nothing.
+    """
+    if entry["verdict"] not in ("clean", "leftover") or entry["dirty"]:
+        return None
+    if (entry["base"] is None or entry["remote_only"]
+            or entry["remote_only_failed"] or entry["rests_on_clock"]):
+        return None
+    clone = entry["clone"]
+    head = _git(root, clone, "rev-parse", "HEAD").stdout.strip()
+    base = _git(root, clone, "rev-parse", entry["base"]).stdout.strip()
+    if not head or not base or head == base:
+        return None
+    # The reflog, not the commit date: checking out a new branch at an old
+    # commit moves HEAD now and leaves the commit date days back.
+    moved_at = _git(root, clone, "log", "-g", "-1", "--format=%ct",
+                    "HEAD").stdout.strip()
+    if not moved_at.isdigit():
+        return None
+    now = time.time() if now is None else now
+    if now - int(moved_at) < min_idle_minutes * 60:
+        return None
+    behind = _git(root, clone, "rev-list", "--count",
+                  "HEAD.." + entry["base"]).stdout.strip() or "?"
+    where = "branch %s" % entry["branch"] if entry["branch"] != "HEAD" \
+        else "a detached HEAD"
+    if dry_run:
+        return ("%s: would move from %s, %s commit(s) behind, to %s"
+                % (clone, where, behind, entry["base"]))
+    if entry["ahead"] == 0 and entry["branch"] != "HEAD":
+        # Merely behind, on a branch of its own: fast-forward it, so a later
+        # `git pull` here still works. Detaching it would break that.
+        done = _git(root, clone, "merge", "--ff-only", "--quiet",
+                    entry["base"])
+        how = "fast-forwarded"
+    else:
+        done = _git(root, clone, "checkout", "--quiet", "--detach",
+                    entry["base"])
+        how = "detached"
+    if done.returncode != 0:
+        return ("%s: could not move from %s to %s -- tools run from here are "
+                "%s commit(s) behind: %s"
+                % (clone, where, entry["base"], behind,
+                   (done.stderr or "").strip()[:200]))
+    return ("%s: moved from %s, %s commit(s) behind, to %s (%s) -- the "
+            "tools every serialized cycle runs from here were running old code"
+            % (clone, where, behind, entry["base"], how))
 
 
 if __name__ == "__main__":
