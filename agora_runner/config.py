@@ -40,6 +40,11 @@ ANTHROPIC_TURN_TOKEN_CEILING = int(os.environ.get("ANTHROPIC_TURN_TOKEN_CEILING"
 # Two turns at the per-turn ceiling. The balance it guards is one prepaid
 # account ($16 left on 2026-08-10, identity.md rule 9), shared by every persona.
 ANTHROPIC_DAY_TOKEN_CEILING = int(os.environ.get("ANTHROPIC_DAY_TOKEN_CEILING", "") or 2_000_000)
+# The same day in dollars, priced per round by agora_runner/metered_price.py. The
+# token ceiling alone allows two million Fable output tokens, $100 against that
+# $16 balance. $2 lets a tester run a real session and leaves the balance at
+# least eight days to empty even if every day is spent to the ceiling.
+ANTHROPIC_DAY_USD_CEILING = float(os.environ.get("ANTHROPIC_DAY_USD_CEILING", "") or 2.0)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 AGORA_URL = os.environ.get("AGORA_URL", "http://agora.agents.svc.cluster.local:8080")
 AGORA_INTERNAL_URL = os.environ.get(
