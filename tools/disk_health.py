@@ -291,7 +291,9 @@ def read_thresholds(node, runner=subprocess.run):
     """This node's own action points, off the kubelet's live configuration.
 
     Returns `{"nodefs": <pct free that evicts pods>, "imagefs": <pct free that
-    garbage-collects images>}`. Raises OSError when configz is unreadable or
+    garbage-collects images>}`, plus `"imagefs_eviction"` -- the pct free at
+    which the image store itself evicts pods -- when the kubelet sets
+    `imagefs.available`. Raises OSError when configz is unreadable or
     does not carry a percentage for either one, so the caller falls back to
     `EVICTION_PCT` out loud rather than half-reading a config.
     """
@@ -308,7 +310,11 @@ def read_thresholds(node, runner=subprocess.run):
         gc_high = float(config["imageGCHighThresholdPercent"])
         if not hard.endswith("%"):
             raise ValueError("nodefs.available is %r, not a percentage" % hard)
-        return {"nodefs": float(hard[:-1]), "imagefs": 100.0 - gc_high}
+        found = {"nodefs": float(hard[:-1]), "imagefs": 100.0 - gc_high}
+        image_hard = config["evictionHard"].get("imagefs.available")
+        if isinstance(image_hard, str) and image_hard.endswith("%"):
+            found["imagefs_eviction"] = float(image_hard[:-1])
+        return found
     except (ValueError, KeyError, TypeError) as exc:
         raise OSError("the kubelet's configz carried no usable threshold: %s" % exc)
 
@@ -638,9 +644,28 @@ def available_pct(filesystem):
     return 100.0 * available / capacity
 
 
+def action_point(kind, thresholds=None):
+    """The available-percent at which the kubelet starts evicting pods off `kind`.
+
+    For imagefs that is `imagefs.available`, not the image-GC point. Garbage
+    collection is the kubelet freeing the disk by itself: it starts at
+    `100 - imageGCHighThresholdPercent` free and stops at
+    `100 - imageGCLowThresholdPercent`, so a node that pulls a new image per
+    merge rests inside that band on purpose. Raising there was red forever --
+    server2 sat at 19.6% free on 2026-09-18 with 39 space-driven collections
+    on its kubelet's counter. The GC point stays in `thresholds["imagefs"]`
+    for the trend line and the GC BAND line. Without a configz reading the
+    upstream default applies, where both are 15%.
+    """
+    thresholds = thresholds or EVICTION_PCT
+    if kind == "imagefs" and "imagefs_eviction" in thresholds:
+        return thresholds["imagefs_eviction"]
+    return thresholds[kind]
+
+
 def raises_at(kind, thresholds=None):
     """The available-percent below which `kind` is a finding."""
-    return (thresholds or EVICTION_PCT)[kind] + MARGIN_PCT
+    return action_point(kind, thresholds) + MARGIN_PCT
 
 
 def is_capped(volume, filesystems):
@@ -1056,7 +1081,12 @@ def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=No
             filling = True
             out(
                 "  FILLING    %s — under %.1f%% free, and the kubelet acts at %.1f%%"
-                % (line, raises_at(kind, thresholds), thresholds[kind])
+                % (line, raises_at(kind, thresholds), action_point(kind, thresholds))
+            )
+        elif kind == "imagefs" and free < thresholds["imagefs"] + MARGIN_PCT:
+            out(
+                "  GC BAND    %s — near the %.1f%%-free point where the kubelet deletes unused images by itself; a finding only under %.1f%% free, above the %.1f%% where it evicts pods"
+                % (line, thresholds["imagefs"], raises_at(kind, thresholds), action_point(kind, thresholds))
             )
         else:
             out("  ok         %s" % line)
