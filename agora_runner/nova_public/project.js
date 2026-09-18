@@ -497,7 +497,6 @@
           shares));
       }
       if (!list.childNodes.length) return null;
-      attachProjectDrag(list);
       var box = el("section", "project-standings");
       box.appendChild(list);
       return box;
@@ -578,10 +577,8 @@
        * a screen reader all get what they expect, and the delegated
        * `pushState` handler at the bottom of this file already intercepts it.
        *
-       * Safe against the drag because the drag is not on the row: it starts
-       * on `.project-standing-grip` only (`attachProjectDrag`), and the move
-       * buttons stay outside this anchor. A row-wide gesture would have made
-       * every drag end in a navigation. */
+       * Projects carry no move controls since issue #229: a project has no
+       * priority of its own, its milestones and key results do. */
       /* A disclosure, not a link -- his ask, 2026-09-08: *"Instead of being
        * navigated to another page when i click on a project, i want a drawer
        * system where projects contains milestones and milestones contains
@@ -671,71 +668,10 @@
        * something else. */
       li.appendChild(link);
       li.appendChild(drawer);
-      li.appendChild(projectMoveControls(name, index, total));
 
-      /* The strip the arrows sit in expands the card too -- his ask,
-       * 2026-09-08: *"the area of the card where the arrows are below the text
-       * should be clickable to expand the drawer."*
-       *
-       * A listener on the row rather than a bigger button, because a button
-       * cannot contain the arrows (nested buttons are invalid and a screen
-       * reader gets one control where there are three). So the row forwards a
-       * press to the disclosure UNLESS it landed on something that does its
-       * own job -- a button, a link, or the drag grip. `closest` and not a
-       * target check: the press lands on the glyph inside the button as often
-       * as on the button.
-       *
-       * The disclosure itself is a button, so its own presses are caught by
-       * that same guard and handled once, not twice. */
-      li.addEventListener("click", function (event) {
-        var target = event.target;
-        // `.project-drawer` too: the drawer sits inside this row, so without
-        // it a tap on a task's grip or a milestone's grip folded the card shut.
-        if (target && target.closest
-            && target.closest("button, a, .project-standing-grip, .project-drawer")) return;
-        link.click();
-      });
       return li;
     }
 
-    /* Send one project to a 1-based position in his ordered list.
-     *
-     * The one write path for both controls below -- the two arrows and the
-     * drag gesture -- so a reorder cannot mean two different things
-     * depending on how he did it. `note` is where the outcome is said; the
-     * caller owns it because both controls hang off the same row.
-     */
-    function sendProjectOrder(name, position, note) {
-      note.textContent = "Saving\u2026";
-      return fetch("/api/project/order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project: name, position: position })
-      })
-        .then(json)
-        .then(function (result) {
-          if (!result || !result.ok) throw new Error((result && result.message) || "failed");
-          note.textContent = "";
-          // Reload rather than swapping two nodes: the order he just set
-          // is the order the picker will use, and the page has to show
-          // what the file says rather than what the click implied.
-          load();
-        })
-        .catch(function (err) { note.textContent = "Could not move: " + err; });
-    }
-
-    /* Move one project up or down his ordered list.
-     *
-     * `index` is 0-based within the list drawn above, so "up" is
-     * `index` (1-based `index - 1 + 1`) and "down" is `index + 2`. The ends
-     * are disabled rather than hidden: a button that disappears at the top
-     * moves the other button under his thumb, and he taps the wrong one.
-     *
-     * The arrows stay now that the drag gesture exists, and that is a
-     * decision rather than an oversight: a drag has no keyboard and no
-     * screen-reader equivalent, so deleting them would take the ordering
-     * away from every input except a finger.
-     */
     /* The second and third levels of the drawer: a project's milestones, and
      * the rows inside each one.
      *
@@ -900,7 +836,7 @@
      * nearest open neighbour, and an issue can trade a seat with an idea.
      *
      * On the right, note first and grip last, for the reason
-     * `projectMoveControls` gives. */
+     * `milestoneMoveControls` gives. */
     function taskMoveControls(row, mine) {
       var peers = mine.filter(taskIsOpen);
       var index = peers.indexOf(row);
@@ -950,63 +886,6 @@
           load();
         })
         .catch(function (err) { note.textContent = "Could not move: " + err; });
-    }
-
-    function projectMoveControls(name, index, total) {
-      var wrap = el("div", "project-standing-move");
-      var note = el("span", "project-standing-move-note", "");
-      /* Note first, controls after it, grip last -- and that ORDER is what
-       * puts them on the right, not the `justify-content` that was here.
-       *
-       * His report, 2026-09-08: *"the arrows where never moved to the right.
-       * They are still on the left, same with the drag button."* I had added
-       * `justify-content: flex-end` and appended the note LAST with
-       * `margin-right: auto`. An auto margin beats `justify-content` -- it
-       * eats the free space first -- so the note's own margin pushed
-       * everything before it hard left, which is every control in the row.
-       * The same mistake as the chat composer's two auto margins earlier the
-       * same day, and the same fix: one mechanism, not two fighting.
-       *
-       * The grip is last because he asked for the draggable to be *"all the
-       * way to the right"*; the arrows keep reading order between them. */
-      wrap.appendChild(note);
-      function mover(label, position, enabled) {
-        var button = el("button", "project-standing-move-btn", label);
-        button.type = "button";
-        button.setAttribute(
-          "aria-label", "Move " + name + (label === "\u2191" ? " up" : " down"));
-        if (!enabled) {
-          button.disabled = true;
-          return button;
-        }
-        button.addEventListener("click", function () {
-          sendProjectOrder(name, position, note);
-        });
-        return button;
-      }
-      wrap.appendChild(mover("\u2191", index, index > 0));
-      wrap.appendChild(mover("\u2193", index + 2, index < total - 1));
-      wrap.appendChild(projectDragHandle(name));
-      return wrap;
-    }
-
-    /* The grip he drags a project by -- milestone M3 of idea #260, the half
-     * the two arrows above deliberately shipped without.
-     *
-     * A handle rather than the whole row, for two reasons that are both
-     * about a phone. The row holds a link to the project page, and a row
-     * that starts dragging under a finger is a row he can no longer tap to
-     * open. And a list whose every row swallows a vertical drag is a list
-     * he cannot scroll -- `touch-action: none` is set on this element only,
-     * so a finger anywhere else on the standing still scrolls the page.
-     *
-     * It is `aria-hidden` and not focusable on purpose: the two arrows
-     * beside it already carry the same action with a real accessible name,
-     * so exposing a third control that a screen reader cannot actually
-     * operate would announce an ability it does not have.
-     */
-    function projectDragHandle(name) {
-      return dragHandle("project-standing-grip", "data-project", name);
     }
 
     /* The same grip for a milestone -- milestone M4 of idea #260, the last
@@ -1059,17 +938,6 @@
      *    as letting go.
      */
     var DRAG_SLOP = 8;
-
-    function attachProjectDrag(list) {
-      attachRowDrag(list, {
-        rowClass: "project-standing",
-        gripClass: "project-standing-grip",
-        nameAttr: "data-project",
-        draggingClass: "project-standing--dragging",
-        noteSelector: ".project-standing-move-note",
-        send: sendProjectOrder
-      });
-    }
 
     /* The same gesture on the milestone list -- milestone M4 of idea #260,
      * and the last piece of it.
@@ -1431,8 +1299,8 @@
      * the half that had no screen: a pin has been settable since
      * `tools.milestone_pin` shipped and the ordering it overrides was drawn
      * nowhere, so the only way to see what he was pinning inside was a
-     * terminal he does not have. Two buttons *and* a grip, the pair
-     * `projectMoveControls` draws one section up -- a drag has no keyboard
+     * terminal he does not have. Two buttons *and* a grip, because a drag
+     * has no keyboard
      * and nothing a screen reader can operate, so deleting the arrows would
      * take the ordering away from every input except a finger, and both write
      * through `sendMilestonePin` so a pin cannot mean two things. The gesture
@@ -1508,19 +1376,19 @@
     /* Move one milestone up or down, or take its pin off.
      *
      * `index` is 0-based in the list drawn above, so "up" is `index`
-     * (1-based `index - 1 + 1`) and "down" is `index + 2` -- the same
-     * arithmetic `projectMoveControls` does, because it is the same
-     * 1-based scale on the other side of the request.
+     * (1-based `index - 1 + 1`) and "down" is `index + 2`, the 1-based
+     * scale on the other side of the request.
      *
-     * The ends are disabled rather than hidden, for the reason written on
-     * the project arrows: a control that disappears at the top slides the
+     * The ends are disabled rather than hidden: a control that disappears at the top slides the
      * other one under his thumb and he presses the wrong thing.
      */
     function milestoneMoveControls(project, item, index, total) {
       var wrap = el("div", "project-milestone-move");
       var note = el("span", "project-milestone-move-note", "");
-      // Note first, grip last -- see `projectMoveControls` for why the order
-      // is what puts these on the right and the `justify-content` was not.
+      // Note first, grip last -- the ORDER is what puts these on the right.
+      // His report, 2026-09-08: "the arrows where never moved to the right".
+      // An auto margin on a note appended last beats `justify-content`: it
+      // takes the free space first and pushes every control before it left.
       wrap.appendChild(note);
       function mover(label, position, enabled) {
         var button = el("button", "project-milestone-move-btn", label);

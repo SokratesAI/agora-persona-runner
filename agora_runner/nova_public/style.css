@@ -4896,43 +4896,6 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .project-standing-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .project-standing-name { font-weight: 600; text-decoration: none; color: inherit; }
 .project-standing-counts { color: var(--dim); font-size: 0.85rem; margin-left: auto; }
-/* The two reorder buttons (idea #260, M3). 44px tall because this is a
-   phone control and a 24px target is one he misses. */
-/* Pushed to the right edge -- his ask, 2026-09-08: *"move the arrows and
-   the button you hold to drag to the right side of the card so i can use my
-   right thumb for it."* He reads this page one-handed on a phone, and a
-   control on the left edge is a stretch across the screen every time. The
-   note keeps the left, because it is read rather than pressed. */
-.project-standing-move { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
-/* The note eats the free space, so everything after it sits against the
-   right edge. One mechanism: a `justify-content` here as well would be a
-   second one, and the auto margin wins anyway -- which is exactly how the
-   controls stayed on the left after the first attempt at this. */
-.project-standing-move-note { margin-right: auto; }
-.project-standing-move-btn {
-  min-width: 44px; min-height: 44px; border-radius: 8px;
-  border: 1px solid var(--outline); background: transparent; color: var(--text);
-  font-size: 1rem; cursor: pointer;
-}
-.project-standing-move-btn:disabled { opacity: 0.3; cursor: default; }
-.project-standing-move-note { color: var(--dim); font-size: 0.85rem; }
-/* The grip he drags a standing by (idea #260, M3). `touch-action: none`
-   is on this element alone: it tells the browser not to claim the
-   vertical gesture for a scroll, and putting it on the row instead would
-   make the whole list unscrollable on the phone he reads it on. Same
-   44px target as the arrows beside it. */
-.project-standing-grip {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 44px; min-height: 44px;
-  color: var(--dim); font-size: 1.2rem; line-height: 1;
-  cursor: grab; touch-action: none; user-select: none;
-}
-.project-standing--dragging {
-  position: relative; z-index: 2; opacity: 0.85;
-  background: var(--card, transparent);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
-}
-.project-standing--dragging .project-standing-grip { cursor: grabbing; }
 /* The drawer under a standing: milestones, and the rows inside one.
    His ask, 2026-09-08 -- a project opens in place instead of navigating,
    so the other projects stay on screen above and below it. */
