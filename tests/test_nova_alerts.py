@@ -162,8 +162,13 @@ def test_the_browser_router_and_the_view_agree_on_the_name():
     app = (ROOT / "agora_runner" / "nova_public" / "app.js").read_text()
     assert 'if (path === "/alerts") return { view: "alerts"' in app
     assert 'if (here.view === "alerts") {' in app
-    assert "function renderAlerts(payload)" in app
-    assert "function loadAlerts()" in app
+    # The page itself moved into `beats.js` (issue #233, step 15); the router
+    # that reaches it did not. Reading only `app.js` here would pass on an
+    # `/alerts` route that leads nowhere.
+    beats = (ROOT / "agora_runner" / "nova_public" / "beats.js").read_text()
+    assert "function renderAlerts(payload)" in beats
+    assert "function loadAlerts()" in beats
+    assert "loadAlerts = beatsPages.loadAlerts;" in app
 
 
 def test_every_state_word_is_spelled_out_beside_its_colour():
