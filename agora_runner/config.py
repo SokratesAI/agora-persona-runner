@@ -35,6 +35,11 @@ ALLOW_METERED_UNATTENDED = os.environ.get(
 # output), and the turn is refused before the round that would start past it
 # (idea #249). A normal chat turn is a few rounds of tens of thousands.
 ANTHROPIC_TURN_TOKEN_CEILING = int(os.environ.get("ANTHROPIC_TURN_TOKEN_CEILING", "") or 1_000_000)
+# The same count summed over every persona and every turn in one Oslo day, kept
+# in the vault so a restart does not reset it (agora_runner/metered_day.py).
+# Two turns at the per-turn ceiling. The balance it guards is one prepaid
+# account ($16 left on 2026-08-10, identity.md rule 9), shared by every persona.
+ANTHROPIC_DAY_TOKEN_CEILING = int(os.environ.get("ANTHROPIC_DAY_TOKEN_CEILING", "") or 2_000_000)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 AGORA_URL = os.environ.get("AGORA_URL", "http://agora.agents.svc.cluster.local:8080")
 AGORA_INTERNAL_URL = os.environ.get(

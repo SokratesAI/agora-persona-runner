@@ -9593,3 +9593,78 @@ def test_anthropic_turn_under_its_token_ceiling_runs_to_the_answer(runner):
             dict(runner.NO_CAPS), {"name": "Test", "id": "p1"}, "conv-1",
         )
     assert result == "done"
+
+
+def _answer(tokens):
+    return 200, {"stop_reason": "end_turn", "usage": {"input_tokens": tokens},
+                 "content": [{"type": "text", "text": "done"}]}
+
+
+def _haiku_turn(runner):
+    return runner.anthropic_generate(
+        "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+        dict(runner.NO_CAPS), {"name": "Test", "id": "p1"}, "conv-1",
+    )
+
+
+def test_anthropic_day_total_survives_the_process_in_the_vault(runner, _metered_day_in_memory):
+    """Every round a turn bills, the answer round included, lands in the
+    vault document -- a count kept only in this process would reset on the
+    next pod restart and reopen the day (idea #249)."""
+    from agora_runner import metered_day
+    with patch.object(runner.providers.anthropic, "execute_tool", return_value="ok"), \
+         patch.object(runner.providers.anthropic, "http_json", side_effect=[_tool_round(600), _answer(900)]):
+        assert _haiku_turn(runner) == "done"
+    stored = json.loads(_metered_day_in_memory["content"])["days"]
+    assert stored == {metered_day.today(): 1500}
+    # A fresh process has an empty local count and still reads the day's total.
+    metered_day._local.clear()
+    assert metered_day.spent_today() == 1500
+
+
+def test_anthropic_turn_not_started_once_the_day_is_spent(runner, _metered_day_in_memory):
+    from agora_runner import metered_day
+    metered_day.add(1000)
+    metered_day._local.clear()
+    with patch.object(runner.providers.anthropic, "ANTHROPIC_DAY_TOKEN_CEILING", 1000), \
+         patch.object(runner.providers.anthropic, "http_json") as http:
+        result = _haiku_turn(runner)
+    # A reply, not a raise, for the same retry reason as the per-turn ceiling.
+    assert "billed 1,000 tokens today" in result
+    assert "claude-cli:claude-haiku-4-5-20251001" in result
+    http.assert_not_called()
+
+
+def test_anthropic_turn_stops_when_its_rounds_cross_the_day(runner, _metered_day_in_memory):
+    """The day ceiling binds inside a turn too: 700 already spent today plus
+    this turn's first 600-token round is past 1,000, so the second round is
+    never sent even though the turn alone is far under its own ceiling."""
+    from agora_runner import metered_day
+    metered_day.add(700)
+    calls = []
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+        calls.append(body)
+        return _tool_round(600)
+
+    with patch.object(runner.providers.anthropic, "ANTHROPIC_DAY_TOKEN_CEILING", 1000), \
+         patch.object(runner.providers.anthropic, "execute_tool", return_value="ok"), \
+         patch.object(runner.providers.anthropic, "http_json", side_effect=fake_http_json):
+        result = _haiku_turn(runner)
+    assert "billed 1,300 tokens today" in result
+    assert result.startswith("Stopped before round 2")
+    assert len(calls) == 1
+
+
+def test_metered_day_unreadable_vault_falls_back_to_the_pods_own_count(runner, monkeypatch):
+    """Never to zero: a vault hiccup must not reopen a spent day."""
+    from agora_runner import metered_day
+    metered_day._local[metered_day.today()] = 4242
+
+    def broken(path):
+        raise RuntimeError("couch down")
+
+    monkeypatch.setattr(metered_day, "vault_read_path_rev", broken)
+    assert metered_day.spent_today() == 4242
+    metered_day.add(8)  # swallowed, and still counted locally
+    assert metered_day.spent_today() == 4250

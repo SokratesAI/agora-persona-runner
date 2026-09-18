@@ -242,3 +242,27 @@ def _no_board_publisher(monkeypatch):
     from agora_runner import board_publish
     monkeypatch.setattr(board_publish, "start", lambda *args, **kwargs: None)
     monkeypatch.setattr(board_publish, "_publisher", None)
+
+
+@pytest.fixture(autouse=True)
+def _metered_day_in_memory(monkeypatch):
+    """`anthropic_generate` reads and writes today's metered total in the
+    vault on every turn. Give each test its own empty store, so no test
+    reaches for CouchDB and one test's billed tokens never count against the
+    next test's daily ceiling."""
+    from agora_runner import metered_day
+    store = {"content": None, "rev": None}
+
+    def read(path):
+        return store["content"], store["rev"]
+
+    def write(path, content, if_rev=None, allow_shrink=False):
+        if if_rev != store["rev"]:
+            return "FAILED(409 conflict)"
+        store["content"], store["rev"] = content, f"{int(store['rev'] or 0) + 1}"
+        return "written"
+
+    monkeypatch.setattr(metered_day, "vault_read_path_rev", read)
+    monkeypatch.setattr(metered_day, "vault_write_path", write)
+    monkeypatch.setattr(metered_day, "_local", {})
+    return store
