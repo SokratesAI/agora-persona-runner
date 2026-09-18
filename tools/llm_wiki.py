@@ -78,7 +78,7 @@ class WikiError(Exception):
 
 def is_text(body):
     """A NUL byte or a replacement-character run means a binary upload."""
-    return "\x00" not in body and body.count("�") < 8
+    return "\x00" not in body and body.count("\ufffd") < 8
 
 
 def build_prompt(topic, sources, keep=()):
