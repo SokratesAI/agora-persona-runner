@@ -390,6 +390,12 @@ def deaths(pods, now, window=RECENT_DEATH):
                 "also": also,
                 "exit_code": term.get("exitCode"),
                 "at": term.get("finishedAt") or "",
+                # The container's last log lines, when its spec sets
+                # `terminationMessagePolicy: FallbackToLogsOnError` and it
+                # died on a non-zero exit (idea #236). Kubernetes caps it at
+                # 80 lines / 2 KB, and it is the only copy of those lines
+                # anywhere: nothing in this cluster ships container logs.
+                "message": (term.get("message") or "").rstrip(),
                 "restarts": container.get("restartCount") or 0,
                 "limit": pod["limits"].get(container.get("name") or "?"),
                 "ready": ready,
@@ -1488,6 +1494,19 @@ def memory_headroom(meminfo, nodes, pods, stats=None, container_rss=None):
     return lines, actionable, other_judged
 
 
+def _last_words(d):
+    """The termination message under a death line, whole, or nothing.
+
+    Printed in full rather than trimmed: the kubelet already caps it at
+    2 KB, and it is the one record of why the container died -- the Pod
+    status is its only home and the next restart overwrites it.
+    """
+    if not d.get("message"):
+        return ""
+    body = "\n".join(f"      | {line}" for line in d["message"].splitlines())
+    return "\n    last log lines:\n" + body
+
+
 def report(pods, deployments, now, headroom=None):
     lines = []
     actionable = False
@@ -1507,7 +1526,7 @@ def report(pods, deployments, now, headroom=None):
         also = f", previously {d['also']}" if d.get("also") else ""
         return (f"  {d['namespace']}/{d['pod']} [{d['container']}] — {d['reason']}"
                 f" (exit {d['exit_code']}) at {_oslo(d['at'])}, {d['restarts']} restart(s),"
-                f" {state}{limit}{also}")
+                f" {state}{limit}{also}") + _last_words(d)
 
     if looping:
         actionable = True
@@ -1569,7 +1588,8 @@ def report(pods, deployments, now, headroom=None):
         for d in sorted(old_deaths, key=lambda d: (d["namespace"], d["pod"])):
             lines.append(
                 f"  {d['namespace']}/{d['pod']} [{d['container']}] — {d['reason']}"
-                f" (exit {d['exit_code']}) at {_oslo(d['at'])}, {d['restarts']} restart(s)")
+                f" (exit {d['exit_code']}) at {_oslo(d['at'])}, {d['restarts']} restart(s)"
+                + _last_words(d))
 
     healed = healed_restarts(pods, deaths_found + old_deaths)
     if healed:
