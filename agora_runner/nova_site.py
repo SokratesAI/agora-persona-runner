@@ -349,6 +349,9 @@ STATIC_ROUTES = {
     # The reply read marks and unread counts, moved out of `app.js` for
     # issue #233. Loads before `app.js` too.
     "/replies.js": "replies.js",
+    # The capture card, moved out of `app.js` for issue #233. Loads before
+    # `app.js` too.
+    "/capture.js": "capture.js",
     "/diag.js": "diag.js",
     # The Pool page and the project page, moved out of `app.js` for issue
     # #233. Loads before `app.js` too.
@@ -423,6 +426,7 @@ SW_BUILD_INPUTS = (
     "rowedit.js",
     "cycle.js",
     "replies.js",
+    "capture.js",
     "diag.js",
     "project.js",
     "thread.js",
