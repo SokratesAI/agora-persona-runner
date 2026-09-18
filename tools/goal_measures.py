@@ -1447,6 +1447,7 @@ _APP_BUNDLE_PARTS = (_APP_BUNDLE, "agora_runner/nova_public/chat-dock.js",
                      "agora_runner/nova_public/rowedit.js",
                      "agora_runner/nova_public/cycle.js",
                      "agora_runner/nova_public/replies.js",
+                     "agora_runner/nova_public/capture.js",
                      "agora_runner/nova_public/project.js")
 
 #: Below this many POST routes, the allowlist parse below has found something
