@@ -340,6 +340,9 @@ STATIC_ROUTES = {
     # The ask thread renderer, moved out of `app.js` for issue #233.
     # Loads before `app.js` too.
     "/askthread.js": "askthread.js",
+    # The held-row editor on the boards, moved out of `app.js` for issue
+    # #233. Loads before `app.js` too.
+    "/rowedit.js": "rowedit.js",
     "/diag.js": "diag.js",
     # The Pool page and the project page, moved out of `app.js` for issue
     # #233. Loads before `app.js` too.
@@ -411,6 +414,7 @@ SW_BUILD_INPUTS = (
     "richtext.js",
     "bubble.js",
     "askthread.js",
+    "rowedit.js",
     "diag.js",
     "project.js",
     "thread.js",
