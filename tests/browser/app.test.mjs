@@ -14998,55 +14998,26 @@ describe("the project page", () => {
       assert.ok(head.contains(node),
         `.${part} is outside the tap target, so pressing it does nothing`);
     });
-    // The move controls stay outside: they do something else.
-    assert.equal(head.querySelector(".project-standing-move"), null);
   });
 
-  test("the reorder controls sit on the right, grip last", async () => {
-    /* His ask, 2026-09-08: *"move the arrows and the button you hold to drag
-     * to the right side of the card so i can use my right thumb for it."*
-     * Then, when they had not moved: *"I want you to completly mirror this
-     * so the draggable is all the way to the right."*
-     *
-     * The first attempt used `justify-content: flex-end` and appended the
-     * note LAST with `margin-right: auto`. An auto margin beats
-     * `justify-content` -- it takes the free space first -- so the note
-     * pushed every control before it hard left and nothing moved. Same
-     * mistake as the chat composer's two auto margins the same morning.
-     *
-     * So this asserts the DOM order, which is the mechanism: note first
-     * (it eats the space), then the arrows, then the grip at the far
-     * right. A CSS assertion would have passed on the broken version. */
+  test("a project card has no arrows and no drag grip", async () => {
+    /* His ask, 2026-09-13 (issue #229): *"make the projects not draggable
+     * and also remove the arrows to push them up or down. Projects in
+     * itself should not have a priority, but the milestones and okrs
+     * should."* Milestones and tasks keep their controls. */
     const window = await loadSite("/projects", { project: () => STANDING });
-    const wrap = standings(window)[0].querySelector(".project-standing-move");
-    assert.ok(wrap, "the move controls are gone");
-    assert.equal(wrap.firstElementChild.className, "project-standing-move-note",
-      "the note is not first, so it cannot be what pushes the controls right");
-    assert.ok(wrap.lastElementChild.classList.contains("project-standing-grip"),
-      "the drag grip is not the rightmost control");
-    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
-    assert.match(sheet, /\.project-standing-move-note \{[^}]*margin-right:\s*auto/);
-  });
-
-  test("pressing the strip beside the arrows expands the card", async () => {
-    /* His ask, 2026-09-08: *"the area of the card where the arrows are below
-     * the text should be clickable to expand the drawer."* The arrows cannot
-     * live inside the disclosure button -- nested buttons are invalid -- so
-     * the row forwards a press to it, unless the press landed on something
-     * with a job of its own. */
-    const window = await loadSite("/projects", { project: () => STANDING });
-    const row = standings(window)[0];
-    const head = row.querySelector(".project-standing-link");
-    const wrap = row.querySelector(".project-standing-move");
-
-    click(window, wrap.querySelector(".project-standing-move-note"));
-    assert.equal(head.getAttribute("aria-expanded"), "true",
-      "pressing the empty strip did not open the drawer");
-
-    // ...and a press on a control in that strip still does its own job only.
-    click(window, wrap.querySelector(".project-standing-grip"));
-    assert.equal(head.getAttribute("aria-expanded"), "true",
-      "the drag grip toggled the drawer as well as being a grip");
+    const rows = standings(window);
+    assert.ok(rows.length >= 2, "no standings drawn, so this proves nothing");
+    for (const row of rows) {
+      assert.equal(row.querySelector(".project-standing-move"), null);
+      assert.equal(row.querySelector(".project-standing-move-btn"), null);
+      assert.equal(row.querySelector(".project-standing-grip"), null);
+    }
+    const before = window.posted.length;
+    click(window, rows[0]);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(window.posted.filter((p) => p.url === "/api/project/order").length, 0);
+    assert.equal(window.posted.length, before);
   });
 
   test("a project card carries no rating chip, even when the payload has one", async () => {
@@ -15116,216 +15087,6 @@ describe("the project page", () => {
       rows.map((r) => r.querySelector(".project-standing-name").textContent),
       ["Nova"],
       "the second spelling drew the same numbers a second time");
-  });
-
-  /* The reorder buttons -- milestone M3 of idea #260, his ordered project
-   * list. Two buttons rather than a drag gesture, deliberately: HTML5
-   * `draggable` does nothing on the touch screen he reads this on. */
-  test("each standing carries a move up and a move down, ends disabled", async () => {
-    const window = await loadSite("/projects", { project: () => STANDING });
-    const rows = standings(window);
-    const buttons = (r) => [...r.querySelectorAll(".project-standing-move-btn")];
-    assert.equal(buttons(rows[0]).length, 2);
-    // First row cannot go up, last row cannot go down. Disabled rather
-    // than absent: a button that vanishes moves the other one under his
-    // thumb and he taps the wrong one.
-    assert.equal(buttons(rows[0])[0].disabled, true);
-    assert.equal(buttons(rows[0])[1].disabled, false);
-    assert.equal(buttons(rows[1])[0].disabled, false);
-    assert.equal(buttons(rows[1])[1].disabled, true);
-    assert.equal(buttons(rows[1])[0].getAttribute("aria-label"), "Move Nova up");
-  });
-
-  test("moving a project down sends its new 1-based position", async () => {
-    const window = await loadSite("/projects", { project: () => STANDING });
-    const rows = standings(window);
-    rows[0].querySelectorAll(".project-standing-move-btn")[1].click();
-    await new Promise((r) => setTimeout(r, 0));
-    const sent = window.posted.at(-1);
-    assert.equal(sent.url, "/api/project/order");
-    // Marcus is drawn first, so "down" is position 2 -- the index it will
-    // occupy afterwards, not the one it occupies now.
-    assert.deepEqual(sent.body, { project: "Marcus", position: 2 });
-  });
-
-  test("moving a project up sends the position above it", async () => {
-    const window = await loadSite("/projects", { project: () => STANDING });
-    const rows = standings(window);
-    rows[1].querySelectorAll(".project-standing-move-btn")[0].click();
-    await new Promise((r) => setTimeout(r, 0));
-    assert.deepEqual(window.posted.at(-1).body, { project: "Nova", position: 1 });
-  });
-
-  /* The drag gesture -- the open half of milestone M3 of idea #260. Two
-   * arrows shipped first because HTML5 `draggable` fires nothing on a
-   * touch screen; this is the pointer-event version of the same write.
-   *
-   * jsdom lays nothing out, so every rect is zero and a hit test against
-   * real geometry would pass on any arithmetic at all. These give each
-   * row its own rect, which is the only way the target index is being
-   * tested rather than the constant 0 jsdom would otherwise hand back. */
-  const THREE = {
-    ...STANDING,
-    projects: ["Marcus", "Nova", "Agora"],
-    projectSummary: {
-      ...STANDING.projectSummary,
-      agora: {
-        total: 8, done: 2, dropped: 0, open: 6, blocked: 0, percentDone: 25,
-        priorities: [{ key: "low", label: "⚪ Low", count: 6 }],
-      },
-    },
-  };
-
-  // 40px rows starting at y=0, so the centres are 20, 60 and 100.
-  const layOut = (rows) =>
-    rows.forEach((row, i) => {
-      row.getBoundingClientRect = () => ({
-        top: i * 40, bottom: (i * 40) + 40, height: 40, left: 0, right: 100, width: 100,
-      });
-    });
-
-  const pointer = (window, node, type, clientY) =>
-    node.dispatchEvent(new window.MouseEvent(type, {
-      bubbles: true, cancelable: true, clientY,
-    }));
-
-  const grip = (row) => row.querySelector(".project-standing-grip");
-
-  test("each standing carries a drag grip the screen reader is not offered", async () => {
-    const window = await loadSite("/projects", { project: () => STANDING });
-    const rows = standings(window);
-    assert.equal(grip(rows[0]).getAttribute("data-project"), "Marcus");
-    // The two arrows beside it already announce the same action with a
-    // real name; a third control a screen reader cannot drag would be an
-    // ability announced and not delivered.
-    assert.equal(grip(rows[0]).getAttribute("aria-hidden"), "true");
-  });
-
-  test("dragging a project down two places sends its new 1-based position", async () => {
-    const window = await loadSite("/projects", { project: () => THREE });
-    const rows = standings(window);
-    assert.equal(rows.length, 3);
-    layOut(rows);
-    pointer(window, grip(rows[0]), "pointerdown", 20);
-    pointer(window, grip(rows[0]), "pointermove", 105);
-    pointer(window, grip(rows[0]), "pointerup", 105);
-    await new Promise((r) => setTimeout(r, 0));
-    const sent = window.posted.at(-1);
-    assert.equal(sent.url, "/api/project/order");
-    // Marcus's centre moved from 20 to 105, past Agora's 100, so it lands
-    // third -- position 3, the same 1-based number the arrows send.
-    assert.deepEqual(sent.body, { project: "Marcus", position: 3 });
-  });
-
-  test("dragging a project up sends the place it landed on, not the one it left", async () => {
-    const window = await loadSite("/projects", { project: () => THREE });
-    const rows = standings(window);
-    layOut(rows);
-    pointer(window, grip(rows[2]), "pointerdown", 100);
-    pointer(window, grip(rows[2]), "pointermove", 55);
-    pointer(window, grip(rows[2]), "pointerup", 55);
-    await new Promise((r) => setTimeout(r, 0));
-    // 100 - 45 = 55, which is above Nova's centre of 60 and below
-    // Marcus's 20, so Agora lands second.
-    assert.deepEqual(window.posted.at(-1).body, { project: "Agora", position: 2 });
-  });
-
-  test("a drag that ends where it started writes nothing", async () => {
-    const window = await loadSite("/projects", { project: () => THREE });
-    const rows = standings(window);
-    layOut(rows);
-    const before = window.posted.length;
-    pointer(window, grip(rows[1]), "pointerdown", 60);
-    pointer(window, grip(rows[1]), "pointermove", 72);
-    pointer(window, grip(rows[1]), "pointerup", 72);
-    await new Promise((r) => setTimeout(r, 0));
-    // 72 is past the 8px slop, so this really was a drag -- it just did
-    // not cross a neighbour's centre. Renumbering his whole table for
-    // that would make resting a thumb on the grip a write.
-    assert.equal(window.posted.length, before);
-    assert.equal(rows[1].style.transform, "", "the row was left mid-drag");
-  });
-
-  test("a tap that wobbles under the slop is not a drag", async () => {
-    const window = await loadSite("/projects", { project: () => THREE });
-    const rows = standings(window);
-    layOut(rows);
-    const before = window.posted.length;
-    pointer(window, grip(rows[0]), "pointerdown", 20);
-    pointer(window, grip(rows[0]), "pointermove", 25);
-    // Asserted mid-gesture, before the pointer is lifted: `pointerup`
-    // clears this class whether or not the drag ever started, so the
-    // same assertion after it would pass on a slop of zero.
-    assert.equal(
-      rows[0].classList.contains("project-standing--dragging"), false,
-      "5px lifted the row, so the slop is not being applied");
-    pointer(window, grip(rows[0]), "pointerup", 25);
-    await new Promise((r) => setTimeout(r, 0));
-    assert.equal(window.posted.length, before);
-  });
-
-  test("the browser taking the gesture back cancels the move", async () => {
-    const window = await loadSite("/projects", { project: () => THREE });
-    const rows = standings(window);
-    layOut(rows);
-    const before = window.posted.length;
-    pointer(window, grip(rows[0]), "pointerdown", 20);
-    pointer(window, grip(rows[0]), "pointermove", 105);
-    assert.equal(
-      rows[0].classList.contains("project-standing--dragging"), true,
-      "the row never lifted, so this test proves nothing about cancelling");
-    pointer(window, grip(rows[0]), "pointercancel", 105);
-    await new Promise((r) => setTimeout(r, 0));
-    // A cancel is the browser reclaiming the gesture for a scroll. It is
-    // not letting go, and it must not be read as one.
-    assert.equal(window.posted.length, before);
-    assert.equal(rows[0].style.transform, "");
-  });
-
-  test("a second finger mid-drag does not strand the first row", async () => {
-    const window = await loadSite("/projects", { project: () => THREE });
-    const rows = standings(window);
-    layOut(rows);
-    pointer(window, grip(rows[0]), "pointerdown", 20);
-    pointer(window, grip(rows[0]), "pointermove", 105);
-    // A second grip taken while the first is still held. Without the
-    // guard this replaces the drag, and the first row keeps its
-    // translate until something repaints the list.
-    pointer(window, grip(rows[2]), "pointerdown", 100);
-    pointer(window, grip(rows[0]), "pointerup", 105);
-    await new Promise((r) => setTimeout(r, 0));
-    assert.equal(rows[0].style.transform, "");
-    assert.deepEqual(window.posted.at(-1).body, { project: "Marcus", position: 3 });
-  });
-
-  test("a drag started anywhere but the grip is not a drag", async () => {
-    const window = await loadSite("/projects", { project: () => THREE });
-    const rows = standings(window);
-    layOut(rows);
-    const before = window.posted.length;
-    // The row holds a link to the project page; a row that drags from
-    // anywhere is a row he cannot tap, and a list he cannot scroll.
-    const name = rows[0].querySelector(".project-standing-name");
-    pointer(window, name, "pointerdown", 20);
-    pointer(window, name, "pointermove", 105);
-    pointer(window, name, "pointerup", 105);
-    await new Promise((r) => setTimeout(r, 0));
-    assert.equal(window.posted.length, before);
-  });
-
-  test("a failed drag says so on the row it was dragged from", async () => {
-    const window = await loadSite("/projects", { project: () => THREE });
-    window.postReply = { ok: false, message: "no such project" };
-    const rows = standings(window);
-    layOut(rows);
-    pointer(window, grip(rows[0]), "pointerdown", 20);
-    pointer(window, grip(rows[0]), "pointermove", 105);
-    pointer(window, grip(rows[0]), "pointerup", 105);
-    await new Promise((r) => setTimeout(r, 0));
-    await new Promise((r) => setTimeout(r, 0));
-    assert.match(
-      rows[0].querySelector(".project-standing-move-note").textContent,
-      /Could not move/);
   });
 
 
