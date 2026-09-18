@@ -54,7 +54,7 @@ var SHELL = ["/", "/app.js", "/style.css", "/icon.svg", "/manifest.webmanifest",
              "/diag.js", "/project.js",
              "/beats.js", "/notes.js", "/home.js",
              "/plan.js", "/steps.js", "/ask.js", "/models.js",
-             "/richtext.js", "/bubble.js", "/askthread.js"];
+             "/richtext.js", "/bubble.js", "/askthread.js", "/rowedit.js"];
 
 self.addEventListener("install", function (event) {
   event.waitUntil(
