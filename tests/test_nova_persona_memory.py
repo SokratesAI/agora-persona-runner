@@ -55,6 +55,13 @@ def test_an_empty_mirror_says_so():
     assert "No persona has a mirrored memory yet" in render_page({"personas": []})
 
 
+def test_a_failed_read_is_named_not_shown_as_empty():
+    from agora_runner.vault import VaultFiles
+    payload = memory_payload(VaultFiles({}, unreadable=["listing failed"]))
+    assert payload == {"personas": [], "unreadable": 1}
+    assert "1 document(s) could not be read" in render_page(payload)
+
+
 def test_the_memory_route_answers_with_the_mirror():
     doc = "---\npersona: \"Nova\"\npersona_id: p\n---\n\n## MEMORY.md\n\nWritten t.\n\n~~~~markdown\n- remembered\n~~~~\n"
     with patch.object(nova_site, "vault_bulk_fetch", return_value={MIRROR_PREFIX + "p.md": doc}) as fetch:

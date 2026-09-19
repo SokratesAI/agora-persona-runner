@@ -87,11 +87,16 @@ def parse_mirror(text):
 
 
 def memory_payload(docs):
-    """`{path: text}` under `MIRROR_PREFIX` -> `{personas: [...]}`, by name."""
+    """`{path: text}` under `MIRROR_PREFIX` -> `{personas, unreadable}`.
+
+    `unreadable` counts what the vault read lost (a `VaultFiles` carries
+    it), so a failed read never renders as "nobody remembers anything".
+    """
     personas = [parse_mirror(text) for path, text in docs.items()
                 if path.startswith(MIRROR_PREFIX) and path.endswith(".md")]
     personas.sort(key=lambda p: (p["persona"] or p["personaId"]).lower())
-    return {"personas": personas}
+    return {"personas": personas,
+            "unreadable": len(getattr(docs, "unreadable", None) or [])}
 
 
 def render_page(payload):
@@ -110,12 +115,15 @@ def render_page(payload):
         "a{color:#8ab4f8}h1{font-size:20px;margin:4px 0 8px}.sum{color:#bbb;margin-bottom:12px}",
         "details{border-top:1px solid #333;padding:8px 0}summary{cursor:pointer}",
         ".p>summary{font-weight:600}.t{color:#999;font-size:13px;margin-left:6px}",
-        ".f{margin-left:12px;padding:6px 0}",
+        ".f{margin-left:12px;padding:6px 0}.gap{color:#f28b82}",
         "pre{white-space:pre-wrap;word-break:break-word;background:#1b1b1b;padding:8px;margin:6px 0 0;font-size:13px}",
         "</style></head><body>",
         "<a href='/'>&larr; Nova</a><h1>Persona memory</h1>",
     ]
     personas = payload["personas"]
+    if payload.get("unreadable"):
+        out.append(f"<div class='sum gap'>{payload['unreadable']} document(s) could not "
+                   "be read from the vault, so this list is incomplete.</div>")
     if not personas:
         out.append("<div class=sum>No persona has a mirrored memory yet.</div>")
     else:
