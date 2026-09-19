@@ -641,6 +641,9 @@
       var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       var micBtn = document.getElementById("chat-mic");
       var listening = null;
+      // He wants the mic on: set by his tap, cleared by his next tap or a
+      // refused microphone. `listening` is only the recogniser running now.
+      var wanted = false;
       function speechLang() {
         return document.documentElement.lang
           || (window.navigator && window.navigator.language)
@@ -649,7 +652,7 @@
 
       function syncMic() {
         if (!micBtn) return;
-        micBtn.setAttribute("aria-pressed", listening ? "true" : "false");
+        micBtn.setAttribute("aria-pressed", wanted && listening ? "true" : "false");
       }
 
       function startListening() {
@@ -672,11 +675,33 @@
           box.value = box.value ? box.value.replace(/\s*$/, "") + " " + said : said;
           growChatBox();
         };
-        rec.onerror = function () {
-          status.textContent = "didn't catch that";
+        rec.onerror = function (event) {
+          var code = event && event.error;
+          /* A pause is not a failure. `no-speech` and `aborted` are what a
+           * browser reports when he stops talking for a few seconds, and
+           * in a meeting that is every other sentence -- the recogniser
+           * ends and `onend` below starts the next one. Anything else ends
+           * the session -- a blocked microphone, no network, an unsupported
+           * language -- because restarting into it is a loop that fails
+           * every time and never hears anything. */
+          if (code === "no-speech" || code === "aborted") return;
+          wanted = false;
+          status.textContent = (code === "not-allowed" || code === "service-not-allowed"
+            || code === "audio-capture") ? "the microphone is blocked" : "didn't catch that";
         };
         rec.onend = function () {
+          if (listening !== rec) return;
           listening = null;
+          /* The browser ends a recogniser at the first pause, and a phone
+           * browser will not hold one open however `continuous` is set. So
+           * the mic stays on by starting a fresh one until he taps it off:
+           * describing a demo in a meeting is several sentences with gaps
+           * between them, and one tap per sentence is not speaking instead
+           * of typing (ideas.md #140, part of #134). */
+          if (wanted) {
+            startListening();
+            return;
+          }
           syncMic();
         };
         listening = rec;
@@ -685,8 +710,10 @@
           rec.start();
         } catch (err) {
           // `start()` on an already-running recogniser throws; treat it as
-          // not listening rather than leaving the button stuck pressed.
+          // not listening rather than leaving the button stuck pressed, and
+          // stop wanting it so a restart cannot throw in a loop.
           listening = null;
+          wanted = false;
           syncMic();
         }
       }
@@ -694,10 +721,14 @@
       if (micBtn && Recognition) {
         micBtn.removeAttribute("hidden");
         micBtn.addEventListener("click", function () {
-          if (listening) {
-            listening.stop();
+          if (wanted) {
+            wanted = false;
+            if (listening) listening.stop();
+            else syncMic();
             return;
           }
+          wanted = true;
+          status.textContent = "";
           startListening();
         });
       }
