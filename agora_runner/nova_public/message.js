@@ -65,6 +65,9 @@
     var when = d.chatTime(m.createdAt);
     var actions = [];
     if (m.text) actions.push(function () { return d.askCopyButton(m.text); });
+    if (mine && m.text && window.novaEditButton && document.getElementById("chat-box")) {
+      actions.push(function () { return window.novaEditButton(m.text); });
+    }
     if (!mine && !m.partial && props.conversationId && retry && retry.question) {
       actions.push(function () {
         return d.askRetryButton(props.conversationId, retry.question, retry.afterSend);

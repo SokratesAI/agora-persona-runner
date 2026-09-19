@@ -80,6 +80,9 @@
       row.appendChild(body);
       var actions = [];
       if (message.text) actions.push(function () { return askCopyButton(message.text); });
+      if (mine && message.text && window.novaEditButton && document.getElementById("chat-box")) {
+        actions.push(function () { return window.novaEditButton(message.text); });
+      }
       if (!mine && !message.partial && conversationId && retry && retry.question) {
         actions.push(function () {
           return askRetryButton(conversationId, retry.question, retry.afterSend);
