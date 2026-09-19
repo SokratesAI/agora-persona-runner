@@ -311,8 +311,42 @@
       var effective = preference === "system" ? deviceTheme() : preference;
       document.documentElement.setAttribute("data-theme", effective);
       var meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.setAttribute("content", effective === "light" ? "#f4f6fb" : "#12131a");
+      if (meta) meta.setAttribute("content", paletteById(palettePreference())[effective]);
       return effective;
+    }
+
+    /* Colour palettes, issue #136. The second axis beside light/dark: each
+     * one answers both, in style.css under `:root[data-palette=...]`. `dot`
+     * is the accent drawn on the button, and `dark`/`light` are the page
+     * colours for the status-bar `theme-color`. The ids must match the boot
+     * script in index.html. */
+    var PALETTES = [
+      { id: "nova", label: "Nova", dot: "#7aa2f7", dark: "#12131a", light: "#f4f6fb" },
+      { id: "aurora", label: "Aurora", dot: "#5fd4b0", dark: "#0f1716", light: "#f2f8f6" },
+      { id: "ember", label: "Ember", dot: "#f2a65a", dark: "#1a1411", light: "#fbf6f2" },
+      { id: "nebula", label: "Nebula", dot: "#d68cf0", dark: "#16121c", light: "#f8f4fb" },
+      { id: "graphite", label: "Graphite", dot: "#c9ccd6", dark: "#141414", light: "#f5f5f5" },
+    ];
+
+    function paletteById(id) {
+      for (var i = 0; i < PALETTES.length; i++) {
+        if (PALETTES[i].id === id) return PALETTES[i];
+      }
+      return PALETTES[0];
+    }
+
+    /** The stored palette id, or "nova" for none or anything unknown. */
+    function palettePreference() {
+      try { return paletteById(localStorage.getItem("nova-palette")).id; } catch (e) { return "nova"; }
+    }
+
+    /* `nova` removes the attribute rather than setting it, so the default is
+     * the plain `:root` blocks and nothing else. */
+    function applyPalette(id) {
+      var root = document.documentElement;
+      if (id === "nova") root.removeAttribute("data-palette");
+      else root.setAttribute("data-palette", id);
+      applyTheme(themePreference());
     }
 
     /* A phone that flips to dark at sunset has to flip the open tab with it,
@@ -377,6 +411,34 @@
 
       var followsDevice = el("p", "settings-note settings-device", deviceLine(current));
       card.appendChild(followsDevice);
+
+      card.appendChild(el("h2", "settings-heading", "Colours"));
+      var palettes = el("div", "settings-choice settings-palettes");
+      palettes.setAttribute("role", "radiogroup");
+      palettes.setAttribute("aria-label", "Colour palette");
+      var currentPalette = palettePreference();
+      var paletteButtons = [];
+      PALETTES.forEach(function (palette) {
+        var button = el("button", "palette-option");
+        button.type = "button";
+        button.setAttribute("role", "radio");
+        button.dataset.palette = palette.id;
+        button.setAttribute("aria-checked", palette.id === currentPalette ? "true" : "false");
+        var dot = el("span", "palette-dot");
+        dot.style.background = palette.dot;
+        button.appendChild(dot);
+        button.appendChild(document.createTextNode(palette.label));
+        button.addEventListener("click", function () {
+          try { localStorage.setItem("nova-palette", palette.id); } catch (e) { /* private mode */ }
+          applyPalette(palette.id);
+          paletteButtons.forEach(function (other) {
+            other.setAttribute("aria-checked", other === button ? "true" : "false");
+          });
+        });
+        paletteButtons.push(button);
+        palettes.appendChild(button);
+      });
+      card.appendChild(palettes);
       feed.appendChild(card);
     }
 

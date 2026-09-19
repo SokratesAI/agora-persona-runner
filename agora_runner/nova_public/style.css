@@ -123,6 +123,52 @@
   --spark: #2f5fd0;
 }
 
+/* Colour palettes, chosen on /settings (issue #136, 2026-08-30: *"selectable
+ * color palettes -- current black/blue/white isn't always pleasant to look
+ * at"*). A palette is the second axis beside light/dark: `data-palette` sets
+ * the page tint and the accent, `data-theme` still decides light or dark, so
+ * each palette answers both. No attribute, or `nova`, is the blocks above.
+ *
+ * Only the tint and accent move. --text, --dim and the outcome colours
+ * (--good, --warn, --danger) stay, because they mean something and a palette
+ * must not change what red says. Every pair was measured before it went in
+ * (WCAG 2.2, same bar as the light block): --text on --bg 14:1 or more, --dim
+ * on --card 5.2:1 or more, --accent on --card 5.3:1 or more (so the filled
+ * `.settings-option` carries --bg as text), --outline on --bg 3.5:1 or more
+ * for SC 1.4.11. */
+:root[data-palette="aurora"] {
+  --bg: #0f1716; --card: #16211f; --line: #22302d; --outline: #66807a;
+  --accent: #5fd4b0; --spark: #c8f5e6; --live-line: #2c6b5a;
+}
+:root[data-theme="light"][data-palette="aurora"] {
+  --bg: #f2f8f6; --card: #ffffff; --line: #d6e4df; --outline: #6f8a83;
+  --accent: #0f7a5c; --spark: #0f7a5c; --live-line: #8fd1bb;
+}
+:root[data-palette="ember"] {
+  --bg: #1a1411; --card: #231b16; --line: #33271f; --outline: #85705f;
+  --accent: #f2a65a; --spark: #ffe0c2; --live-line: #7a4f2a;
+}
+:root[data-theme="light"][data-palette="ember"] {
+  --bg: #fbf6f2; --card: #ffffff; --line: #eadfd6; --outline: #8f7a6a;
+  --accent: #a4520f; --spark: #a4520f; --live-line: #e6b58a;
+}
+:root[data-palette="nebula"] {
+  --bg: #16121c; --card: #1f1927; --line: #2e2639; --outline: #7a6c8c;
+  --accent: #d68cf0; --spark: #f0d6ff; --live-line: #6a3f80;
+}
+:root[data-theme="light"][data-palette="nebula"] {
+  --bg: #f8f4fb; --card: #ffffff; --line: #e5dcec; --outline: #85779a;
+  --accent: #8a3aa8; --spark: #8a3aa8; --live-line: #d3aee3;
+}
+:root[data-palette="graphite"] {
+  --bg: #141414; --card: #1c1c1c; --line: #2a2a2a; --outline: #727272;
+  --accent: #c9ccd6; --spark: #e6e7eb; --live-line: #4a4d57;
+}
+:root[data-theme="light"][data-palette="graphite"] {
+  --bg: #f5f5f5; --card: #ffffff; --line: #e0e0e0; --outline: #7a7a7a;
+  --accent: #3d4250; --spark: #3d4250; --live-line: #b8bcc6;
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -5606,6 +5652,42 @@ X that summarizes the last 12
   border-color: var(--accent);
   background: var(--accent);
   color: var(--bg);
+}
+
+/* The palette row: same tile as the theme row, plus a dot in each palette's
+ * own accent so the choice is a colour he can see before he taps it. The dot
+ * colour is inline from diag.js's PALETTES, deliberately not a variable --
+ * a variable would paint every dot in the palette currently applied. */
+.settings-palettes {
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+  margin-top: 0.6rem;
+}
+
+.palette-option {
+  padding: 0.85rem 0.4rem;
+  border: 1px solid var(--outline);
+  border-radius: 0.7rem;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+}
+
+.palette-option[aria-checked="true"] {
+  border-color: var(--accent);
+  border-width: 2px;
+}
+
+.palette-dot {
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  flex: none;
 }
 
 /* The wordmark is a link home, and must not look like body copy that happens

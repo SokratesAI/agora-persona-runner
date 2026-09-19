@@ -11498,6 +11498,62 @@ describe("the settings page", () => {
     assert.match(body, /color-scheme:\s*light/,
       "without color-scheme the native controls stay dark on a light page");
   });
+
+  /* Issue #136, 2026-08-30: *"selectable color palettes -- current
+   * black/blue/white isn't always pleasant to look at."* A second radio row
+   * beside the theme one; its buttons are `.palette-option`, not
+   * `.settings-option`, so the three-choice theme tests above stay honest. */
+  test("the palette row offers five and marks the stored one", async () => {
+    const window = await loadSite("/settings", {
+      install: (w) => w.localStorage.setItem("nova-palette", "ember"),
+    });
+    const options = [...window.document.querySelectorAll(".palette-option")];
+    assert.deepEqual(options.map((o) => o.dataset.palette),
+      ["nova", "aurora", "ember", "nebula", "graphite"]);
+    const checked = options.filter((o) => o.getAttribute("aria-checked") === "true");
+    assert.deepEqual(checked.map((o) => o.dataset.palette), ["ember"],
+      "the stored palette is not the one marked");
+    assert.equal(window.posted.length, 0, "choosing colours posted something");
+  });
+
+  test("a palette tap stores it, paints it, and Nova takes it back off", async () => {
+    const window = await loadSite("/settings");
+    const root = window.document.documentElement;
+    const pick = (id) => [...window.document.querySelectorAll(".palette-option")]
+      .find((o) => o.dataset.palette === id);
+    click(window, pick("aurora"));
+    assert.equal(window.localStorage.getItem("nova-palette"), "aurora",
+      "the palette was painted but never saved");
+    assert.equal(root.getAttribute("data-palette"), "aurora");
+    assert.equal(window.document.querySelector('meta[name="theme-color"]').getAttribute("content"),
+      root.getAttribute("data-theme") === "light" ? "#f2f8f6" : "#0f1716",
+      "the status bar kept the old page colour");
+    assert.equal([...window.document.querySelectorAll(".palette-option")]
+      .filter((o) => o.getAttribute("aria-checked") === "true").length, 1);
+    click(window, pick("nova"));
+    assert.equal(root.hasAttribute("data-palette"), false,
+      "the default palette left an attribute behind");
+  });
+
+  test("every palette answers both light and dark, and the boot script knows it", async () => {
+    /* A palette with only a dark block paints dark tint under light text in
+     * light mode; a palette the boot script does not list flashes the
+     * default on every load. Both are silent in the tap tests above. */
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const shell = readFileSync(join(publicDir, "index.html"), "utf8");
+    for (const id of ["aurora", "ember", "nebula", "graphite"]) {
+      for (const selector of [`:root[data-palette="${id}"]`,
+        `:root[data-theme="light"][data-palette="${id}"]`]) {
+        const at = css.indexOf(selector + " {");
+        assert.ok(at >= 0, `no ${selector} block`);
+        const body = css.slice(at, css.indexOf("}", at));
+        for (const name of ["--bg", "--card", "--line", "--outline", "--accent"]) {
+          assert.match(body, new RegExp(name + ":"), `${selector} never sets ${name}`);
+        }
+      }
+      assert.match(shell, new RegExp(`\\b${id}\\b`), `the boot script does not know ${id}`);
+    }
+  });
 });
 
 describe("the capture box belongs to the landing page", () => {

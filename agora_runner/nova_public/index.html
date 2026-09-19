@@ -30,6 +30,13 @@
       effective = query && query.matches ? "light" : "dark";
     }
     document.documentElement.setAttribute("data-theme", effective);
+    /* The palette (issue #136) is the second axis; the list must match
+       PALETTES in diag.js, and anything else paints the default. */
+    var palette = "";
+    try { palette = localStorage.getItem("nova-palette") || ""; } catch (e) { /* private mode */ }
+    if (/^(aurora|ember|nebula|graphite)$/.test(palette)) {
+      document.documentElement.setAttribute("data-palette", palette);
+    }
   })();
 </script>
 </head>
