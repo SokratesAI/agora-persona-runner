@@ -228,14 +228,24 @@ def render_mirror(persona_id, name, path, now=None):
     return "\n".join(out)
 
 
-def mirror(dirs, personas, root, put=None):
+def _without_stamp(doc):
+    """The document minus its `mirrored:` line, which changes on every run."""
+    return "\n".join(l for l in (doc or "").rstrip().splitlines()
+                     if not l.startswith("mirrored: "))
+
+
+def mirror(dirs, personas, root, put=None, get=None):
     """Write one vault document per persona directory that holds files.
 
     Returns `(lines, status)`. An empty directory is skipped rather than
-    mirrored as an empty page -- the report already says it is empty.
+    mirrored as an empty page -- the report already says it is empty. A
+    persona whose files have not changed since the last copy is skipped
+    too: every cycle runs this, and a put always makes a new revision, so
+    without the skip the stamp alone would write ~60 revisions a day.
     """
     names = {p.get("id"): (p.get("name") or "?") for p in personas}
     put = put or _vault_put
+    get = get or _vault_get
     lines, status = [], 0
     for d in dirs:
         if not d["files"]:
@@ -244,6 +254,9 @@ def mirror(dirs, personas, root, put=None):
         doc = render_mirror(pid, names.get(pid, pid),
                             os.path.join(root, pid))
         target = MIRROR_PREFIX + pid + ".md"
+        if _without_stamp(get(target)) == _without_stamp(doc):
+            lines.append(f"unchanged {d['files']} file(s) -> {target}")
+            continue
         error = put(target, doc)
         if error:
             lines.append(f"MIRROR FAILED {target}: {error}")
@@ -251,6 +264,16 @@ def mirror(dirs, personas, root, put=None):
         else:
             lines.append(f"mirrored {d['files']} file(s) -> {target}")
     return lines, status
+
+
+def _vault_get(target):
+    """The current mirror document, or `None` if it is missing or unreadable
+    -- either way the caller writes, which is the safe direction."""
+    r = subprocess.run([sys.executable, VAULT_TOOL, "get", target],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0 or r.stdout.startswith("[not found"):
+        return None
+    return r.stdout
 
 
 def _vault_put(target, doc):
