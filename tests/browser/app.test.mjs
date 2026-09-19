@@ -13837,6 +13837,43 @@ describe("holding a conversation in the switcher opens edit options", () => {
     assert.equal(window.document.getElementById("chat-title").textContent, "Gutter repair");
   });
 
+  test("theme and colours are in Settings too, stepping on each tap (issue #137)", async () => {
+    /* His row: *"one consolidated settings page for all the small chat
+     * settings, like the official Claude app has, instead of them being
+     * scattered."* Theme and palette lived only on /settings. They belong to
+     * the device, so they show even with no conversation open. */
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    window.document.getElementById("chat-settings")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const sheet = window.document.querySelector(".msg-sheet--settings");
+    const theme = tileNamed(sheet, "Device");
+    assert.ok(theme && !theme.hidden, "no theme tile in Settings");
+    const palette = tileNamed(sheet, "Nova");
+    assert.ok(palette && !palette.hidden, "no colours tile in Settings");
+    const root = window.document.documentElement;
+
+    theme.dispatchEvent(new window.Event("click"));
+    assert.equal(theme.querySelector(".extras-label").textContent, "Light");
+    assert.equal(window.localStorage.getItem("nova-theme"), "light");
+    assert.equal(root.getAttribute("data-theme"), "light");
+    theme.dispatchEvent(new window.Event("click"));
+    assert.equal(theme.querySelector(".extras-label").textContent, "Dark");
+    assert.equal(root.getAttribute("data-theme"), "dark");
+    theme.dispatchEvent(new window.Event("click"));
+    assert.equal(theme.querySelector(".extras-label").textContent, "Device");
+    assert.equal(window.localStorage.getItem("nova-theme"), "system");
+
+    palette.dispatchEvent(new window.Event("click"));
+    assert.equal(palette.querySelector(".extras-label").textContent, "Aurora");
+    assert.equal(window.localStorage.getItem("nova-palette"), "aurora");
+    assert.equal(root.getAttribute("data-palette"), "aurora");
+    for (let i = 0; i < 4; i++) palette.dispatchEvent(new window.Event("click"));
+    assert.equal(palette.querySelector(".extras-label").textContent, "Nova", "the palettes do not wrap round");
+    assert.equal(root.hasAttribute("data-palette"), false);
+  });
+
   const tileNamed = (sheet, label) => [...sheet.querySelectorAll(".extras-tile")].find((t) => t.querySelector(".extras-label").textContent === label);
 
   async function newThreadWithSettings(window) {
