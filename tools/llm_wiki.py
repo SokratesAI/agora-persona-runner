@@ -199,6 +199,40 @@ def uncited(names, pages):
     return [n for n in names if not re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-])", cited)]
 
 
+#: A number of three or more digits, with thousands separators ("69,940",
+#: "1 000 000"). A separator only joins when three digits follow, so a list
+#: like "2, 4, 5" stays three numbers rather than one.
+NUMBER_RE = re.compile(r"\d+(?:[,. ]\d{3}(?!\d))*")
+
+
+def _plain(text):
+    return re.sub(r"(?<=\d)[,. ](?=\d{3}(?!\d))", "", text)
+
+
+def miscited(sources, pages):
+    """(page, number, cited files, files that do hold it) for each number a
+    cited paragraph states that none of its cited sources contains.
+
+    Advisory: measured Cycle 1887, 6 of 208 such numbers across the six
+    wikis -- a real fact cited to the wrong file (NOK 69,940 is in the AS
+    source, cited to the bookkeeping one) and the model's own worked
+    examples cited as if a source said them.
+    """
+    text = {name: _plain(body) for name, body in sources}
+    found = []
+    for page, body in pages.items():
+        for para in re.split(r"\n\s*\n", body):
+            cites = [c.strip() for c in ",".join(CITE_RE.findall(para)).split(",") if c.strip()]
+            if not cites:
+                continue
+            for raw in dict.fromkeys(NUMBER_RE.findall(CITE_RE.sub("", para))):
+                n = _plain(raw)
+                if len(n) < 3 or any(n in text.get(c, "") for c in cites):
+                    continue
+                found.append((page, raw, cites, [k for k, v in text.items() if n in v]))
+    return found
+
+
 def build_page_prompt(topic, sources, outline, page, must_use=()):
     """One page's prompt: every source whole, plus the outline to link into.
 
@@ -438,6 +472,9 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     missing = uncited(names, pages)
     if missing:
         raise WikiError(f"no page cites {', '.join(missing)}; nothing written")
+    for page, number, cites, holders in miscited(sources, pages):
+        out(f"miscited: {page} says {number}, not in {', '.join(cites)}"
+            + (f"; it is in {', '.join(holders)}" if holders else "; no source has it"))
     if dry_run:
         for name, body in pages.items():
             out(f"=== {base}wiki/{name} ===\n{render_page(body, model, names, when)}")
