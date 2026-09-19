@@ -301,10 +301,9 @@ def _pin_concern(pin):
     days = pin.get("ageDays")
     gap = (str(behind) + " release" + ("" if behind == 1 else "s") + " behind"
            if behind is not None else "behind")
-    age = " for " + str(int(days)) + " days" if days is not None else ""
-    return ("Claude Code is " + gap + age + ": running "
-            + str(pin.get("subject") or "?") + ", newest "
-            + str(pin.get("latest") or "?"))
+    age = ", published " + str(int(days)) + " days ago" if days is not None else ""
+    return ("Claude Code is " + gap + ": on " + str(pin.get("subject") or "?")
+            + age + ", newest " + str(pin.get("latest") or "?"))
 
 
 def _quota(row):

@@ -205,7 +205,7 @@ def test_a_stale_claude_code_pin_is_named_on_the_line():
     """Idea #308: the gap reaches the page he opens, not only my turn."""
     assert _with_pin({"stale": True, "behind": 11, "ageDays": 10.4,
                       "subject": "2.1.261", "latest": "2.1.272"}) == [
-        "Claude Code is 11 releases behind for 10 days: running 2.1.261, newest 2.1.272"
+        "Claude Code is 11 releases behind: on 2.1.261, published 10 days ago, newest 2.1.272"
     ]
 
 
