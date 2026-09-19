@@ -208,6 +208,14 @@ def test_fix_miscited_refuses_a_rewrite_that_is_not_strictly_better(rewrite):
     assert out[0].startswith("kept a.md")
 
 
+def test_fix_miscited_keeps_the_page_when_the_repair_call_fails():
+    def ask(p, m):
+        raise w.WikiError("claude exited 1")
+    out = []
+    assert w.fix_miscited(FIX_SOURCES, {"a.md": FIX_PAGE}, "m", ask=ask, out=out.append) == {"a.md": FIX_PAGE}
+    assert out == ["kept a.md: the repair call failed: claude exited 1"]
+
+
 def test_fix_miscited_asks_nothing_when_every_number_is_in_its_source():
     page = "Keep records for 5 years, fee 69,940. [source: books.md, as.md]"
     fixed = w.fix_miscited(FIX_SOURCES, {"a.md": page}, "m",

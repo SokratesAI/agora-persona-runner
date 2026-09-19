@@ -293,7 +293,11 @@ def fix_miscited(sources, pages, model, ask=None, out=print):
     for page, lines in by_page.items():
         body = pages[page]
         prompt = FIX_INSTRUCTIONS.format(findings="\n".join(lines), page=page, body=body)
-        new = ask(prompt + "\n" + _sources_block(sources), model).strip()
+        try:
+            new = ask(prompt + "\n" + _sources_block(sources), model).strip()
+        except (WikiError, subprocess.TimeoutExpired) as e:
+            out(f"kept {page}: the repair call failed: {e}")
+            continue
         trial = dict(fixed, **{page: new})
         left = sum(1 for f in miscited(sources, {page: new}))
         if (new and left < len(lines) and len(new) >= 0.8 * len(body)
