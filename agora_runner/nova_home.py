@@ -174,8 +174,14 @@ QUOTA_HOT_PACE = 1.2
 #: does.
 QUOTA_LOW_REMAINING = 10.0
 
+#: Where `tools.cli_pin --publish` leaves its verdict on the Claude Code
+#: pin (idea #308). The measurement only ever ran inside a cycle's own
+#: preflight, so the gap went from six releases to eleven with nobody but
+#: me able to see it; the health line reads this document instead.
+PIN_READING_PATH = "projects/sokrates/projects/agora/nova/resources/cli-pin.json"
 
-def health_block(status, alerts, quota, cadence_minutes):
+
+def health_block(status, alerts, quota, cadence_minutes, pin=None):
     """The health line's facts (idea #274, step 3b of the landing page).
 
     His spec: *"One quiet line: cycle running, gaps in numbering, critical
@@ -237,6 +243,10 @@ def health_block(status, alerts, quota, cadence_minutes):
             + ", ".join(a.get("name") or "?" for a in firing)
         )
 
+    pin_line = _pin_concern(pin)
+    if pin_line:
+        concerns.append(pin_line)
+
     seven_day, pace = _quota(quota)
     if seven_day is None:
         concerns.append("the cost ledger carries no quota reading, so I cannot say what the week has spent")
@@ -269,6 +279,32 @@ def health_block(status, alerts, quota, cadence_minutes):
         # has gone quiet", because this side has no clock to know.
         "concerns": concerns,
     }
+
+
+def _pin_concern(pin):
+    """One sentence when the Claude Code pin is stale, else `None`.
+
+    `pin` is the JSON `tools.cli_pin --publish` writes. Only `stale` speaks:
+    the tool already owns the threshold (behind for longer than a week), and
+    a gap of a day or two is the normal state of a CLI that publishes most
+    weekdays. `None` -- no document yet -- stays silent, because the check
+    runs once a day and the first reading lands a day after this ships; a
+    reading that says it could not measure is a concern, not quiet.
+    """
+    if not pin:
+        return None
+    if pin.get("error"):
+        return "I could not check the Claude Code pin: " + str(pin["error"])
+    if not pin.get("stale"):
+        return None
+    behind = pin.get("behind")
+    days = pin.get("ageDays")
+    gap = (str(behind) + " release" + ("" if behind == 1 else "s") + " behind"
+           if behind is not None else "behind")
+    age = " for " + str(int(days)) + " days" if days is not None else ""
+    return ("Claude Code is " + gap + age + ": running "
+            + str(pin.get("subject") or "?") + ", newest "
+            + str(pin.get("latest") or "?"))
 
 
 def _quota(row):

@@ -287,6 +287,7 @@ from agora_runner.nova_sources import (
     nova_board_markdown,
     catalog_markdown,
     comments_markdown,
+    cli_pin_json,
     cost_ledger_json,
     digest_markdown,
     journal_markdown,
@@ -1928,9 +1929,21 @@ def _health(status):
     line reserved for what he has to act on. It is logged instead.
     """
     try:
-        return health_block(status, alerts_payload(), _newest_quota(), cadence_minutes())
+        return health_block(status, alerts_payload(), _newest_quota(),
+                            cadence_minutes(), pin=_pin_reading())
     except Exception as problem:  # noqa: BLE001 -- deliberate, see above
         log(f"nova-site health line unavailable, the landing page is unaffected: {problem}")
+        return None
+
+
+def _pin_reading():
+    """The Claude Code pin verdict (idea #308), or `None` -- swallowed like
+    `_newest_quota`, because no failure of a decoration may take `/` down."""
+    try:
+        raw = cli_pin_json()
+        return json.loads(raw) if raw else None
+    except Exception as problem:  # noqa: BLE001 -- see `_health`
+        log(f"nova-site pin reading unavailable: {problem}")
         return None
 
 

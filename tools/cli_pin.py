@@ -53,14 +53,18 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from datetime import datetime, timezone
+
+from agora_runner.nova_home import PIN_READING_PATH
 
 PACKAGE = "@anthropic-ai/claude-code"
 REGISTRY = "https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code"
 REPO = "SokratesAI/agora-claude-bridge"
 PIN_RE = re.compile(r"^ARG CLAUDE_CODE_VERSION=(\S+)$", re.MULTILINE)
 DEFAULT_MAX_AGE_DAYS = 7
+VAULT_TOOL = "/app/bridge/vault_tool.py"
 
 
 def dockerfile_candidates():
@@ -280,19 +284,55 @@ def main(argv=None, now=None):
         help="how long the pin may be behind before this exits 2 "
              "(default: the loop's slowest recurring job, one week)",
     )
+    parser.add_argument(
+        "--publish", action="store_true",
+        help="also write the verdict to the vault, where the Nova landing "
+             "page's health line reads it (idea #308)",
+    )
     args = parser.parse_args(argv)
     now = now or datetime.now(timezone.utc)
+    record = {"checkedAt": now.isoformat(timespec="seconds")}
+    code = _judge(args, now, record)
+    if args.publish:
+        published = publish(record)
+        if published:
+            print(f"COULD NOT PUBLISH — {published}")
+            return max(code, 1)
+    return code
 
+
+def publish(record, runner=subprocess.run):
+    """Write `record` as JSON to the vault; the error text, or `""`."""
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(record, f, indent=1)
+    try:
+        done = runner([sys.executable, VAULT_TOOL, "put", PIN_READING_PATH,
+                       f.name, "--allow-shrink"],
+                      capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc) or exc.__class__.__name__
+    finally:
+        os.unlink(f.name)
+    if done.returncode != 0:
+        return (done.stderr or done.stdout or "vault put failed").strip()
+    return ""
+
+
+def _judge(args, now, record):
+    """The verdict, printed, with its facts copied into `record`."""
     pinned, where = read_pin()
     if pinned is None:
         print(f"COULD NOT READ THE PIN — {where}")
+        record["error"] = f"could not read the pin: {where}"
         return 1
 
     latest, versions, times, error = fetch_registry()
     if error:
         print(f"pinned {pinned} (from {where})")
         print(f"COULD NOT READ THE REGISTRY — {error}")
+        record["error"] = f"could not read the npm registry: {error}"
         return 1
+    record.update(pinned=pinned, latest=latest)
 
     running = running_version()
     print(f"{PACKAGE}: pinned {pinned} (from {where}), latest {latest}")
@@ -316,6 +356,7 @@ def main(argv=None, now=None):
         print(f"  running binary agrees: {running}")
 
     subject, label = older_of(pinned, running)
+    record.update(running=running, subject=subject, stale=False)
     if subject == latest:
         print("The pin is current and it is what is running. Nothing to do.")
         return 0
@@ -329,11 +370,14 @@ def main(argv=None, now=None):
     age = f", {label} published {age_days:.1f} day(s) ago" \
         if age_days is not None else ", publish date unknown"
     print(f"  {gap}{age}")
+    record.update(behind=behind,
+                  ageDays=round(age_days, 1) if age_days is not None else None)
 
     if age_days is None:
         print(f"STALE, ASSUMED — the registry has no publish date for {subject}, "
               "so the age check could not run and this fails towards noise "
               "rather than towards silence.")
+        record["stale"] = True
         return 2
     if age_days > args.max_age_days:
         print(f"STALE — {label} ({subject}) has been behind for longer than "
@@ -343,6 +387,7 @@ def main(argv=None, now=None):
               "the comment above that line prescribes before merging. If the "
               "pin is already current, the image has not rolled and that is "
               "where to look.")
+        record["stale"] = True
         return 2
 
     print("Behind, but inside the window — the CLI publishes most weekdays "
