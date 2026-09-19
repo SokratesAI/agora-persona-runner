@@ -237,8 +237,14 @@
       <span aria-hidden="true">&#9776;</span>
     </button>
     <p id="chat-title" class="chat-title">Ask Nova</p>
+    <button id="chat-find" class="chat-menu chat-find" type="button"
+            aria-label="Search this chat" aria-controls="chat-search">
+      <span aria-hidden="true">&#128269;</span>
+    </button>
     <button id="chat-close" class="chat-close" type="button" aria-label="Close chat">&#215;</button>
   </div>
+  <input id="chat-search" class="chat-search" type="search" hidden
+         autocomplete="off" placeholder="Search this chat" aria-label="Search this chat">
   <div id="chat-list" class="chat-list" aria-label="Your conversations" hidden></div>
   <div id="chat-thread" class="ask-thread chat-thread"></div>
   <form id="chat-form" class="chat-form">
