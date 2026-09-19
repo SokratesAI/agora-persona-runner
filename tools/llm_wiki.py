@@ -645,7 +645,11 @@ def main(argv=None):
     if a.fix_citations:
         if not a.topic:
             p.error("--fix-citations needs a topic")
-        fix_topic(a.topic, a.model)
+        try:
+            fix_topic(a.topic, a.model)
+        except WikiError as e:
+            print(f"llm_wiki: {e}", file=sys.stderr)
+            return 1
         return 0
     if a.stale:
         if a.dry_run:
