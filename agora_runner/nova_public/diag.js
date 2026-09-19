@@ -574,6 +574,24 @@
         }, 300);
       });
     }
+    /* The same two choices for the chat's `⋮` drawer (issue #137, "one
+     * consolidated settings page for all the small chat settings"), so the
+     * drawer and this page store and paint through one path. Read at tap time
+     * by chat-dock.js, which loads before this file. */
+    window.novaAppearance = {
+      PALETTES: PALETTES,
+      themePreference: themePreference,
+      palettePreference: palettePreference,
+      setTheme: function (preference) {
+        try { localStorage.setItem("nova-theme", preference); } catch (e) { /* private mode */ }
+        applyTheme(preference);
+      },
+      setPalette: function (id) {
+        try { localStorage.setItem("nova-palette", id); } catch (e) { /* private mode */ }
+        applyPalette(id);
+      },
+    };
+
     return {
       renderDiag: renderDiag,
       renderSettings: renderSettings,

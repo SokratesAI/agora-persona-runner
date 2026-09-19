@@ -442,6 +442,47 @@
     var styleTile = settingsTile("button", "📝", "Brief");
     var muteTile = settingsTile("button", "🔔", "Notifications");
     var titleTile = settingsTile("button", "✨", "Generate title");
+
+    /* Theme and colours, which until issue #137 lived only on the `/settings`
+     * page: the chat's small settings all sit behind `⋮` now. They are this
+     * device's, not the conversation's, so they show in every thread. Each is
+     * one tile that steps to the next choice, like Brief/Detailed. */
+    var THEMES = [["system", "🌓", "Device"], ["light", "☀️", "Light"], ["dark", "🌙", "Dark"]];
+    var themeTile = settingsTile("button", "🌓", "Device");
+    var paletteTile = settingsTile("button", "🎨", "Nova");
+
+    function paintAppearance() {
+      var look = window.novaAppearance;
+      themeTile.tile.hidden = paletteTile.tile.hidden = !look;
+      if (!look) return;
+      var theme = look.themePreference();
+      THEMES.forEach(function (t) {
+        if (t[0] !== theme) return;
+        themeTile.glyph.textContent = t[1];
+        themeTile.label.textContent = t[2];
+      });
+      var id = look.palettePreference();
+      look.PALETTES.forEach(function (p) {
+        if (p.id === id) paletteTile.label.textContent = p.label;
+      });
+    }
+
+    themeTile.tile.addEventListener("click", function () {
+      var look = window.novaAppearance;
+      if (!look) return;
+      var at = THEMES.map(function (t) { return t[0]; }).indexOf(look.themePreference());
+      look.setTheme(THEMES[(at + 1) % THEMES.length][0]);
+      paintAppearance();
+    });
+
+    paletteTile.tile.addEventListener("click", function () {
+      var look = window.novaAppearance;
+      if (!look) return;
+      var ids = look.PALETTES.map(function (p) { return p.id; });
+      look.setPalette(ids[(ids.indexOf(look.palettePreference()) + 1) % ids.length]);
+      paintAppearance();
+    });
+
     var styleNow = "brief";
     var mutedNow = false;
 
@@ -515,6 +556,7 @@
         // the legacy ask thread has only the model.
         [styleTile, muteTile, titleTile].forEach(function (t) { t.tile.hidden = !id; });
         paintModelTile();
+        paintAppearance();
         paintPrefs(null);
         if (id) {
           // Read fresh each open: a cycle, another device or Agora itself
