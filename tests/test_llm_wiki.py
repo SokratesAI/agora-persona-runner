@@ -159,6 +159,14 @@ def test_miscited_accepts_a_number_any_cited_source_holds_and_ignores_lists():
     assert w.miscited(sources, pages) == []
 
 
+def test_miscited_reads_a_citation_without_the_md_extension_as_that_file():
+    sources = [("kanban.md", "Toyota, 1940s; Anderson, 2007."), ("scrum.md", "Scrum, 1995.")]
+    pages = {"a.md": "Kanban began in the 1940s and was adapted in 2007. [source: kanban]\n\n"
+                     "Scrum dates from 2007. [source: scrum]"}
+    # "kanban" is kanban.md and holds both years; 2007 under "scrum" is still the wrong file
+    assert w.miscited(sources, pages) == [("a.md", "2007", ["scrum.md"], ["kanban.md"])]
+
+
 def test_cited_files_splits_derived_from_and_and_keeps_hyphenated_and():
     para = ("x [source: derived from tax.md and fees-and-salary.md] "
             "y [source: a.md; b.md, tax.md] z [source: Derived from c.md]")
