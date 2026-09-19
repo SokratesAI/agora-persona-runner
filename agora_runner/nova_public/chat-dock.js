@@ -637,10 +637,16 @@
      * The mic is revealed only if the API behind it is present, so a
      * browser without one shows exactly the composer it always had.
      */
+    /* Closing the dock turns the mic off (see setOpen). Assigned below, and
+     * a no-op on a browser with no recogniser. */
+    var stopDictation = function () {};
     (function () {
       var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       var micBtn = document.getElementById("chat-mic");
       var listening = null;
+      // He wants the mic on: set by his tap, cleared by his next tap or a
+      // refused microphone. `listening` is only the recogniser running now.
+      var wanted = false;
       function speechLang() {
         return document.documentElement.lang
           || (window.navigator && window.navigator.language)
@@ -649,7 +655,7 @@
 
       function syncMic() {
         if (!micBtn) return;
-        micBtn.setAttribute("aria-pressed", listening ? "true" : "false");
+        micBtn.setAttribute("aria-pressed", wanted && listening ? "true" : "false");
       }
 
       function startListening() {
@@ -672,11 +678,33 @@
           box.value = box.value ? box.value.replace(/\s*$/, "") + " " + said : said;
           growChatBox();
         };
-        rec.onerror = function () {
-          status.textContent = "didn't catch that";
+        rec.onerror = function (event) {
+          var code = event && event.error;
+          /* A pause is not a failure. `no-speech` and `aborted` are what a
+           * browser reports when he stops talking for a few seconds, and
+           * in a meeting that is every other sentence -- the recogniser
+           * ends and `onend` below starts the next one. Anything else ends
+           * the session -- a blocked microphone, no network, an unsupported
+           * language -- because restarting into it is a loop that fails
+           * every time and never hears anything. */
+          if (code === "no-speech" || code === "aborted") return;
+          wanted = false;
+          status.textContent = (code === "not-allowed" || code === "service-not-allowed"
+            || code === "audio-capture") ? "the microphone is blocked" : "didn't catch that";
         };
         rec.onend = function () {
+          if (listening !== rec) return;
           listening = null;
+          /* This recogniser runs with `continuous = false`, so the browser
+           * ends it at the first pause. The mic stays on by starting a fresh
+           * one until he taps it off:
+           * describing a demo in a meeting is several sentences with gaps
+           * between them, and one tap per sentence is not speaking instead
+           * of typing (ideas.md #140, part of #134). */
+          if (wanted) {
+            startListening();
+            return;
+          }
           syncMic();
         };
         listening = rec;
@@ -685,19 +713,35 @@
           rec.start();
         } catch (err) {
           // `start()` on an already-running recogniser throws; treat it as
-          // not listening rather than leaving the button stuck pressed.
+          // not listening rather than leaving the button stuck pressed, and
+          // stop wanting it so a restart cannot throw in a loop.
           listening = null;
+          wanted = false;
           syncMic();
         }
       }
 
       if (micBtn && Recognition) {
+        /* A mic that stays on must not outlive the screen that shows it:
+         * closing the dock or leaving the app turns it off, so the phone is
+         * never listening with no pressed button in view. */
+        stopDictation = function () {
+          if (!wanted) return;
+          wanted = false;
+          if (listening) listening.stop();
+          else syncMic();
+        };
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "hidden") stopDictation();
+        });
         micBtn.removeAttribute("hidden");
         micBtn.addEventListener("click", function () {
-          if (listening) {
-            listening.stop();
+          if (wanted) {
+            stopDictation();
             return;
           }
+          wanted = true;
+          status.textContent = "";
           startListening();
         });
       }
@@ -2115,6 +2159,7 @@
         void dock.offsetHeight;
         dock.classList.remove("chat-dock--closed");
       } else {
+        stopDictation();
         dock.classList.add("chat-dock--closed");
         function hideDock() {
           pendingHide = null;

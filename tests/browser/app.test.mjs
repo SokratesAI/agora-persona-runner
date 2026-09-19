@@ -17339,11 +17339,13 @@ describe("talking to Nova", () => {
     assert.equal(window.document.getElementById("chat-box").value, "how many pods are running");
     assert.equal(window.posted.length, 0, "dictation sent itself before he could correct it");
 
-    record.live.onend();
+    mic.dispatchEvent(new window.Event("click"));
     assert.equal(mic.getAttribute("aria-pressed"), "false", "the button stayed pressed after it stopped");
   });
 
-  test("dictating twice appends rather than replacing what he already said", async () => {
+  /* ideas.md #140, part of #134: in a meeting he describes a demo in
+   * several sentences, and the browser ends a recogniser at every pause. */
+  test("a pause does not end dictation: the mic keeps listening until he taps it off", async () => {
     const record = { made: [], started: 0, stopped: 0, live: null };
     const window = await loadSite("/journal", {
       install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
@@ -17352,10 +17354,63 @@ describe("talking to Nova", () => {
     const mic = window.document.getElementById("chat-mic");
     mic.dispatchEvent(new window.Event("click"));
     record.live.onresult({ resultIndex: 0, results: [[{ transcript: "how many pods" }]] });
-    record.live.onend();
-    mic.dispatchEvent(new window.Event("click"));
+    const first = record.live;
+    first.onerror({ error: "no-speech" });
+    first.onend();
+    assert.equal(record.started, 2, "the pause ended dictation instead of starting a new recogniser");
+    assert.notEqual(record.live, first, "restarted the finished recogniser rather than a fresh one");
+    assert.equal(mic.getAttribute("aria-pressed"), "true", "the button let go during a pause");
+    assert.equal(window.document.getElementById("chat-status").textContent, "",
+      "a pause was reported as a failure");
     record.live.onresult({ resultIndex: 0, results: [[{ transcript: "are running" }]] });
     assert.equal(window.document.getElementById("chat-box").value, "how many pods are running");
+
+    first.onend();
+    assert.equal(record.started, 2, "a stale recogniser's end started another one");
+
+    mic.dispatchEvent(new window.Event("click"));
+    assert.equal(record.stopped, 1);
+    assert.equal(record.started, 2, "tapping it off started it again");
+    assert.equal(mic.getAttribute("aria-pressed"), "false");
+    assert.equal(window.posted.length, 0, "dictation sent itself");
+  });
+
+  test("closing the dock or leaving the app turns the mic off", async () => {
+    const record = { made: [], started: 0, stopped: 0, live: null };
+    const window = await loadSite("/journal", {
+      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
+    });
+    tap(window, "chat-btn");
+    const mic = window.document.getElementById("chat-mic");
+    mic.dispatchEvent(new window.Event("click"));
+    tap(window, "chat-btn");
+    assert.equal(record.stopped, 1, "the phone kept listening behind a closed dock");
+    assert.equal(mic.getAttribute("aria-pressed"), "false");
+
+    tap(window, "chat-btn");
+    mic.dispatchEvent(new window.Event("click"));
+    Object.defineProperty(window.document, "visibilityState", { configurable: true, get: () => "hidden" });
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    assert.equal(record.stopped, 2, "the phone kept listening after he left the app");
+    assert.equal(record.started, 2, "leaving the app restarted the recogniser");
+  });
+
+  test("a blocked microphone ends dictation instead of restarting into it forever", async () => {
+    const record = { made: [], started: 0, stopped: 0, live: null };
+    const window = await loadSite("/journal", {
+      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
+    });
+    tap(window, "chat-btn");
+    const mic = window.document.getElementById("chat-mic");
+    mic.dispatchEvent(new window.Event("click"));
+    record.live.onerror({ error: "not-allowed" });
+    record.live.onend();
+    assert.equal(record.started, 1, "restarted into a microphone the browser refused");
+    assert.equal(mic.getAttribute("aria-pressed"), "false");
+    assert.equal(window.document.getElementById("chat-status").textContent, "the microphone is blocked");
+
+    mic.dispatchEvent(new window.Event("click"));
+    assert.equal(record.started, 2, "a tap after a refusal did not try again");
   });
 
   test("tapping the mic while it is listening stops it", async () => {
