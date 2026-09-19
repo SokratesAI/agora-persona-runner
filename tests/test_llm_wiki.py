@@ -3,37 +3,62 @@ import pytest
 from tools import llm_wiki as w
 
 
-def test_parse_pages_splits_on_page_lines():
-    out = "=== PAGE: index.md ===\n# Topic\nsee [[a]]\n=== PAGE: a.md ===\nbody a\n"
-    assert w.parse_pages(out) == {"index.md": "# Topic\nsee [[a]]", "a.md": "body a"}
+def test_parse_outline_reads_pages_with_index_first():
+    out = ("Here is the plan:\nPAGE: costs.md | Costs | What things cost.\n"
+           "PAGE: index.md | Overview | The topic in short.\n")
+    assert w.parse_outline(out) == [("index.md", "Overview", "The topic in short."),
+                                    ("costs.md", "Costs", "What things cost.")]
 
 
 @pytest.mark.parametrize("out, why", [
-    ("just prose, no markers", "no '=== PAGE"),
-    ("=== PAGE: a.md ===\nbody\n", "no index.md"),
-    ("=== PAGE: index.md ===\nx\n=== PAGE: index.md ===\ny\n", "twice"),
-    ("=== PAGE: index.md ===\n\n=== PAGE: a.md ===\nb\n", "empty"),
+    ("just prose, no pages", "no 'PAGE"),
+    ("PAGE: a.md | A | a\n", "no index.md"),
+    ("PAGE: index.md | I | i\nPAGE: index.md | J | j\n", "twice"),
 ])
-def test_parse_pages_refuses_a_partial_wiki(out, why):
+def test_parse_outline_refuses_a_partial_wiki(out, why):
     with pytest.raises(w.WikiError, match=why):
-        w.parse_pages(out)
+        w.parse_outline(out)
 
 
 def test_page_name_outside_the_pattern_is_not_a_page():
     # A path in the name would write outside wiki/; it must not match at all.
-    out = "=== PAGE: index.md ===\nx\n=== PAGE: ../raw/a.md ===\ny\n"
-    assert list(w.parse_pages(out)) == ["index.md"]
+    out = "PAGE: index.md | I | i\nPAGE: ../raw/a.md | A | a\n"
+    assert [n for n, _, _ in w.parse_outline(out)] == ["index.md"]
+
+
+OUTLINE = [("index.md", "Overview", "the topic"), ("costs.md", "Costs", "what things cost")]
+
+
+def test_page_prompt_names_its_page_and_sees_every_source_and_page():
+    p = w.build_page_prompt("bikes", [("b.md", "second"), ("a.md", "first")], OUTLINE, "costs.md")
+    assert 'ONE page of a wiki from raw research sources: costs.md ("Costs")' in p
+    assert "- [[index]] Overview: the topic" in p and "- [[costs]] Costs" in p
+    assert p.index("--- SOURCE: b.md ---\nsecond") < p.index("--- SOURCE: a.md ---\nfirst")
+    assert "This is the index page" not in p
+    assert "This is the index page" in w.build_page_prompt("bikes", [("a.md", "x")], OUTLINE, "index.md")
+
+
+def test_write_pages_makes_one_call_per_page_and_keeps_outline_order():
+    calls = []
+
+    def ask(prompt, model):
+        calls.append(prompt)
+        return "# Overview\nbody" if '"Overview"' in prompt else "# Costs\nbody"
+
+    pages = w.write_pages("bikes", [("a.md", "x")], OUTLINE, "m", ask=ask)
+    assert list(pages) == ["index.md", "costs.md"] and len(calls) == 2
+    assert pages["costs.md"] == "# Costs\nbody"
+
+
+def test_write_pages_refuses_an_empty_page():
+    with pytest.raises(w.WikiError, match="costs.md empty"):
+        w.write_pages("bikes", [("a.md", "x")], OUTLINE, "m",
+                      ask=lambda p, m: "" if '"Costs"' in p else "# ok")
 
 
 def test_is_text():
     assert w.is_text("plain notes æøå")
     assert not w.is_text("%PDF-1.7\x00\x01")
-
-
-def test_build_prompt_keeps_every_source_whole_and_in_order():
-    p = w.build_prompt("bikes", [("b.md", "second"), ("a.md", "first")])
-    assert "The topic is: bikes" in p
-    assert p.index("--- SOURCE: b.md ---\nsecond") < p.index("--- SOURCE: a.md ---\nfirst")
 
 
 def test_rendered_page_is_marked_and_names_its_sources():
@@ -69,7 +94,7 @@ def test_bad_topic_is_refused_before_any_vault_call(monkeypatch):
         w.run("../escape")
 
 
-def test_prompt_asks_to_keep_the_existing_page_names():
-    p = w.build_prompt("bikes", [("a.md", "x")], keep=["route.md", "index.md"])
-    assert "same name" in p and "index.md, route.md" in p
-    assert "already has these pages" not in w.build_prompt("bikes", [("a.md", "x")])
+def test_plan_prompt_asks_to_keep_the_existing_page_names():
+    p = w.build_plan_prompt("bikes", [("a.md", "x")], keep=["route.md", "index.md"])
+    assert "same name" in p and "index.md, route.md" in p and "--- SOURCE: a.md ---" in p
+    assert "already has these pages" not in w.build_plan_prompt("bikes", [("a.md", "x")])
