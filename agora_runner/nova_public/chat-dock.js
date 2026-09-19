@@ -960,11 +960,130 @@
     function setList(next) {
       var on = !!next;
       if (!listEl || !menuBtn) return;
+      // A query typed over one view means nothing in the other: a thread
+      // name is not a message, so switching either way starts clean.
+      clearSearch();
+      findOpen = false;
       dock.classList.toggle("list-open", on);
       menuBtn.setAttribute("aria-expanded", on ? "true" : "false");
       if (on) listEl.removeAttribute("hidden");
       else listEl.setAttribute("hidden", "");
+      showSearch();
       if (on) loadList();
+    }
+
+    /* Search -- the last piece of issue #138: *"Chat is missing: search
+     * (within a conversation and across the conversation list)"*.
+     *
+     * One box, two jobs, decided by what the panel is showing. With the
+     * switcher open it is always there and filters the conversations by
+     * name, persona and model; over a thread it is behind the 🔍 in the
+     * header and filters that thread's messages by their text. Both hide
+     * what does not match rather than highlighting, so what is left on a
+     * phone screen is only the answer. Nothing is fetched: the list and
+     * the thread are already in the page, so it filters as he types.
+     *
+     * The thread repaints itself on every poll and every streamed token,
+     * so the filter is re-applied by an observer rather than once -- a
+     * message that arrives while he is searching obeys the query too. */
+    var searchEl = document.getElementById("chat-search");
+    var findBtn = document.getElementById("chat-find");
+    var findOpen = false;
+
+    function searchQuery() {
+      return searchEl ? searchEl.value.trim().toLowerCase() : "";
+    }
+
+    function textHas(text, q) {
+      return (text || "").toLowerCase().indexOf(q) !== -1;
+    }
+
+    function filterList(q) {
+      if (!listEl) return 0;
+      var hits = 0;
+      [].forEach.call(listEl.querySelectorAll(".chat-list-fold"), function (fold) {
+        var inFold = 0;
+        [].forEach.call(fold.querySelectorAll(".chat-list-row"), function (row) {
+          var hit = !q || textHas(row.textContent, q);
+          row.hidden = !hit;
+          if (hit) inFold += 1;
+        });
+        hits += inFold;
+        fold.hidden = !!q && !inFold;
+        // A match inside a shut fold is opened to show it, and shut again
+        // when the query goes, so searching never rearranges his folds.
+        if (q && inFold && !fold.open) {
+          fold.open = true;
+          fold.setAttribute("data-search-opened", "");
+        } else if (!q && fold.hasAttribute("data-search-opened")) {
+          fold.open = false;
+          fold.removeAttribute("data-search-opened");
+        }
+      });
+      return hits;
+    }
+
+    function filterThread(q) {
+      if (!thread) return 0;
+      var hits = 0;
+      [].forEach.call(thread.querySelectorAll(".ask-msg"), function (msg) {
+        var body = msg.querySelector(".ask-text");
+        var hit = !q || textHas((body || msg).textContent, q);
+        if (msg.hidden !== !hit) msg.hidden = !hit;
+        if (hit) hits += 1;
+      });
+      return hits;
+    }
+
+    function applySearch() {
+      if (!searchEl) return;
+      var q = searchQuery();
+      var hits = dock.classList.contains("list-open") ? filterList(q) : filterThread(q);
+      searchEl.classList.toggle("chat-search--none", !!q && !hits);
+    }
+
+    function clearSearch() {
+      if (!searchEl) return;
+      searchEl.value = "";
+      searchEl.classList.remove("chat-search--none");
+      filterList("");
+      filterThread("");
+    }
+
+    function showSearch() {
+      if (!searchEl) return;
+      var listing = dock.classList.contains("list-open");
+      searchEl.hidden = !(listing || findOpen);
+      var label = listing ? "Search conversations" : "Search this chat";
+      searchEl.placeholder = label;
+      searchEl.setAttribute("aria-label", label);
+      if (findBtn) findBtn.hidden = listing;
+    }
+
+    if (searchEl) {
+      searchEl.addEventListener("input", applySearch);
+      searchEl.addEventListener("keydown", function (event) {
+        if (event.key !== "Escape") return;
+        event.stopPropagation();
+        clearSearch();
+        if (!dock.classList.contains("list-open")) {
+          findOpen = false;
+          showSearch();
+        }
+      });
+    }
+    if (findBtn) {
+      findBtn.addEventListener("click", function () {
+        findOpen = !findOpen;
+        if (!findOpen) clearSearch();
+        showSearch();
+        if (findOpen && searchEl) searchEl.focus();
+      });
+    }
+    if (thread && searchEl && window.MutationObserver) {
+      new MutationObserver(function () {
+        if (searchQuery() && !dock.classList.contains("list-open")) applySearch();
+      }).observe(thread, { childList: true, subtree: true });
     }
 
     function listRow(label, meta, current, onPick) {
@@ -1823,6 +1942,7 @@
           node: kept ? kept.node : fill(listFold(fold.name, fold.group.length, fold.open), fold.group) });
       });
       if (drawn) window.novaThread.render(listEl, drawn);
+      if (searchQuery()) applySearch();
     }
 
     /* The close animation has to finish before `hidden` lands, because

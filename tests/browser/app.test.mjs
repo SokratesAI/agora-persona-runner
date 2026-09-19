@@ -18695,3 +18695,117 @@ describe("with Preact, a project page keeps the sections a tab press does not to
   });
 
 });
+
+/* Search in the chat -- the last piece of issue #138: *"Chat is missing:
+ * search (within a conversation and across the conversation list)"*.
+ *
+ * One box: over the switcher it filters conversations, over a thread it
+ * filters that thread's messages. The things pinned are that a miss is
+ * hidden rather than merely unhighlighted, that clearing brings every row
+ * back (including shutting a fold search opened), and that a query never
+ * leaks from one view into the other.
+ */
+describe("search in the chat dock", () => {
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  function type(window, text) {
+    const box = window.document.getElementById("chat-search");
+    box.value = text;
+    box.dispatchEvent(new window.Event("input"));
+  }
+  const visible = (nodes) => [...nodes].filter((n) => !n.hidden);
+
+  const LIST = {
+    conversations: [
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], updatedAt: "2026-08-25T20:00:00.000Z" },
+      { id: "c-2", name: "Garden plan", personaName: "Claude", model: "m",
+        tags: [], updatedAt: "2026-08-25T19:00:00.000Z" },
+      { id: "c-3", name: "Cycle 9", personaName: "Nova", model: "m",
+        tags: ["evolve-cycle:9"], cycleThread: true,
+        updatedAt: "2026-08-25T18:00:00.000Z" },
+    ],
+  };
+  const THREAD = {
+    conversationId: "c-1", waiting: false,
+    messages: [
+      { id: "1", sender: "Edvard", text: "How many coats of paint?" },
+      { id: "2", sender: "Claude", text: "Two coats, a day apart." },
+      { id: "3", sender: "Claude", text: "Start with the gutters." },
+    ],
+  };
+
+  async function openSwitcher() {
+    const window = await loadSite("/journal", {
+      ask: { conversationId: "c-ask", waiting: false, messages: [] },
+      convList: LIST, convThread: () => THREAD,
+    });
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    return window;
+  }
+  const names = (window) => visible(window.document.querySelectorAll("#chat-list .chat-list-row"))
+    .map((row) => row.querySelector(".chat-list-name").textContent);
+
+  test("the switcher shows a search box that filters conversations as he types", async () => {
+    const window = await openSwitcher();
+    const box = window.document.getElementById("chat-search");
+    assert.equal(box.hidden, false, "no search box over the conversation list");
+    assert.equal(box.placeholder, "Search conversations");
+    assert.deepEqual(names(window).sort(), ["Cycle 9", "Garden plan", "Roofing"]);
+    type(window, "GARD");
+    assert.deepEqual(names(window), ["Garden plan"]);
+    type(window, "");
+    assert.deepEqual(names(window).sort(), ["Cycle 9", "Garden plan", "Roofing"]);
+  });
+
+  test("a match in a shut fold opens it, and clearing shuts it again", async () => {
+    const window = await openSwitcher();
+    const beats = [...window.document.querySelectorAll("#chat-list .chat-list-fold")]
+      .find((f) => f.querySelector(".chat-list-group-name").textContent === "Heartbeats");
+    assert.ok(beats, "no Heartbeats fold");
+    assert.equal(beats.open, false);
+    type(window, "cycle");
+    assert.equal(beats.open, true);
+    assert.deepEqual(names(window), ["Cycle 9"]);
+    const convs = [...window.document.querySelectorAll("#chat-list .chat-list-fold")]
+      .find((f) => f.querySelector(".chat-list-group-name").textContent === "Conversations");
+    assert.equal(convs.hidden, true, "a fold with no match stayed on screen");
+    type(window, "");
+    assert.equal(beats.open, false);
+    assert.equal(convs.hidden, false);
+  });
+
+  test("a query with no match says so on the box", async () => {
+    const window = await openSwitcher();
+    type(window, "zzz");
+    assert.deepEqual(names(window), []);
+    assert.ok(window.document.getElementById("chat-search").classList.contains("chat-search--none"));
+  });
+
+  test("over a thread the 🔍 opens a box that filters its messages", async () => {
+    const window = await openSwitcher();
+    type(window, "roof");
+    visible(window.document.querySelectorAll("#chat-list .chat-list-row"))[0]
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    const box = window.document.getElementById("chat-search");
+    assert.equal(box.hidden, true, "the box stayed up over the thread");
+    assert.equal(box.value, "", "the list's query leaked into the thread");
+    tap(window, "chat-find");
+    assert.equal(box.hidden, false);
+    assert.equal(box.placeholder, "Search this chat");
+    const shown = () => visible(window.document.querySelectorAll("#chat-thread .ask-msg"))
+      .map((m) => m.querySelector(".ask-text").textContent);
+    assert.equal(shown().length, 3);
+    type(window, "coats");
+    assert.deepEqual(shown(), ["How many coats of paint?", "Two coats, a day apart."]);
+    tap(window, "chat-find");
+    assert.equal(box.hidden, true);
+    assert.equal(shown().length, 3, "closing the search left messages hidden");
+  });
+});

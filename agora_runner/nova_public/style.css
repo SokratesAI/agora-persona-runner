@@ -4234,6 +4234,26 @@ body.chat-open { overflow: hidden; }
 .chat-list-fold[open] > .chat-list-group { color: var(--text); }
 .chat-close { flex: none; padding: 0; }
 
+/* Search (issue #138): one box, filtering the conversation list while it is
+ * open and the open thread otherwise. A match hides the rest rather than
+ * highlighting, and the `[hidden]` rules are needed because each of these
+ * sets its own `display`, which beats the attribute's default. */
+.chat-search {
+  flex: none;
+  margin-top: 0.5rem;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line, #ccc);
+  border-radius: 0.5rem;
+  background: var(--card, transparent);
+  color: inherit;
+  font: inherit;
+}
+.chat-search[hidden], .chat-list-row[hidden], .chat-list-fold[hidden],
+.ask-msg[hidden] { display: none; }
+.chat-search--none { border-color: var(--bad, #c0392b); }
+
 /* The thread is the only part that scrolls, so the composer stays on
  * screen while he reads back -- `.capture textarea`'s finding, that a box
  * free to grow pushes the way to submit off the bottom of a phone. */
