@@ -68,6 +68,10 @@
     if (mine && m.text && window.novaEditButton && document.getElementById("chat-box")) {
       actions.push(function () { return window.novaEditButton(m.text); });
     }
+    if (!mine && !m.partial && window.novaRateButtons) {
+      // Built when the drawer opens, so each opening reads the current rating.
+      [0, 1].forEach(function (i) { if (m.id && m.text && props.conversationId) actions.push(function () { return window.novaRateButtons(props.conversationId, m)[i]; }); });
+    }
     if (!mine && !m.partial && props.conversationId && retry && retry.question) {
       actions.push(function () {
         return d.askRetryButton(props.conversationId, retry.question, retry.afterSend);

@@ -83,6 +83,10 @@
       if (mine && message.text && window.novaEditButton && document.getElementById("chat-box")) {
         actions.push(function () { return window.novaEditButton(message.text); });
       }
+      if (!mine && !message.partial && window.novaRateButtons) {
+        // Built when the drawer opens, so each opening reads the current rating.
+        [0, 1].forEach(function (i) { if (message.id && message.text && conversationId) actions.push(function () { return window.novaRateButtons(conversationId, message)[i]; }); });
+      }
       if (!mine && !message.partial && conversationId && retry && retry.question) {
         actions.push(function () {
           return askRetryButton(conversationId, retry.question, retry.afterSend);

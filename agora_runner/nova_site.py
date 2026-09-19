@@ -263,6 +263,7 @@ from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_stop_timings import record as record_stop_timing
 from agora_runner import nova_app_opens
+from agora_runner import nova_chat_ratings
 from agora_runner.nova_planned_done import planned_done, render_page as render_planned_done
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_next import (next_payload_from_contents,
@@ -6690,7 +6691,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/marcus/stop",
             "/api/pool/decide", "/api/pool/comment", "/api/pool/generate",
             "/api/goal/status", "/api/push/subscribe",
-            "/api/project/comment", "/api/app/opened",
+            "/api/project/comment", "/api/app/opened", "/api/chat/rate",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -6714,6 +6715,22 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                              args=(self.headers.get("User-Agent") or "",) + opened,
                              daemon=True).start()
             self._send_json(200, {"ok": True})
+            return
+        if path == "/api/chat/rate":
+            # Thumbs up/down on an answer (nova_chat_ratings). On the
+            # response path, unlike an app open: he tapped a button and
+            # is owed an honest "it did not save".
+            rated = nova_chat_ratings.parse(payload)
+            if rated is None:
+                self._send_json(400, {"error": "expected {\"conversationId\", \"messageId\", \"rating\": \"up\"|\"down\"|null}"})
+                return
+            try:
+                nova_chat_ratings.record(*rated)
+            except Exception as e:
+                log(f"nova-site: could not record a chat rating: {e}")
+                self._send_json(502, {"ok": False, "error": "could not save the rating"})
+                return
+            self._send_json(200, {"ok": True, "rating": rated[2]})
             return
         if path == "/api/push/subscribe":
             ok, body = store_subscription(payload)
