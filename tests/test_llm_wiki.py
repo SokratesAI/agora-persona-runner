@@ -98,3 +98,51 @@ def test_plan_prompt_asks_to_keep_the_existing_page_names():
     p = w.build_plan_prompt("bikes", [("a.md", "x")], keep=["route.md", "index.md"])
     assert "same name" in p and "index.md, route.md" in p and "--- SOURCE: a.md ---" in p
     assert "already has these pages" not in w.build_plan_prompt("bikes", [("a.md", "x")])
+
+
+PLAN = ("PAGE: index.md | Overview | the topic | a.md\n"
+        "PAGE: hiring.md | Hiring | hiring staff | a.md, invented.md\n")
+
+
+def test_outline_still_parses_with_the_sources_field():
+    assert w.parse_outline(PLAN) == [("index.md", "Overview", "the topic"),
+                                     ("hiring.md", "Hiring", "hiring staff")]
+
+
+def test_placement_keeps_known_sources_and_names_the_unplaced_one():
+    placement = w.parse_placement(PLAN, ["a.md", "norway.md"])
+    assert placement == {"index.md": ["a.md"], "hiring.md": ["a.md"]}
+    assert w.unplaced(placement, ["a.md", "norway.md"]) == ["norway.md"]
+
+
+def test_plan_asks_again_naming_the_missing_source_then_refuses():
+    prompts = []
+
+    def ask(prompt, model):
+        prompts.append(prompt)
+        return PLAN
+
+    with pytest.raises(w.WikiError, match="norway.md on no page, twice"):
+        w.plan("biz", [("a.md", "x"), ("norway.md", "y")], (), "m", out=lambda s: None, ask=ask)
+    assert len(prompts) == 2 and "on no page: norway.md" in prompts[1]
+
+
+def test_plan_accepts_a_second_plan_that_places_every_source():
+    answers = iter([PLAN, PLAN + "PAGE: employer.md | Employer | duties | norway.md\n"])
+    outline, placement = w.plan("biz", [("a.md", "x"), ("norway.md", "y")], (), "m",
+                                out=lambda s: None, ask=lambda p, m: next(answers))
+    assert [n for n, _, _ in outline] == ["index.md", "hiring.md", "employer.md"]
+    assert placement["employer.md"] == ["norway.md"]
+
+
+def test_page_prompt_names_the_sources_it_must_cite():
+    p = w.build_page_prompt("biz", [("a.md", "x")], OUTLINE, "costs.md", ["a.md"])
+    assert "must use and cite each of these sources: a.md" in p
+    assert "must use" not in w.build_page_prompt("biz", [("a.md", "x")], OUTLINE, "costs.md")
+
+
+def test_uncited_finds_a_source_no_page_cites():
+    pages = {"index.md": "x [source: a.md] y [source: b.md, old-a.md]"}
+    assert w.uncited(["a.md", "b.md", "norway.md", "c.md"], pages) == ["norway.md", "c.md"]
+    # a name that is only a suffix of a cited one is not cited
+    assert w.uncited(["a.md"], {"p": "[source: old-a.md]"}) == ["a.md"]
