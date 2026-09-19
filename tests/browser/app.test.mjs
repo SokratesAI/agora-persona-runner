@@ -14442,7 +14442,7 @@ describe("the project page", () => {
     assert.equal(rows[0].querySelector(".project-milestone-unpin"), null);
     rows[1].querySelector(".project-milestone-unpin").click();
     await new Promise((r) => setTimeout(r, 0));
-    // `0` is legal on this route and illegal on `/api/project/order`: a
+    // `0` is legal on this route: a
     // milestone is pinned or it is not, and this is the way back.
     assert.deepEqual(window.posted.at(-1).body,
       { project: "Nova", milestone: "big", position: 0 });

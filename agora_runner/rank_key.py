@@ -7,7 +7,8 @@ rank key -- LexoRank (Jira) or fractional indexing (Figma), both
 established prior art -- rather than dense 1..N, so moving one row writes
 one document."*
 
-The thing it replaces is `nova_boards.set_project_order`, which renumbers
+The thing it replaces is `nova_boards.set_project_order` (since removed,
+issue #229), which renumbered
 every row in the table on every move. **That costs nothing today** and the
 first draft of this docstring wrongly said it did: a board is one markdown
 document with one `_rev`, so moving one row and renumbering forty are the

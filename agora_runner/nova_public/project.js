@@ -1306,9 +1306,7 @@
      * through `sendMilestonePin` so a pin cannot mean two things. The gesture
      * is `attachRowDrag`: HTML5 `draggable` fires nothing on a touch screen,
      * and a phone is where he reads this. A pinned milestone says so and can
-     * be unpinned -- `0` is "back to the computed order", legal here and
-     * illegal on `/api/project/order`, because a project is always somewhere
-     * in his list and a milestone is pinned or it is not. */
+     * be unpinned -- `0` is "back to the computed order". */
     function renderProjectMilestones(name, payload) {
       var items = (payload && payload.milestones) || [];
       // Nothing to order. One milestone is still drawn: it says what the
@@ -1641,9 +1639,8 @@
      * two that disagree -- which is what the caption on this control had been
      * apologising for.
      *
-     * `POST /api/project/priority` is left standing on the server. Removing a
-     * route is a separate change with its own blast radius, and nothing calls
-     * it from here any more.
+     * `POST /api/project/priority` and `/api/project/order` are gone from the
+     * server too (issue #229): projects carry no priority.
      */
 
 

@@ -166,10 +166,7 @@ def test_a_good_request_trims_both_names_and_passes_the_position(monkeypatch):
 
 
 def test_zero_is_accepted_here_and_reaches_the_write(monkeypatch):
-    """The one place this route differs from `/api/project/order`.
-
-    A project always sits somewhere in his list, so there is no
-    "unplaced" position; a milestone is pinned or it is not, and 0 is how
+    """Zero is legal: a milestone is pinned or it is not, and 0 is how
     he takes a pin back off. A route that refused 0 would leave the UI
     able to set a pin and unable to clear one.
     """
