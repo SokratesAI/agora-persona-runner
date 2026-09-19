@@ -202,7 +202,7 @@ def render_mirror(persona_id, name, path, now=None):
     """The mirror document for one persona directory, index first.
 
     Every file is kept whole and in its own fenced block under its own
-    `##` heading -- the point of the mirror is that Edvard can read and
+    `##` heading -- the point of the mirror is that the owner can read and
     correct exactly what the persona holds, so nothing is summarised.
     """
     files = sorted((f for f in os.listdir(path)
