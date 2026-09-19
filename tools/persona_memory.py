@@ -68,21 +68,23 @@ OSLO = ZoneInfo("Europe/Oslo")
 DEFAULT_ROOT = os.path.join(
     os.environ.get("CLAUDE_HOME", "/data/claude-home"), "persona-memory")
 
-# The CLI writes its index here. A directory holding memories but no index
-# is worth naming rather than counting as fine: recall reads the index.
-INDEX = "MEMORY.md"
+# INDEX: the CLI writes its index here. A directory holding memories but no
+# index is worth naming rather than counting as fine: recall reads the index.
+#
+# MIRROR_PREFIX: where `--mirror` writes one document per persona. Under
+# nova/, so it routes to Nova's own database -- the one nova-site reads --
+# because the PVC above is mounted on the bridge pod only and nova-site
+# mounts no shared volume (Cycle 1049). Keyed by persona id, not name: a
+# rename must not orphan the old copy and start a second one.
+#
+# FENCE: a memory file is markdown with its own fences and headings, so it
+# is wrapped in a fence no memory file is likely to open: four tildes.
+#
+# All three are defined beside the `/memory` page that reads the mirror,
+# since the nova-site image carries agora_runner/ and not tools/.
+from agora_runner.nova_persona_memory import FENCE, INDEX, MIRROR_PREFIX  # noqa: E402
 
-# Where `--mirror` writes one document per persona. Under nova/, so it
-# routes to Nova's own database -- the one nova-site reads -- because the
-# PVC above is mounted on the bridge pod only and nova-site mounts no
-# shared volume (Cycle 1049). Keyed by persona id, not name: a rename
-# must not orphan the old copy and start a second one.
-MIRROR_PREFIX = "projects/sokrates/projects/agora/nova/resources/persona-memory/"
 VAULT_TOOL = "/app/bridge/vault_tool.py"
-
-# A memory file is markdown with its own fences and headings, so it is
-# wrapped in a fence no memory file is likely to open: four tildes.
-FENCE = "~~~~"
 
 
 def _oslo(epoch):
