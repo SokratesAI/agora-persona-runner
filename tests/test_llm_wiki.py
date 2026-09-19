@@ -166,12 +166,77 @@ def test_cited_files_splits_derived_from_and_and_keeps_hyphenated_and():
 
 
 def test_miscited_reads_a_derived_from_citation_as_its_files():
-    sources = [("tax.md", "Rate 22,000 on 100,000."), ("fees-and-salary.md", "Salary 468,000.")]
-    pages = {"t.md": "On 100,000 profit, 22,000 tax; salary 468,000; left 134,160. "
+    sources = [("tax.md", "Rate 22,000 on 100,000."), ("fees-and-salary.md", "Salary 468,000."),
+               ("as.md", "Penalty 69,940.")]
+    pages = {"t.md": "On 100,000 profit, 22,000 tax; salary 468,000; left 134,160; fine 69,940. "
                      "[source: derived from tax.md and fees-and-salary.md]"}
+    # 134,160 is the computed result and no source holds it; 69,940 is the wrong file
     assert w.miscited(sources, pages) == [
-        ("t.md", "134,160", ["tax.md", "fees-and-salary.md"], []),
+        ("t.md", "69,940", ["tax.md", "fees-and-salary.md"], ["as.md"]),
     ]
+
+
+FIX_SOURCES = [("books.md", "Keep records 5 years."), ("as.md", "A fee of up to NOK 69,940.")]
+FIX_PAGE = ("# Accounts\n\nKeep records for 5 years. [source: books.md]\n\n"
+            "The fee can be NOK 69,940. [source: books.md]\n")
+
+
+def test_fix_miscited_keeps_a_rewrite_that_fixes_the_citation():
+    asked = []
+    good = FIX_PAGE.replace("69,940. [source: books.md]", "69,940. [source: as.md]")
+    ask = lambda prompt, model: asked.append(prompt) or good
+    out = []
+    fixed = w.fix_miscited(FIX_SOURCES, {"a.md": FIX_PAGE, "b.md": "# B [source: as.md]"},
+                           "m", ask=ask, out=out.append)
+    assert fixed == {"a.md": good.strip(), "b.md": "# B [source: as.md]"}
+    assert len(asked) == 1 and "- 69,940: cited to books.md; it is in as.md" in asked[0]
+    assert "--- SOURCE: as.md ---" in asked[0]
+    assert out == ["fixed citations: a.md 1 -> 0"]
+
+
+@pytest.mark.parametrize("rewrite", [
+    FIX_PAGE,                                                   # nothing fixed
+    "# Accounts\n\nFee NOK 69,940. [source: as.md]\n",          # cut short, drops books.md
+    FIX_PAGE.replace("[source: books.md]", "[source: as.md]"),  # fixed, but books.md now uncited
+    "",
+])
+def test_fix_miscited_refuses_a_rewrite_that_is_not_strictly_better(rewrite):
+    out = []
+    fixed = w.fix_miscited(FIX_SOURCES, {"a.md": FIX_PAGE}, "m",
+                           ask=lambda p, m: rewrite, out=out.append)
+    assert fixed == {"a.md": FIX_PAGE}
+    assert out[0].startswith("kept a.md")
+
+
+def test_fix_miscited_keeps_the_page_when_the_repair_call_fails():
+    def ask(p, m):
+        raise w.WikiError("claude exited 1")
+    out = []
+    assert w.fix_miscited(FIX_SOURCES, {"a.md": FIX_PAGE}, "m", ask=ask, out=out.append) == {"a.md": FIX_PAGE}
+    assert out == ["kept a.md: the repair call failed: claude exited 1"]
+
+
+def test_fix_miscited_asks_nothing_when_every_number_is_in_its_source():
+    page = "Keep records for 5 years, fee 69,940. [source: books.md, as.md]"
+    fixed = w.fix_miscited(FIX_SOURCES, {"a.md": page}, "m",
+                           ask=lambda p, m: pytest.fail("asked"), out=pytest.fail)
+    assert fixed == {"a.md": page}
+
+
+def test_fix_topic_rewrites_only_the_repaired_page_and_keeps_its_frontmatter(monkeypatch):
+    base = w.ROOT + "biz/"
+    head = "---\ngenerated_by: llm_wiki\ngenerated: 2026-09-19 12:21\n---\n"
+    files = {base + "raw/books.md": FIX_SOURCES[0][1], base + "raw/as.md": FIX_SOURCES[1][1],
+             base + "wiki/a.md": head + "\n" + FIX_PAGE,
+             base + "wiki/b.md": head + "\n# B [source: as.md]\n",
+             base + "wiki/hand.md": "# Hand written, 1234 [source: books.md]\n"}
+    put = {}
+    monkeypatch.setattr(w, "_ls", lambda pre: [p for p in files if p.startswith(pre)])
+    monkeypatch.setattr(w, "_get", files.__getitem__)
+    monkeypatch.setattr(w, "_put", put.__setitem__)
+    good = FIX_PAGE.replace("69,940. [source: books.md]", "69,940. [source: as.md]")
+    assert w.fix_topic("biz", ask=lambda p, m: good, out=lambda s: None) == 1
+    assert put == {base + "wiki/a.md": head + "\n" + good.strip() + "\n"}
 
 
 def test_uncited_finds_a_source_no_page_cites():
