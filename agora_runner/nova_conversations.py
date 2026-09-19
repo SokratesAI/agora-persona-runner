@@ -644,6 +644,33 @@ def thread(conversation_id, limit=MAX_THREAD):
     }
 
 
+def delete_message(conversation_id, message_id):
+    """(ok, message). Delete one message from a thread, for good.
+
+    Issue #138: *"the ability to delete a single message."* Agora keeps
+    `DELETE /conversations/:id/messages/:messageId` on its public app for
+    exactly this (it survived the 09-19 route cull on purpose), and it
+    splices out that one message and nothing after it. Irreversible, like
+    `remove`, so the page asks first.
+
+    The one side effect worth knowing, and the page says it: the runner
+    answers a thread whose newest visible message is his, so deleting the
+    answer under his last question makes that question unanswered again.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    if not message_id:
+        return False, "which message?"
+    status, _body = agora_public(
+        "DELETE", f"/conversations/{conversation_id}/messages/{message_id}")
+    if status not in (200, 204):
+        log(f"nova_conversations: message delete failed HTTP {status}")
+        if status == 404:
+            return False, "that message is already gone"
+        return False, "could not delete the message"
+    return True, "deleted"
+
+
 def send(conversation_id, text):
     """(ok, message). `message` is for his screen on failure."""
     if not conversation_id:

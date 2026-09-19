@@ -77,6 +77,9 @@
         return d.askRetryButton(props.conversationId, retry.question, retry.afterSend);
       });
     }
+    if (!m.partial && m.id && props.conversationId && window.novaDeleteButton) {
+      actions.push(function () { return window.novaDeleteButton(props.conversationId, m); });
+    }
     function more() {
       d.openMessageActions(actions.map(function (make) { return make(); }));
     }

@@ -426,6 +426,31 @@ def test_delete_without_an_id_calls_nothing():
     assert calls == []
 
 
+def test_delete_message_deletes_that_one_message_on_the_public_app():
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.delete_message("c-1", "m-7")
+    assert (ok, message) == (True, "deleted")
+    assert calls == [("PUBLIC", "DELETE", "/conversations/c-1/messages/m-7", None)]
+
+
+def test_delete_message_without_both_ids_calls_nothing():
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        assert convs.delete_message("", "m-7")[0] is False
+        assert convs.delete_message("c-1", "")[0] is False
+    assert calls == []
+
+
+def test_delete_message_says_a_404_is_already_gone():
+    _get, internal, public, _calls = _manage_fakes(status=404)
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        assert convs.delete_message("c-1", "m-7") == (False, "that message is already gone")
+
+
 def test_folder_create_accepts_the_200_that_means_it_already_existed():
     _get, internal, public, calls = _manage_fakes(
         status=200, body={"folder": {"id": "f-1"}})

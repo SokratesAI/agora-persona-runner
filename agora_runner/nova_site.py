@@ -224,6 +224,7 @@ from agora_runner.nova_conversations import (
     remove as conversation_remove,
     rename as conversation_rename,
     cancel as conversation_cancel,
+    delete_message as conversation_delete_message,
     stop_marcus,
     send as conversation_send,
     set_model as conversation_set_model,
@@ -6685,7 +6686,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/conversations/autotitle", "/api/conversations/retitle",
             "/api/conversations/mute", "/api/conversations/style",
             "/api/conversations/move", "/api/conversations/delete",
-            "/api/conversations/archive",
+            "/api/conversations/archive", "/api/conversations/message/delete",
             "/api/conversations/folder", "/api/conversations/model",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
             "/api/marcus/stop",
@@ -6783,6 +6784,12 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/model":
             self._post_conversation_model(payload)
+            return
+        if path == "/api/conversations/message/delete":
+            self._conversation_write(
+                payload, conversation_delete_message, "message delete",
+                ("which conversation", "which message", "that message is already gone"),
+                lambda p: (p.get("conversationId"), p.get("messageId")))
             return
         if path == "/api/conversations/delete":
             self._post_conversation_delete(payload)

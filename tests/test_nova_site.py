@@ -6476,3 +6476,25 @@ def test_a_raising_cost_ledger_leaves_the_health_line_standing():
     assert health["concerns"] == [
         "the cost ledger carries no quota reading, so I cannot say what the week has spent"
     ]
+
+
+def test_message_delete_route_passes_both_ids_and_answers_ok(monkeypatch):
+    seen = []
+    monkeypatch.setattr(nova_site, "conversation_delete_message",
+                        lambda c, m: seen.append((c, m)) or (True, "deleted"))
+    monkeypatch.setattr(nova_site, "audit", lambda *a, **k: None)
+    status, _head, body = _post("/api/conversations/message/delete",
+                                {"conversationId": "c-1", "messageId": "m-7"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    assert seen == [("c-1", "m-7")]
+
+
+def test_message_delete_route_says_a_missing_message_is_his_400(monkeypatch):
+    monkeypatch.setattr(nova_site, "conversation_delete_message",
+                        lambda c, m: (False, "that message is already gone"))
+    monkeypatch.setattr(nova_site, "audit", lambda *a, **k: None)
+    status, _head, body = _post("/api/conversations/message/delete",
+                                {"conversationId": "c-1", "messageId": "m-7"})
+    assert status == 400
+    assert json.loads(body)["message"] == "that message is already gone"
