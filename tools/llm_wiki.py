@@ -422,25 +422,47 @@ def write_pages(topic, sources, outline, model, ask=None, placement=None):
     return pages
 
 
-def plan(topic, sources, keep, model, out=print, ask=None):
+def dropped(outline_output, keep):
+    """Pages the last run wrote that this plan does not name, sorted."""
+    named = {m.group(1) for m in OUTLINE_RE.finditer(outline_output)}
+    return sorted(set(keep) - named)
+
+
+def plan(topic, sources, keep, model, out=print, ask=None, hold=False):
     """The outline and which sources each page uses.
 
     A plan that leaves a source on no page is asked again once, naming the
     source; a second miss refuses the run rather than quietly dropping it.
+    With `hold`, a plan that drops a page in `keep` is treated the same way:
+    the prompt already asks to keep them and Haiku ignored it on 09-19,
+    deleting running-a-business's business-structures.md while all its
+    sources were still in raw/. `run` sets `hold` only when no source the
+    last build used is gone, which is the one case the prompt allows a drop.
     """
     ask = ask or ask_model
     names = [n for n, _ in sources]
+    held = keep if hold else ()
     prompt = build_plan_prompt(topic, sources, keep)
     output = ask(prompt, model)
     missing = unplaced(parse_placement(output, names), names)
-    if missing:
-        out(f"plan left {', '.join(missing)} on no page; asking again")
-        output = ask(prompt + "\nYour last plan put these sources on no page: " + ", ".join(missing)
-                     + ". List every source on at least one page this time, adding a page if needed.\n"
-                     + "Your last plan was:\n" + output, model)
+    lost = dropped(output, held)
+    if missing or lost:
+        notes = []
+        if missing:
+            out(f"plan left {', '.join(missing)} on no page; asking again")
+            notes.append("Your last plan put these sources on no page: " + ", ".join(missing)
+                         + ". List every source on at least one page this time, adding a page if needed.")
+        if lost:
+            out(f"plan dropped existing page(s) {', '.join(lost)}; asking again")
+            notes.append("Your last plan dropped these existing pages, whose sources are all still here: "
+                         + ", ".join(lost) + ". Keep every one of them under the same name.")
+        output = ask(prompt + "\n" + "\n".join(notes) + "\nYour last plan was:\n" + output, model)
         missing = unplaced(parse_placement(output, names), names)
         if missing:
             raise WikiError(f"plan put {', '.join(missing)} on no page, twice")
+        lost = dropped(output, held)
+        if lost:
+            raise WikiError(f"plan dropped {', '.join(lost)}, twice; nothing written")
     return parse_outline(output), parse_placement(output, names)
 
 
@@ -466,7 +488,9 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     keep = stale_pages(existing, {})  # every generated page, since nothing is written yet
     out(f"{len(sources)} source(s), {size:,} characters -> {model}")
     names = [n for n, _ in sources]
-    outline, placement = plan(topic, sources, keep, model, out)
+    _, built_from = front_sources(existing.get("index.md", ""))
+    hold = bool(built_from) and set(built_from) <= set(names)
+    outline, placement = plan(topic, sources, keep, model, out, hold=hold)
     out(f"outline: {len(outline)} page(s) -- {', '.join(n for n, _, _ in outline)}")
     pages = write_pages(topic, sources, outline, model, placement=placement)
     missing = uncited(names, pages)

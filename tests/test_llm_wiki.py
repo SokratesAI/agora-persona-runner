@@ -252,3 +252,31 @@ def test_run_stale_rebuilds_only_stale_topics_and_counts_failures(monkeypatch):
     assert built == ["old"]
     assert "fresh: current" in lines
     assert any(l.startswith("broken: FAILED") for l in lines)
+
+
+def test_plan_holds_an_existing_page_the_model_dropped_then_refuses():
+    prompts = []
+
+    def ask(prompt, model):
+        prompts.append(prompt)
+        return PLAN
+
+    with pytest.raises(w.WikiError, match="dropped structures.md, twice"):
+        w.plan("biz", [("a.md", "x")], ["index.md", "hiring.md", "structures.md"], "m",
+               out=lambda s: None, ask=ask, hold=True)
+    assert len(prompts) == 2 and "dropped these existing pages" in prompts[1]
+    assert "structures.md" in prompts[1]
+
+
+def test_plan_accepts_a_second_plan_that_keeps_the_page():
+    answers = iter([PLAN, PLAN + "PAGE: structures.md | Structures | AS or ENK | a.md\n"])
+    outline, _ = w.plan("biz", [("a.md", "x")], ["index.md", "structures.md"], "m",
+                        out=lambda s: None, ask=lambda p, m: next(answers), hold=True)
+    assert "structures.md" in [n for n, _, _ in outline]
+
+
+def test_plan_without_hold_may_drop_a_page():
+    calls = []
+    outline, _ = w.plan("biz", [("a.md", "x")], ["index.md", "structures.md"], "m",
+                        out=lambda s: None, ask=lambda p, m: calls.append(p) or PLAN)
+    assert len(calls) == 1 and "structures.md" not in [n for n, _, _ in outline]
