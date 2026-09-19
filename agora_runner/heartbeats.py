@@ -449,6 +449,34 @@ def nova_health_note(persona, previous_run_at, schedule=None):
     )
 
 
+#: How long a run waits for Agora to come back before giving up on it. Agora
+#: deploys with Recreate, so a rollout is a window with no pod at all; 1837's
+#: conversation was created 2m45s before the new ReplicaSet appeared.
+ROTATED_FETCH_ATTEMPTS = 20
+ROTATED_FETCH_WAIT_SECONDS = 15
+
+
+def _fetch_rotated_detail(conversation_id):
+    """The new conversation's detail, retried across an Agora restart.
+
+    Only a connection-level failure (OSError, which URLError is) is retried;
+    an HTTP status is an answer and is returned as before. The last failure
+    re-raises into `run_heartbeat`'s handler, so a run that still cannot
+    reach Agora after five minutes is recorded rather than silent.
+    """
+    path = f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}"
+    for attempt in range(1, ROTATED_FETCH_ATTEMPTS + 1):
+        try:
+            _status, detail = agora_get(path)
+            return detail
+        except (OSError, HTTPException) as e:
+            if attempt == ROTATED_FETCH_ATTEMPTS:
+                raise
+            log(f"rotated conversation fetch failed ({e!r}), attempt {attempt}; "
+                f"retrying in {ROTATED_FETCH_WAIT_SECONDS}s")
+            time.sleep(ROTATED_FETCH_WAIT_SECONDS)
+
+
 def run_heartbeat(heartbeat):
     # Read BEFORE the claim PATCH below overwrites it: this is the
     # previous run's timestamp, and it is the boundary
@@ -544,8 +572,12 @@ def run_heartbeat(heartbeat):
     previous_detail = detail
     conversation_id = rotate_cycle_conversation(heartbeat, detail.get("personas") or [])
     rotated = conversation_id != heartbeat["conversationId"]
-    if rotated:
-        _status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
+    # The re-fetch for a rotated conversation moved into the `try` below
+    # (`_fetch_rotated_detail`). Cycles 1832 and 1837 (2026-09-18) died here:
+    # each conversation was created, and Agora -- a Recreate Deployment --
+    # was replaced 25s and 2m45s later. `http_json` catches HTTPError only,
+    # so a refused connection raised URLError on this bare line and the
+    # thread died with no chip, no `lastResult` and no stub marker.
 
     # `result`/`silent`/`started_at` and the `try` start HERE, immediately
     # after the conversation exists, and not further down at the model call.
@@ -573,6 +605,8 @@ def run_heartbeat(heartbeat):
     silent = False
     started_at = time.monotonic()
     try:
+        if rotated:
+            detail = _fetch_rotated_detail(conversation_id)
         # 2026-08-05, the owner: "The times when you start will not always be exactly
         # 6 hours as I often manually trigger you to start when i see that we have
         # a lot of token quota left. Maybe a good idea to you is to add to the
