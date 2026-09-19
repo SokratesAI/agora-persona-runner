@@ -110,6 +110,11 @@ import sys
 import tempfile
 import urllib.request
 
+# Repo root on sys.path so `python3 tools/eol_watch.py` works and not only
+# `-m`. See tests/test_tools_run_as_scripts.py.
+import pathlib as _pathlib  # noqa: E402
+sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 from tools.pin_drift import _tree, read_file
 from tools.running_images import (_run, classify, normalise, read_workloads,
                                   split_ref)
