@@ -141,6 +141,24 @@ def test_page_prompt_names_the_sources_it_must_cite():
     assert "must use" not in w.build_page_prompt("biz", [("a.md", "x")], OUTLINE, "costs.md")
 
 
+def test_miscited_names_a_number_the_cited_source_does_not_hold():
+    sources = [("books.md", "Keep records 5 years."), ("as.md", "A fee of up to NOK 69,940.")]
+    pages = {"n.md": "Keep records for 5 years. [source: books.md]\n\n"
+                     "The fee can be NOK 69 940. [source: books.md]\n\n"
+                     "Illustrative: NOK 134,160 after tax. [source: as.md]"}
+    assert w.miscited(sources, pages) == [
+        ("n.md", "69 940", ["books.md"], ["as.md"]),
+        ("n.md", "134,160", ["as.md"], []),
+    ]
+
+
+def test_miscited_accepts_a_number_any_cited_source_holds_and_ignores_lists():
+    sources = [("a.md", "In 2008 it grew."), ("b.md", "Scores 2, 4, 4, 5.")]
+    pages = {"p.md": "It grew in 2008 [source: b.md, a.md]; scores were 2, 4, 4, 5. [source: b.md]",
+             "q.md": "Uncited 999 is not judged."}
+    assert w.miscited(sources, pages) == []
+
+
 def test_uncited_finds_a_source_no_page_cites():
     pages = {"index.md": "x [source: a.md] y [source: b.md, old-a.md]"}
     assert w.uncited(["a.md", "b.md", "norway.md", "c.md"], pages) == ["norway.md", "c.md"]
