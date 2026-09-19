@@ -146,3 +146,91 @@ def test_uncited_finds_a_source_no_page_cites():
     assert w.uncited(["a.md", "b.md", "norway.md", "c.md"], pages) == ["norway.md", "c.md"]
     # a name that is only a suffix of a cited one is not cited
     assert w.uncited(["a.md"], {"p": "[source: old-a.md]"}) == ["a.md"]
+
+
+INDEX = """---
+generated_by: llm_wiki
+model: claude-haiku-4-5
+generated: 2026-09-19 12:21
+sources:
+  - a.md
+  - b.md
+---
+
+# Topic
+"""
+
+
+def test_front_sources_reads_stamp_and_sources():
+    assert w.front_sources(INDEX) == ("2026-09-19 12:21", ["a.md", "b.md"])
+
+
+def test_topic_is_current_when_raw_did_not_change_since_the_stamp():
+    assert w.why_stale(INDEX, ["a.md", "b.md"], [("2026-09-19 12:20", "a.md")]) is None
+
+
+def test_a_file_dropped_in_raw_after_the_build_makes_it_stale():
+    why = w.why_stale(INDEX, ["a.md", "b.md", "c.md"], [("2026-09-19 18:30", "c.md")])
+    assert "c.md" in why
+
+
+def test_a_new_file_in_the_stamp_minute_counts():
+    assert "c.md" in w.why_stale(INDEX, ["a.md", "b.md", "c.md"], [("2026-09-19 12:21", "c.md")])
+
+
+def test_a_built_source_written_in_the_stamp_minute_does_not_rebuild_again():
+    # measured Cycle 1886: sources put at 18:39, build stamped 18:39, next run rebuilt
+    assert w.why_stale(INDEX, ["a.md", "b.md"], [("2026-09-19 12:21", "b.md")]) is None
+
+
+def test_a_source_gone_from_raw_makes_it_stale():
+    assert "b.md" in w.why_stale(INDEX, ["a.md"], [])
+
+
+def test_no_index_or_no_stamp_is_stale():
+    assert w.why_stale(None, ["a.md"], []) == "no wiki yet"
+    assert w.why_stale(INDEX.replace("generated: 2026-09-19 12:21\n", ""), ["a.md", "b.md"], [])
+
+
+def test_raw_changes_parses_recent_and_keeps_deletions(monkeypatch):
+    base = w.ROOT + "t/"
+    out = ("[2 file(s) modified in the last 8h]\n"
+           f"2026-09-19 18:30  {base}raw/new file.md\n"
+           f"2026-09-19 18:31  {base}raw/old.md  [DELETED]\n")
+    seen = {}
+
+    def fake(*args):
+        seen["args"] = args
+        return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+
+    monkeypatch.setattr(w, "_vault", fake)
+    now = w.datetime(2026, 9, 19, 18, 40, tzinfo=w.OSLO)
+    got = w.raw_changes(base, "2026-09-19 12:21", now=now)
+    assert got == [("2026-09-19 18:30", "new file.md"), ("2026-09-19 18:31", "old.md")]
+    assert seen["args"] == ("recent", "8", f"{base}raw/")
+
+
+def test_raw_changes_refuses_an_incomplete_listing(monkeypatch):
+    monkeypatch.setattr(w, "_vault", lambda *a: type("R", (), {
+        "returncode": 0, "stdout": "[INCOMPLETE: capped]\n", "stderr": ""})())
+    with pytest.raises(w.WikiError):
+        w.raw_changes(w.ROOT + "t/", "2026-09-19 12:21")
+
+
+def test_run_stale_rebuilds_only_stale_topics_and_counts_failures(monkeypatch):
+    monkeypatch.setattr(w, "topics", lambda: ["fresh", "old", "broken"])
+    verdicts = {"fresh": None, "old": "raw/ changed", "broken": "no wiki yet"}
+    monkeypatch.setattr(w, "check_topic", lambda t: verdicts[t])
+    built = []
+
+    def fake_run(topic, model, out=print):
+        if topic == "broken":
+            raise w.WikiError("no text sources")
+        built.append(topic)
+
+    monkeypatch.setattr(w, "run", fake_run)
+    lines = []
+    assert w.run_stale(out=lines.append) == 1
+    assert built == ["old"]
+    assert "fresh: current" in lines
+    assert any(l.startswith("broken: FAILED") for l in lines)
