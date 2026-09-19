@@ -28,6 +28,11 @@ view, three at a time. A single call for the whole wiki came out at about
 textbook depth the owner asked for; a page to itself can go as deep as
 its sources.
 
+Every source has to end up cited on some page. The plan names the sources
+each page draws on and is asked again once if it leaves one out; the page
+call is told which sources it must cite; and a run where a source is still
+cited nowhere is refused before anything is written.
+
 The raw files stay the source of truth. Every generated page carries
 `generated_by: llm_wiki` in its frontmatter, and a regeneration deletes the
 generated pages it did not write again -- so a page that lost its source
@@ -71,8 +76,9 @@ PLAN_INSTRUCTIONS = """You are planning a wiki from raw research sources. Do not
 
 List the pages the wiki should have: as many as the sources can fill with real depth, between 4 and 14. One must be index.md, the overview.
 Name pages in lowercase with hyphens, ending in .md.
+Every source file must be listed on at least one page. If a source fits no page, add a page for it.
 Output ONLY one line per page, exactly in this form, and nothing else:
-PAGE: <name>.md | <title> | <one sentence on what the page covers>
+PAGE: <name>.md | <title> | <one sentence on what the page covers> | <the source files it draws on, comma-separated>
 
 The topic is: {topic}
 
@@ -82,7 +88,7 @@ The sources follow, each starting with a line "--- SOURCE: <file> ---".
 PAGE_INSTRUCTIONS = """You are writing ONE page of a wiki from raw research sources: {page} ("{title}"), which covers: {scope}
 
 Go as deep as the sources allow, like a textbook chapter: definitions, how it works, worked examples, trade-offs and common mistakes, wherever the sources support them. Do not repeat what belongs on another page; link to it as [[page-name]] instead.
-""" + SHARED_RULES + """{index_rule}
+""" + SHARED_RULES + """{index_rule}{must_use}
 Output ONLY the page body in markdown, starting with a # title line.
 
 The whole wiki is these pages:
@@ -95,7 +101,10 @@ The sources follow, each starting with a line "--- SOURCE: <file> ---".
 
 INDEX_RULE = "- This is the index page: a short overview of the topic, then every other page as a [[page-name]] link with one line on what it covers."
 
-OUTLINE_RE = re.compile(r"^PAGE:\s*([a-z0-9][a-z0-9-]*\.md)\s*\|\s*([^|]+?)\s*\|\s*(.+?)\s*$", re.M)
+OUTLINE_RE = re.compile(
+    r"^PAGE:\s*([a-z0-9][a-z0-9-]*\.md)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*(?:\|\s*(.*?)\s*)?$", re.M)
+
+CITE_RE = re.compile(r"\[source:([^\]]*)\]")
 
 #: How many page calls run at once. Each is one `claude -p` process on the
 #: bridge pod; three keeps a five-wiki run to minutes without crowding it.
@@ -152,7 +161,34 @@ def parse_outline(output):
     return sorted(outline, key=lambda row: row[0] != "index.md")
 
 
-def build_page_prompt(topic, sources, outline, page):
+def parse_placement(output, names):
+    """{page: [source files]} from the plan's fourth field, known names only.
+
+    A name the model invented is dropped rather than trusted, so it can
+    never stand in for a real source that went unplaced.
+    """
+    known = set(names)
+    return {m.group(1): [f for f in re.split(r"[,\s]+", m.group(4) or "") if f in known]
+            for m in OUTLINE_RE.finditer(output)}
+
+
+def unplaced(placement, names):
+    """Sources the plan put on no page, in source order."""
+    placed = {f for files in placement.values() for f in files}
+    return [n for n in names if n not in placed]
+
+
+def uncited(names, pages):
+    """Sources no written page cites as [source: <file>], in source order.
+
+    This is the check that matters: Cycle 1871's rebuild left
+    norway-employer-obligations.md on no page, and nothing said so.
+    """
+    cited = " ".join(c for body in pages.values() for c in CITE_RE.findall(body))
+    return [n for n in names if not re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-])", cited)]
+
+
+def build_page_prompt(topic, sources, outline, page, must_use=()):
     """One page's prompt: every source whole, plus the outline to link into.
 
     Each page gets the whole source set rather than a slice the plan picked,
@@ -163,7 +199,9 @@ def build_page_prompt(topic, sources, outline, page):
     listing = "\n".join(f"- [[{n[:-3]}]] {t}: {s}" for n, t, s in outline)
     head = PAGE_INSTRUCTIONS.format(
         page=name, title=title, scope=scope, topic=topic, outline=listing,
-        index_rule=INDEX_RULE if name == "index.md" else "")
+        index_rule=INDEX_RULE if name == "index.md" else "",
+        must_use=("\n- This page must use and cite each of these sources: " + ", ".join(must_use))
+        if must_use else "")
     return head + "\n" + _sources_block(sources)
 
 
@@ -230,7 +268,7 @@ def ask_model(prompt, model):
     return r.stdout
 
 
-def write_pages(topic, sources, outline, model, ask=None):
+def write_pages(topic, sources, outline, model, ask=None, placement=None):
     """One model call per page, a few at a time; {page: body} in outline order.
 
     Any page failing or coming back empty fails the whole run, so a wiki is
@@ -239,13 +277,36 @@ def write_pages(topic, sources, outline, model, ask=None):
     ask = ask or ask_model
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         bodies = pool.map(
-            lambda row: ask(build_page_prompt(topic, sources, outline, row[0]), model).strip(),
+            lambda row: ask(build_page_prompt(topic, sources, outline, row[0],
+                                              (placement or {}).get(row[0], ())), model).strip(),
             outline)
         pages = dict(zip((n for n, _, _ in outline), bodies))
     for name, body in pages.items():
         if not body:
             raise WikiError(f"model wrote {name} empty")
     return pages
+
+
+def plan(topic, sources, keep, model, out=print, ask=None):
+    """The outline and which sources each page uses.
+
+    A plan that leaves a source on no page is asked again once, naming the
+    source; a second miss refuses the run rather than quietly dropping it.
+    """
+    ask = ask or ask_model
+    names = [n for n, _ in sources]
+    prompt = build_plan_prompt(topic, sources, keep)
+    output = ask(prompt, model)
+    missing = unplaced(parse_placement(output, names), names)
+    if missing:
+        out(f"plan left {', '.join(missing)} on no page; asking again")
+        output = ask(prompt + "\nYour last plan put these sources on no page: " + ", ".join(missing)
+                     + ". List every source on at least one page this time, adding a page if needed.\n"
+                     + "Your last plan was:\n" + output, model)
+        missing = unplaced(parse_placement(output, names), names)
+        if missing:
+            raise WikiError(f"plan put {', '.join(missing)} on no page, twice")
+    return parse_outline(output), parse_placement(output, names)
 
 
 def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
@@ -268,11 +329,14 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     existing = {p[len(f"{base}wiki/"):]: _get(p) for p in _ls(f"{base}wiki/")}
     keep = stale_pages(existing, {})  # every generated page, since nothing is written yet
     out(f"{len(sources)} source(s), {size:,} characters -> {model}")
-    outline = parse_outline(ask_model(build_plan_prompt(topic, sources, keep), model))
-    out(f"outline: {len(outline)} page(s) -- {', '.join(n for n, _, _ in outline)}")
-    pages = write_pages(topic, sources, outline, model)
-    when = datetime.now(OSLO).strftime("%Y-%m-%d %H:%M")
     names = [n for n, _ in sources]
+    outline, placement = plan(topic, sources, keep, model, out)
+    out(f"outline: {len(outline)} page(s) -- {', '.join(n for n, _, _ in outline)}")
+    pages = write_pages(topic, sources, outline, model, placement=placement)
+    missing = uncited(names, pages)
+    if missing:
+        raise WikiError(f"no page cites {', '.join(missing)}; nothing written")
+    when = datetime.now(OSLO).strftime("%Y-%m-%d %H:%M")
     if dry_run:
         for name, body in pages.items():
             out(f"=== {base}wiki/{name} ===\n{render_page(body, model, names, when)}")
