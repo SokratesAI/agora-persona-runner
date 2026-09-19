@@ -14,6 +14,7 @@ The folder is in the owner's Obsidian vault on purpose (it is not under a
     python3 -m tools.llm_wiki <topic>             # regenerate wiki/ from raw/
     python3 -m tools.llm_wiki <topic> --dry-run   # print the pages, write nothing
     python3 -m tools.llm_wiki --stale             # regenerate only topics whose raw/ changed
+    python3 -m tools.llm_wiki <topic> --fix-citations  # repair miscited numbers in place
 
 Runs from the bridge pod: it needs `/app/bridge/vault_tool.py` and the
 `claude` CLI. The model is reached through that CLI, which is the flat
@@ -229,10 +230,12 @@ def miscited(sources, pages):
     """(page, number, cited files, files that do hold it) for each number a
     cited paragraph states that none of its cited sources contains.
 
-    Advisory: measured Cycle 1887, 6 of 208 such numbers across the six
-    wikis -- a real fact cited to the wrong file (NOK 69,940 is in the AS
-    source, cited to the bookkeeping one) and the model's own worked
-    examples cited as if a source said them.
+    Measured Cycle 1887, 6 of 208 such numbers across the six wikis -- a
+    real fact cited to the wrong file (NOK 69,940 is in the AS source, cited
+    to the bookkeeping one) and the model's own worked examples cited as if
+    a source said them. A paragraph cited `derived from` says it computed
+    its numbers, so one there that no source holds is its result, not a
+    miscitation; one another source holds is still the wrong file.
     """
     text = {name: _plain(body) for name, body in sources}
     found = []
@@ -241,12 +244,66 @@ def miscited(sources, pages):
             cites = cited_files(para)
             if not cites:
                 continue
+            derived = any(re.match(r"\s*derived from\b", t, re.I) for t in CITE_RE.findall(para))
             for raw in dict.fromkeys(NUMBER_RE.findall(CITE_RE.sub("", para))):
                 n = _plain(raw)
                 if len(n) < 3 or any(n in text.get(c, "") for c in cites):
                     continue
-                found.append((page, raw, cites, [k for k, v in text.items() if n in v]))
+                holders = [k for k, v in text.items() if n in v]
+                if derived and not holders:
+                    continue
+                found.append((page, raw, cites, holders))
     return found
+
+
+FIX_INSTRUCTIONS = """Below is one page of a wiki, then the raw sources it was written from. A check found numbers on the page that the source files cited beside them do not contain:
+{findings}
+
+Rewrite the page to fix exactly these, and change nothing else:
+- If another source holds the number, cite that source for it instead.
+- If the number is a rounding or a calculation from source numbers, say so in the sentence and cite it as [source: derived from <files>].
+- If no source supports it, remove the number, or the claim if it only stands on that number.
+Output ONLY the whole corrected page body in markdown, starting with its # title line.
+
+--- PAGE: {page} ---
+{body}
+
+The sources follow, each starting with a line "--- SOURCE: <file> ---".
+"""
+
+
+def fix_miscited(sources, pages, model, ask=None, out=print):
+    """{page: body} with each page that has miscited numbers re-asked once.
+
+    The rewrite is kept only when it has fewer findings than the page it
+    replaces, is at least 80% of its length and leaves no source uncited
+    that was cited before -- so a repair can only improve a page, never cut
+    it short. Cycle 1892: 8 findings over four wikis, all real (a "2008"
+    gaming study that was the Obama campaign's year in another file, an
+    invented CPI of 1.247, three right facts cited to the wrong file).
+    """
+    ask = ask or ask_model
+    names = [n for n, _ in sources]
+    by_page = {}
+    for page, number, cites, holders in miscited(sources, pages):
+        by_page.setdefault(page, []).append(
+            f"- {number}: cited to {', '.join(cites)}; "
+            + (f"it is in {', '.join(holders)}" if holders else "no source has it"))
+    fixed = dict(pages)
+    for page, lines in by_page.items():
+        body = pages[page]
+        prompt = FIX_INSTRUCTIONS.format(findings="\n".join(lines), page=page, body=body)
+        new = ask(prompt + "\n" + _sources_block(sources), model).strip()
+        trial = dict(fixed, **{page: new})
+        left = sum(1 for f in miscited(sources, {page: new}))
+        if (new and left < len(lines) and len(new) >= 0.8 * len(body)
+                and not set(uncited(names, trial)) - set(uncited(names, fixed))):
+            fixed[page] = new
+            out(f"fixed citations: {page} {len(lines)} -> {left}")
+        else:
+            out(f"kept {page}: the rewrite left {left} of {len(lines)} and was "
+                f"{len(new):,} of {len(body):,} characters")
+    return fixed
 
 
 def build_page_prompt(topic, sources, outline, page, must_use=()):
@@ -524,6 +581,7 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     outline, placement = plan(topic, sources, keep, model, out, hold=hold, existing=existing)
     out(f"outline: {len(outline)} page(s) -- {', '.join(n for n, _, _ in outline)}")
     pages = write_pages(topic, sources, outline, model, placement=placement)
+    pages = fix_miscited(sources, pages, model, out=out)
     missing = uncited(names, pages)
     if missing:
         raise WikiError(f"no page cites {', '.join(missing)}; nothing written")
@@ -544,6 +602,32 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     return pages
 
 
+def fix_topic(topic, model=DEFAULT_MODEL, out=print, ask=None):
+    """Repair the miscited numbers on a topic's written pages, in place.
+
+    For a wiki built before the repair pass existed: the pages keep their
+    frontmatter, so the `generated:` stamp and `--stale` are unaffected.
+    Returns how many pages were rewritten.
+    """
+    base = f"{ROOT}{topic}/"
+    sources = [(p[len(f"{base}raw/"):], _get(p)) for p in sorted(_ls(f"{base}raw/"))]
+    sources = [(n, b) for n, b in sources if is_text(b)]
+    heads, bodies = {}, {}
+    for path in _ls(f"{base}wiki/"):
+        text = _get(path)
+        if MARKER not in text.split("\n---", 1)[0]:
+            continue
+        head, _, body = text.partition("\n---\n")
+        name = path[len(f"{base}wiki/"):]
+        heads[name], bodies[name] = head + "\n---\n", body
+    fixed = fix_miscited(sources, bodies, model, ask=ask, out=out)
+    changed = [n for n in fixed if fixed[n] != bodies[n]]
+    for name in changed:
+        _put(f"{base}wiki/{name}", heads[name] + "\n" + fixed[name] + "\n")
+        out(f"wrote {base}wiki/{name}")
+    return len(changed)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("topic", nargs="?")
@@ -551,7 +635,14 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--stale", action="store_true",
                    help="rebuild only topics whose raw/ changed since their last build")
+    p.add_argument("--fix-citations", action="store_true",
+                   help="re-ask each written page that cites a number to the wrong source")
     a = p.parse_args(argv)
+    if a.fix_citations:
+        if not a.topic:
+            p.error("--fix-citations needs a topic")
+        fix_topic(a.topic, a.model)
+        return 0
     if a.stale:
         if a.dry_run:
             p.error("--stale writes; it has no --dry-run")
