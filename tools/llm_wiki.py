@@ -209,6 +209,22 @@ def _plain(text):
     return re.sub(r"(?<=\d)[,. ](?=\d{3}(?!\d))", "", text)
 
 
+def cited_files(para):
+    """The file names a paragraph's [source: ...] tags name, first-seen order.
+
+    Pages write more than a comma list: "derived from a.md and b.md" read as
+    one file name, so on the 09-19 business-finance rebuild 20 of 21
+    miscited lines were numbers the named files do hold.
+    """
+    names = []
+    for tag in CITE_RE.findall(para):
+        for part in re.split(r",|;|\s+and\s+", tag):
+            name = re.sub(r"^\s*derived from\s+", "", part, flags=re.I).strip()
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
 def miscited(sources, pages):
     """(page, number, cited files, files that do hold it) for each number a
     cited paragraph states that none of its cited sources contains.
@@ -222,7 +238,7 @@ def miscited(sources, pages):
     found = []
     for page, body in pages.items():
         for para in re.split(r"\n\s*\n", body):
-            cites = [c.strip() for c in ",".join(CITE_RE.findall(para)).split(",") if c.strip()]
+            cites = cited_files(para)
             if not cites:
                 continue
             for raw in dict.fromkeys(NUMBER_RE.findall(CITE_RE.sub("", para))):
