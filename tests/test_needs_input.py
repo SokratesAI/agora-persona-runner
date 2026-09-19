@@ -47,6 +47,42 @@ class FakeAgora:
         return [c for c in self.calls if c[1].endswith("/notify")]
 
 
+class FakeListing:
+    """`agora_get` for the related-thread check: a live listing plus each
+    thread's messages. Empty by default, so a test about opening a thread is
+    not also a test about what else is live."""
+
+    def __init__(self, threads=(), status=200):
+        self.threads = list(threads)
+        self.status = status
+        self.paths = []
+
+    def __call__(self, path):
+        self.paths.append(path)
+        if path.startswith("/conversations?"):
+            rows = [{k: v for k, v in t.items() if k != "messages"} for t in self.threads]
+            return self.status, {"conversations": rows}
+        for t in self.threads:
+            if path.startswith(f"/conversations/{t['id']}/messages"):
+                return 200, {"messages": t.get("messages", [])}
+        raise AssertionError(f"unexpected GET {path}")
+
+
+@pytest.fixture(autouse=True)
+def listing(monkeypatch):
+    fake = FakeListing()
+    monkeypatch.setattr(needs_input, "agora_get", fake)
+    return fake
+
+
+def owner(text):
+    return {"sender": "Owner", "text": text}
+
+
+def mine(text):
+    return {"sender": needs_input.SENDER, "text": text}
+
+
 @pytest.fixture
 def agora(monkeypatch):
     fake = FakeAgora()
@@ -337,3 +373,110 @@ def test_a_401_opening_the_thread_names_the_pod(monkeypatch):
     assert ok is False
     assert "HTTP 401" in detail
     assert "no AGORA_TOKEN" in detail
+
+
+# -- issues.md #234: a topic already live elsewhere is not forked ------------
+
+GVISOR_Q = "Yes or no, may I merge platform-config#780 for gVisor on server2?"
+
+
+def test_a_shared_reference_is_a_match_on_its_own():
+    assert needs_input.related_score(GVISOR_Q, "about platform-config#780") >= 100
+    assert needs_input.related_score(GVISOR_Q, "see #780 again") >= 100
+
+
+def test_a_different_number_is_not_a_match():
+    assert needs_input.related_score(GVISOR_Q, "platform-config#781 is merged") == 0
+
+
+def test_words_match_only_when_half_the_question_is_there():
+    q = "Should the allocation class of a project depend on its definition?"
+    assert needs_input.related_score(q, "allocation class definition of a project") >= 3
+    # two of five topic words is not the same topic
+    assert needs_input.related_score(q, "the project allocation went fine") == 0
+    wide = ("Should the allocation class of each project depend on its "
+            "definition, owner, milestone and budget?")
+    # three of eight is under half, however long the thread
+    assert needs_input.related_score(wide, "allocation class project") == 0
+    assert needs_input.related_score(wide, "allocation class project budget") >= 4
+
+
+def test_a_thread_he_wrote_in_refuses_the_new_thread(agora, listing):
+    listing.threads = [{"id": "t1", "name": "Manual feedback & improvements",
+                        "messages": [owner("Allocation class depends on the definition of a project")]}]
+    ok, info = needs_input.ask(
+        "Should the allocation class depend on the definition of a project?", "ctx")
+    assert not ok and [t["conversationId"] for t in info["related"]] == ["t1"]
+    assert agora.calls == []
+
+
+def test_my_replies_in_his_thread_do_not_count(agora, listing):
+    """Measured: my replies in a chat thread run to tens of KB and matched a
+    question about calendar colours by size alone."""
+    listing.threads = [{"id": "t1", "name": "Manual feedback & improvements",
+                        "messages": [owner("hi"), mine("Marcus calendar colour workout")]}]
+    ok, _ = needs_input.ask("Which colour should the Marcus workout calendar use?", "ctx")
+    assert ok
+
+
+def test_my_earlier_ask_counts_even_with_only_my_messages(agora, listing):
+    listing.threads = [{"id": "a1", "name": "Nova needs you — may I merge it?",
+                        "tags": [needs_input.NEEDS_INPUT_TAG],
+                        "messages": [mine("platform-config#780 installs gVisor")]}]
+    ok, info = needs_input.ask(GVISOR_Q, "ctx")
+    assert not ok and info["related"][0]["conversationId"] == "a1"
+
+
+def test_a_heartbeat_transcript_is_not_a_discussion(agora, listing):
+    listing.threads = [{"id": "h1", "name": "Nova — design",
+                        "messages": [mine("platform-config#780 gVisor server2")]},
+                       {"id": "c1", "name": "Nova — Cycle 1", "tags": ["evolve-cycle:x"],
+                        "messages": [owner("platform-config#780")]}]
+    ok, _ = needs_input.ask(GVISOR_Q, "ctx")
+    assert ok
+    assert not any("/c1/" in p for p in listing.paths)
+
+
+def test_activity_rows_are_not_read_as_text(agora, listing):
+    listing.threads = [{"id": "t1", "name": "chat", "messages": [
+        owner("hello"),
+        {"sender": "Owner", "text": "platform-config#780", "activity": {"capability": "x"}}]}]
+    ok, _ = needs_input.ask(GVISOR_Q, "ctx")
+    assert ok
+
+
+def test_the_same_question_is_still_the_dedup_path_not_a_refusal(agora, listing):
+    name = needs_input.conversation_name(GVISOR_Q)
+    listing.threads = [{"id": "conv-1", "name": name, "tags": [needs_input.NEEDS_INPUT_TAG],
+                        "messages": [mine(GVISOR_Q)]}]
+    agora.existing.add(name)
+    ok, info = needs_input.ask(GVISOR_Q, "ctx")
+    assert ok and info["repeat"]
+
+
+def test_an_unreadable_listing_refuses_rather_than_reading_as_none(agora, listing):
+    listing.status = 502
+    ok, info = needs_input.ask(GVISOR_Q, "ctx")
+    assert not ok and "--new-thread" in info
+    assert agora.calls == []
+
+
+def test_new_thread_skips_the_check(agora, listing):
+    listing.status = 502
+    ok, _ = needs_input.ask(GVISOR_Q, "ctx", new_thread=True)
+    assert ok and listing.paths == []
+
+
+def test_into_posts_into_the_named_thread_without_opening_one(agora, listing):
+    ok, info = needs_input.ask(GVISOR_Q, "ctx", into="t9")
+    assert ok and info["conversationId"] == "t9"
+    assert [c[1] for c in agora.calls] == ["/conversations/t9/notify"]
+    assert listing.paths == []
+
+
+def test_cli_names_the_related_thread_and_exits_4(agora, listing, capsys):
+    listing.threads = [{"id": "t1", "name": "Manual feedback & improvements",
+                        "messages": [owner("platform-config#780 worries me")]}]
+    code = needs_input.main(["--question", GVISOR_Q, "--context", "ctx"])
+    out = capsys.readouterr().out
+    assert code == 4 and "t1" in out and "Manual feedback" in out and "--into" in out

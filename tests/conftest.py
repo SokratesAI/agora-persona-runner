@@ -180,6 +180,20 @@ def _no_ask_push_log_writes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_related_thread_lookup(monkeypatch):
+    """No test's ask may list the real Agora's conversations.
+
+    `needs_input.ask` reads every live thread before opening one (issues.md
+    #234). Unpatched, a test would either reach the live store or refuse on
+    an unreadable listing. Everything gets an empty listing;
+    `tests/test_needs_input.py` puts its own over this.
+    """
+    from agora_runner import needs_input
+    monkeypatch.setattr(needs_input, "agora_get",
+                        lambda path: (200, {"conversations": []}))
+
+
+@pytest.fixture(autouse=True)
 def _no_lifecycle_writes(monkeypatch):
     """No test's `main()` may start the lifecycle ledger's vault write.
 
