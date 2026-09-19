@@ -141,12 +141,14 @@ def already_announced(silences, listing, raw_messages):
     for conversation in cycle_threads(listing):
         try:
             messages = raw_messages(conversation.get("id")) or []
-        except Exception:  # noqa: BLE001 -- unread means "not announced"
+        except Exception as error:  # noqa: BLE001 -- unread = "not announced"
+            log(f"reply notice: could not read {conversation.get('name')} "
+                f"to look for an earlier notice ({error})")
             continue
         for message in messages:
             if not message.get("system"):
                 continue
-            text = message.get("text") or message.get("content") or ""
+            text = message.get("text") or ""
             found |= by_heading.get(text.split("\n", 1)[0], set())
     return found
 

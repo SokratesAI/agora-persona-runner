@@ -164,13 +164,19 @@ def test_a_restart_does_not_push_a_cycle_agora_already_announced():
     assert _run(_restarted_watch(first, lambda cid: [])) == 1
     notice = {"sender": "Agora", "system": True, "text": first.sent[0][1]}
     again = Recorder()
-    agora = {"c1850": [notice]}
-    watch = _restarted_watch(again, lambda cid: agora.get(cid, []))
+    reads = []
+
+    def agora(cid):
+        reads.append(cid)
+        return [notice] if cid == "c1850" else []
+
+    watch = _restarted_watch(again, agora)
     assert _run(watch) == 0
     assert again.sent == []
+    assert reads == ["c1832", "c1850"]
     # and it is remembered, so the next check does not read Agora again
-    agora.clear()
     assert watch.tick(now=3 * reply_notice.REPLY_CHECK_SECONDS) == 0
+    assert reads == ["c1832", "c1850"]
 
 
 def test_the_notice_found_can_sit_in_the_silent_cycles_own_thread():
@@ -198,12 +204,17 @@ def test_a_notice_for_another_cycle_does_not_count():
     assert _run(_restarted_watch(post, lambda cid: [other])) == 1
 
 
-def test_an_agora_it_cannot_read_still_gets_the_push():
-    # Unread is "not announced": a duplicate, never silence.
+def test_an_agora_it_cannot_read_still_gets_the_push(monkeypatch):
+    # Unread is "not announced": a duplicate, never silence -- and it says so.
+    lines = []
+    monkeypatch.setattr(reply_notice, "log", lines.append)
+
     def broken(cid):
         raise RuntimeError("HTTP 502")
     post = Recorder()
     assert _run(_restarted_watch(post, broken)) == 1
+    assert any("could not read Cycle 1850" in line and "HTTP 502" in line
+               for line in lines)
 
 
 def test_the_live_raw_messages_read_agoras_own_list(monkeypatch):
