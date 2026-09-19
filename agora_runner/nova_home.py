@@ -180,8 +180,22 @@ QUOTA_LOW_REMAINING = 10.0
 #: me able to see it; the health line reads this document instead.
 PIN_READING_PATH = "projects/sokrates/projects/agora/nova/resources/cli-pin.json"
 
+#: Where `tools.eol_watch --publish` leaves the Kubernetes version each node
+#: runs and when its security support ends (idea #322). Both nodes sat three
+#: weeks past the end of 1.34's standard support with that fact visible only
+#: inside my own cycle's check output.
+NODE_VERSION_PATH = "projects/sokrates/projects/agora/nova/resources/node-versions.json"
 
-def health_block(status, alerts, quota, cadence_minutes, pin=None):
+#: How close to losing security support a node's Kubernetes may get before
+#: the health line names it. k3s upgrades one minor at a time, and falling
+#: two minors behind -- where 1.34 is today, with 1.36 current -- is two
+#: upgrades, each needing a node restart and a few days of watching. Two
+#: months is room for that; the 180 days `eol_watch` itself uses would keep
+#: the line lit for about half of every release's supported life.
+NODE_WARN_DAYS = 60
+
+
+def health_block(status, alerts, quota, cadence_minutes, pin=None, nodes=None):
     """The health line's facts (idea #274, step 3b of the landing page).
 
     His spec: *"One quiet line: cycle running, gaps in numbering, critical
@@ -247,6 +261,10 @@ def health_block(status, alerts, quota, cadence_minutes, pin=None):
     if pin_line:
         concerns.append(pin_line)
 
+    node_line = _node_concern(nodes)
+    if node_line:
+        concerns.append(node_line)
+
     seven_day, pace = _quota(quota)
     if seven_day is None:
         concerns.append("the cost ledger carries no quota reading, so I cannot say what the week has spent")
@@ -304,6 +322,37 @@ def _pin_concern(pin):
     age = ", published " + str(int(days)) + " days ago" if days is not None else ""
     return ("Claude Code is " + gap + ": on " + str(pin.get("subject") or "?")
             + age + ", newest " + str(pin.get("latest") or "?"))
+
+
+def _node_concern(nodes):
+    """One sentence when a node's Kubernetes is near or past the end of its
+    security support, else `None`.
+
+    `nodes` is the JSON `tools.eol_watch --publish` writes, and `warn` is its
+    verdict -- made there, because it needs today's date and this side has
+    none. The sentence carries the date rather than a count of days, so it
+    stays true however long the page has been cached. Nodes on one version
+    are named together: one upgrade, one line.
+    """
+    if not nodes:
+        return None
+    if nodes.get("error"):
+        return "I could not read the nodes' Kubernetes version: " + str(nodes["error"])
+    if not nodes.get("warn"):
+        return None
+    by_version = {}
+    for node in nodes.get("nodes") or []:
+        if node.get("securityEnds") and node.get("days", NODE_WARN_DAYS + 1) <= NODE_WARN_DAYS:
+            key = (node.get("kubelet") or "?", node["securityEnds"], node["days"] < 0)
+            by_version.setdefault(key, []).append(node.get("node") or "?")
+    parts = []
+    for (kubelet, ends, passed), names in sorted(by_version.items()):
+        parts.append(
+            "Kubernetes " + kubelet + " on " + " and ".join(names)
+            + (" lost security support on " if passed else " loses security support on ")
+            + ends
+        )
+    return "; ".join(parts) or None
 
 
 def _quota(row):

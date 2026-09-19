@@ -668,6 +668,8 @@ CHECK_ARGS = {
     # The fourth, idea #308: the pin gap was only ever read inside my own
     # turn. Publishing it puts it on the landing page's health line.
     "cli_pin": ["--publish"],
+    # The fifth, idea #322: the nodes' Kubernetes version, same route.
+    "eol_watch": ["--publish"],
 }
 
 

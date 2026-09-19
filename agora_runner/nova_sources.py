@@ -209,6 +209,12 @@ def cli_pin_json():
     return vault_read_path(PIN_READING_PATH) or ""
 
 
+def node_versions_json():
+    """`tools.eol_watch --publish`'s last node verdict, raw, or `""` if none yet."""
+    from agora_runner.nova_home import NODE_VERSION_PATH
+    return vault_read_path(NODE_VERSION_PATH) or ""
+
+
 def retro_ledger_json():
     """The Friday retrospective ledger, raw.
 
