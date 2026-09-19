@@ -474,3 +474,63 @@ def test_a_cycle_heartbeat_carrying_the_sentinel_gets_one_chip_not_two(runner):
 
     opening = [line for line in order if "every@18m" in line]
     assert len(opening) == 1, order
+
+
+def _run_with_agora_down(runner, failures):
+    """Rotate, then refuse the rotated conversation's re-fetch `failures`
+    times with the URLError a Recreate rollout of Agora produces."""
+    import urllib.error
+
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    fetches = {"rotated": 0}
+
+    def fake_agora_get(path):
+        if path.startswith(f"/conversations/{ROTATED_INTO}/"):
+            fetches["rotated"] += 1
+            if fetches["rotated"] <= failures:
+                raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        return 200, detail
+
+    patches = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == "/heartbeats/hb1":
+            patches.append(payload)
+        return 200, {}
+
+    with patch.object(runner.heartbeats, "fetch_persona",
+                      return_value=_nova_persona(runner)), \
+         patch.object(runner.heartbeats, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.heartbeats, "rotate_cycle_conversation",
+                      return_value=ROTATED_INTO), \
+         patch.object(runner.heartbeats, "nova_health_note", return_value=""), \
+         patch.object(runner.heartbeats, "generate_reply",
+                      side_effect=RuntimeError("reached the model")) as reply, \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
+         patch.object(runner.heartbeats, "audit", return_value=(200, "chip")), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      side_effect=fake_agora_internal), \
+         patch.object(runner.heartbeats.time, "sleep") as sleep, \
+         patch.object(cycle_stub, "write_stub") as stub:
+        runner.run_heartbeat(_nova_heartbeat())
+    return fetches["rotated"], reply, sleep, stub, patches
+
+
+def test_an_agora_restart_after_rotation_is_waited_out(runner):
+    """Cycles 1832 and 1837: Agora was replaced right after the conversation
+    was created, the re-fetch raised URLError on a bare line, and the thread
+    died with no record. Now the run waits for Agora and goes on to the model."""
+    fetched, reply, sleep, _stub, _patches = _run_with_agora_down(runner, failures=3)
+    assert fetched == 4
+    assert sleep.call_count == 3
+    assert reply.called, "the run never got past the re-fetch"
+
+
+def test_agora_that_never_comes_back_is_recorded_not_silent(runner):
+    fetched, reply, _sleep, stub, patches = _run_with_agora_down(
+        runner, failures=runner.heartbeats.ROTATED_FETCH_ATTEMPTS)
+    assert fetched == runner.heartbeats.ROTATED_FETCH_ATTEMPTS
+    assert not reply.called
+    assert stub.called
+    assert "URLError" in stub.call_args.args[0]
+    assert patches[-1]["lastResult"].startswith("failed:")
