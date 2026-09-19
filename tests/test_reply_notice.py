@@ -54,6 +54,7 @@ class Recorder:
 
 
 def _watch(conversations, threads, post, **kwargs):
+    kwargs.setdefault("raw_messages", lambda cid: [])
     return reply_notice.ReplyWatch(
         listing=lambda: {"conversations": conversations},
         fetch_thread=lambda cid: threads[cid],
@@ -149,6 +150,91 @@ def test_the_same_silent_cycle_is_only_ever_pushed_once():
     assert len(post.sent) == 1
 
 
+def _restarted_watch(post, raw_messages):
+    """A fresh process: empty memory, one silent cycle, Agora as given."""
+    return _watch([_conversation("Cycle 1832", 120, ident="c1832"),
+                   _conversation("Cycle 1850", 30, ident="c1850")],
+                  {"c1832": {"messages": [_narration("still going")]}},
+                  post, raw_messages=raw_messages)
+
+
+def test_a_restart_does_not_push_a_cycle_agora_already_announced():
+    # 2026-09-19: one silent cycle pushed 8 times, once per nova-site pod.
+    first = Recorder()
+    assert _run(_restarted_watch(first, lambda cid: [])) == 1
+    notice = {"sender": "Agora", "system": True, "text": first.sent[0][1]}
+    again = Recorder()
+    reads = []
+
+    def agora(cid):
+        reads.append(cid)
+        return [notice] if cid == "c1850" else []
+
+    watch = _restarted_watch(again, agora)
+    assert _run(watch) == 0
+    assert again.sent == []
+    assert reads == ["c1832", "c1850"]
+    # and it is remembered, so the next check does not read Agora again
+    assert watch.tick(now=3 * reply_notice.REPLY_CHECK_SECONDS) == 0
+    assert reads == ["c1832", "c1850"]
+
+
+def test_the_notice_found_can_sit_in_the_silent_cycles_own_thread():
+    first = Recorder()
+    _run(_restarted_watch(first, lambda cid: []))
+    notice = {"system": True, "text": first.sent[0][1]}
+    again = Recorder()
+    watch = _restarted_watch(
+        again, lambda cid: [notice] if cid == "c1832" else [])
+    assert _run(watch) == 0
+
+
+def test_only_a_system_message_counts_as_the_notice():
+    # A cycle quoting the notice in its own reply did not send it.
+    quoted = {"sender": "Nova", "system": False,
+              "text": reply_notice.notice_heading("Cycle 1832")}
+    post = Recorder()
+    assert _run(_restarted_watch(post, lambda cid: [quoted])) == 1
+
+
+def test_a_notice_for_another_cycle_does_not_count():
+    other = {"system": True,
+             "text": reply_notice.notice_heading("Cycle 1837") + "\n\nmore"}
+    post = Recorder()
+    assert _run(_restarted_watch(post, lambda cid: [other])) == 1
+
+
+def test_an_agora_it_cannot_read_still_gets_the_push(monkeypatch):
+    # Unread is "not announced": a duplicate, never silence -- and it says so.
+    lines = []
+    monkeypatch.setattr(reply_notice, "log", lines.append)
+
+    def broken(cid):
+        raise RuntimeError("HTTP 502")
+    post = Recorder()
+    assert _run(_restarted_watch(post, broken)) == 1
+    assert any("could not read Cycle 1850" in line and "HTTP 502" in line
+               for line in lines)
+
+
+def test_the_live_raw_messages_read_agoras_own_list(monkeypatch):
+    from agora_runner import http_util
+
+    seen = []
+
+    def fake(path):
+        seen.append(path)
+        return 200, {"messages": [{"system": True, "text": "x"}]}
+
+    monkeypatch.setattr(http_util, "agora_get", fake)
+    assert reply_notice._live_raw_messages("c1") == [
+        {"system": True, "text": "x"}]
+    assert seen == ["/conversations/c1/messages"]
+    monkeypatch.setattr(http_util, "agora_get", lambda path: (500, None))
+    with pytest.raises(RuntimeError):
+        reply_notice._live_raw_messages("c1")
+
+
 def test_a_failed_post_is_retried_on_the_next_check():
     post = Recorder(status=500)
     watch = _watch([_conversation("Cycle 721", 120, ident="c721")],
@@ -170,6 +256,7 @@ def test_the_first_tick_checks_nothing():
         return {"conversations": []}
 
     watch = reply_notice.ReplyWatch(
+        raw_messages=lambda cid: [],
         listing=listing, fetch_thread=lambda cid: {},
         heartbeats=_heartbeats(), post=post)
     assert watch.tick(now=0.0) == 0
@@ -214,6 +301,7 @@ def test_the_first_check_comes_after_the_warm_up_not_a_whole_interval():
 def test_a_muted_heartbeat_posts_without_buzzing():
     post = Recorder()
     watch = reply_notice.ReplyWatch(
+        raw_messages=lambda cid: [],
         listing=lambda: {"conversations": [
             _conversation("Cycle 721", 120, ident="c721")]},
         fetch_thread=lambda cid: {"messages": [_narration("still going")]},
@@ -225,6 +313,7 @@ def test_a_muted_heartbeat_posts_without_buzzing():
 def test_nothing_is_posted_when_no_conversation_is_bound():
     post = Recorder()
     watch = reply_notice.ReplyWatch(
+        raw_messages=lambda cid: [],
         listing=lambda: {"conversations": [
             _conversation("Cycle 721", 120, ident="c721")]},
         fetch_thread=lambda cid: {"messages": [_narration("still going")]},
@@ -240,6 +329,7 @@ def test_a_listing_that_raises_costs_a_check_not_the_process():
         raise RuntimeError("agora is down")
 
     watch = reply_notice.ReplyWatch(
+        raw_messages=lambda cid: [],
         listing=listing, fetch_thread=lambda cid: {},
         heartbeats=_heartbeats(), post=post)
     assert _run(watch) == 0
@@ -255,6 +345,7 @@ def test_an_unreadable_thread_does_not_silence_the_rest():
         return {"messages": [_narration("still going")]}
 
     watch = reply_notice.ReplyWatch(
+        raw_messages=lambda cid: [],
         listing=lambda: {"conversations": [
             _conversation("Cycle 700", 300, ident="broken"),
             _conversation("Cycle 721", 120, ident="c721")]},
