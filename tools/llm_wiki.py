@@ -428,7 +428,18 @@ def dropped(outline_output, keep):
     return sorted(set(keep) - named)
 
 
-def plan(topic, sources, keep, model, out=print, ask=None, hold=False):
+def restore_line(name, body, names):
+    """An outline line that puts a dropped page back: its own first heading
+    as the title, and the sources it cites as the page's sources."""
+    text = body.split("\n---", 1)[1] if body.startswith("---") and "\n---" in body else body
+    heading = re.search(r"^#\s+(.+?)\s*$", text, re.M)
+    title = (heading.group(1) if heading else name[:-3]).replace("|", "-")
+    cited = " ".join(CITE_RE.findall(text))
+    files = [n for n in names if re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-])", cited)]
+    return f"\nPAGE: {name} | {title} | the same scope as the existing page | {', '.join(files)}"
+
+
+def plan(topic, sources, keep, model, out=print, ask=None, hold=False, existing=None):
     """The outline and which sources each page uses.
 
     A plan that leaves a source on no page is asked again once, naming the
@@ -438,6 +449,9 @@ def plan(topic, sources, keep, model, out=print, ask=None, hold=False):
     deleting running-a-business's business-structures.md while all its
     sources were still in raw/. `run` sets `hold` only when no source the
     last build used is gone, which is the one case the prompt allows a drop.
+    A page dropped twice is put back into the outline from `existing`
+    ({name: body}) rather than refusing the run: on 09-19 business-finance
+    was refused twice this way and a new source never reached the wiki.
     """
     ask = ask or ask_model
     names = [n for n, _ in sources]
@@ -457,12 +471,13 @@ def plan(topic, sources, keep, model, out=print, ask=None, hold=False):
             notes.append("Your last plan dropped these existing pages, whose sources are all still here: "
                          + ", ".join(lost) + ". Keep every one of them under the same name.")
         output = ask(prompt + "\n" + "\n".join(notes) + "\nYour last plan was:\n" + output, model)
+        lost = dropped(output, held)
+        if lost:
+            out(f"plan dropped {', '.join(lost)} twice; putting it back with the sources it cites")
+            output += "".join(restore_line(n, (existing or {}).get(n, ""), names) for n in lost)
         missing = unplaced(parse_placement(output, names), names)
         if missing:
             raise WikiError(f"plan put {', '.join(missing)} on no page, twice")
-        lost = dropped(output, held)
-        if lost:
-            raise WikiError(f"plan dropped {', '.join(lost)}, twice; nothing written")
     return parse_outline(output), parse_placement(output, names)
 
 
@@ -490,7 +505,7 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     names = [n for n, _ in sources]
     _, built_from = front_sources(existing.get("index.md", ""))
     hold = bool(built_from) and set(built_from) <= set(names)
-    outline, placement = plan(topic, sources, keep, model, out, hold=hold)
+    outline, placement = plan(topic, sources, keep, model, out, hold=hold, existing=existing)
     out(f"outline: {len(outline)} page(s) -- {', '.join(n for n, _, _ in outline)}")
     pages = write_pages(topic, sources, outline, model, placement=placement)
     missing = uncited(names, pages)

@@ -254,18 +254,31 @@ def test_run_stale_rebuilds_only_stale_topics_and_counts_failures(monkeypatch):
     assert any(l.startswith("broken: FAILED") for l in lines)
 
 
-def test_plan_holds_an_existing_page_the_model_dropped_then_refuses():
+def test_plan_holds_an_existing_page_the_model_dropped_then_puts_it_back():
     prompts = []
 
     def ask(prompt, model):
         prompts.append(prompt)
         return PLAN
 
-    with pytest.raises(w.WikiError, match="dropped structures.md, twice"):
-        w.plan("biz", [("a.md", "x")], ["index.md", "hiring.md", "structures.md"], "m",
-               out=lambda s: None, ask=ask, hold=True)
+    old = w.render_page("# AS or ENK\n\nPick one. [source: b.md]", "m", ["a.md", "b.md"], "2026-09-19 19:00")
+    lines = []
+    outline, placement = w.plan("biz", [("a.md", "x"), ("b.md", "y")],
+                                ["index.md", "hiring.md", "structures.md"], "m",
+                                out=lines.append, ask=ask, hold=True,
+                                existing={"structures.md": old})
     assert len(prompts) == 2 and "dropped these existing pages" in prompts[1]
     assert "structures.md" in prompts[1]
+    assert ("structures.md", "AS or ENK", "the same scope as the existing page") in outline
+    assert placement["structures.md"] == ["b.md"]
+    assert any("dropped structures.md twice; putting it back" in l for l in lines)
+
+
+def test_a_page_put_back_with_no_body_still_parses():
+    outline, placement = w.plan("biz", [("a.md", "x")], ["index.md", "structures.md"], "m",
+                                out=lambda s: None, ask=lambda p, m: PLAN, hold=True)
+    assert ("structures.md", "structures", "the same scope as the existing page") in outline
+    assert placement["structures.md"] == []
 
 
 def test_plan_accepts_a_second_plan_that_keeps_the_page():
