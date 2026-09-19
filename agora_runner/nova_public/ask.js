@@ -327,4 +327,32 @@
       pingConvWatching: pingConvWatching,
     };
   };
+
+  /* "Edit" -- issue #143's edit-and-resubmit, as far as this thread can
+   * honestly go. Same reason "Ask again" is not called Regenerate: Agora's
+   * conversations are append-only, so nothing can replace the message he
+   * sent. This puts its text back in the chat box to change and send, and
+   * the edited question lands at the bottom as a new one.
+   *
+   * Outside the factory, and read off `window` at render time, so neither
+   * `bubble.js` nor `message.js` needs `app.js` to pass it along -- its
+   * byte count is a goal of its own. The sheet closes itself on the tap.
+   * It replaces whatever is in the box: he picked Edit on this message. */
+  window.novaEditButton = function (text) {
+    var box = document.getElementById("chat-box");
+    if (!box || !text) return null;
+    var button = document.createElement("button");
+    button.className = "ask-edit";
+    button.type = "button";
+    button.textContent = "Edit";
+    button.title = "Put this message back in the box to change and send";
+    button.addEventListener("click", function () {
+      box.value = text;
+      // `input` is what grows the box to fit what is now in it.
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+      box.focus();
+      box.setSelectionRange(text.length, text.length);
+    });
+    return button;
+  };
 })();

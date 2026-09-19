@@ -9665,6 +9665,50 @@ describe("stopping a turn", () => {
   });
 });
 
+describe("editing a message he sent", () => {
+  /* Issue #143's edit-and-resubmit. Agora cannot replace a message, so Edit
+   * is offered only where it can do its whole job: on his own message, with
+   * text, and it puts that text back in the box rather than sending it. */
+  const thread = {
+    ask: {
+      conversationId: "c-edit",
+      waiting: false,
+      messages: [
+        { id: "1", sender: "Edvard", text: "how many pods on **server2**?" },
+        { id: "2", sender: "Nova Answers", text: "Seven." },
+        { id: "3", sender: "Edvard", text: "" },
+      ],
+    },
+  };
+
+  test("only his own messages with text offer Edit", async () => {
+    const window = await loadAskDock(thread);
+    const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    assert.equal(rows.length, 3, "the fixture did not render");
+    const offered = [];
+    for (const row of rows) offered.push(!!(await holdFor(window, row, ".ask-edit")));
+    assert.deepEqual(offered, [true, false, false],
+      "Edit on Nova's answer would put its words in his mouth; on an empty line it has nothing to put back");
+  });
+
+  test("tapping Edit puts the source back in the box, focused, and sends nothing", async () => {
+    const window = await loadAskDock(thread);
+    const box = window.document.querySelector("#chat-box");
+    box.value = "a draft";
+    const before = window.posted.length;
+    const row = window.document.querySelector("#chat-thread .ask-msg");
+    const button = await holdFor(window, row, ".ask-edit");
+    assert.ok(button, "no Edit in the drawer");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(box.value, "how many pods on **server2**?",
+      "the box should hold what he wrote, markdown and all, not the rendered bubble");
+    assert.equal(window.document.activeElement, box, "the box was not focused, so he has to find it");
+    assert.equal(window.posted.length, before, "Edit sent something; it must only fill the box");
+    assert.ok(window.document.querySelector(".msg-sheet").hidden, "the drawer stayed open over the box");
+  });
+});
+
 describe("copying a message", () => {
   const withClipboard = (window, writeText) => {
     Object.defineProperty(window.navigator, "clipboard", {
@@ -18189,6 +18233,20 @@ describe("the chat dock with Preact loaded", () => {
     assert.ok(await holdFor(window, rows[0], ".ask-copy"));
     assert.equal(await holdFor(window, rows[0], ".ask-retry"), null);
     assert.equal((await holdFor(window, rows[1], ".ask-retry")).textContent, "Ask again");
+  });
+
+  test("the ⋯ opens Edit on his message only, and Edit fills the box", async () => {
+    const window = await open([
+      { id: "1", sender: "Edvard", text: "how many pods?" },
+      { id: "2", sender: "Nova Answers", text: "Seven." },
+    ]);
+    const rows = bubbles(window);
+    assert.equal(rows[0].parentNode.parentNode.id, "chat-thread", "the bubble was hand-built, not the component's");
+    assert.equal(await holdFor(window, rows[1], ".ask-edit"), null, "Edit under Nova's answer");
+    const button = await holdFor(window, rows[0], ".ask-edit");
+    assert.ok(button, "no Edit on his own message");
+    button.dispatchEvent(new window.Event("click"));
+    assert.equal(window.document.querySelector("#chat-box").value, "how many pods?");
   });
 
   test("a running turn is its steps line alone, and the line opens the drawer", async () => {
