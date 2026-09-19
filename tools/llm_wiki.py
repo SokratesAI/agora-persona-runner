@@ -241,7 +241,11 @@ def miscited(sources, pages):
     found = []
     for page, body in pages.items():
         for para in re.split(r"\n\s*\n", body):
-            cites = cited_files(para)
+            # A page may cite "[source: kanban]" without the extension: the
+            # 09-19 project-management rebuild did on one page, and all 20 of
+            # its miscited lines named a file that held the number.
+            cites = [c if c in text or f"{c}.md" not in text else f"{c}.md"
+                     for c in cited_files(para)]
             if not cites:
                 continue
             derived = any(re.match(r"\s*derived from\b", t, re.I) for t in CITE_RE.findall(para))
