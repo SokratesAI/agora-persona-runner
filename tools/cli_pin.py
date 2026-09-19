@@ -57,7 +57,12 @@ import tempfile
 import urllib.request
 from datetime import datetime, timezone
 
-from agora_runner.nova_home import PIN_READING_PATH
+# Repo root on sys.path so `python3 tools/cli_pin.py` works and not only
+# `-m`. See tests/test_tools_run_as_scripts.py.
+import pathlib as _pathlib  # noqa: E402
+sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
+from agora_runner.nova_home import PIN_READING_PATH  # noqa: E402
 
 PACKAGE = "@anthropic-ai/claude-code"
 REGISTRY = "https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code"
