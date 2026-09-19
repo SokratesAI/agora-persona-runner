@@ -39,10 +39,18 @@ to one cycle, so an id already announced can never legitimately need a
 second message -- and the 24h window in `reply_check` bounds the set rather
 than letting it grow for the life of the process.
 
-**A process restart re-arms it, same as `stall_notice`, and for the same
-reason.** Bounding it properly means persisting state; the cost of being
-wrong in this direction is a duplicate message about a real failure, and in
-the other direction a stale file that silences the alarm for good.
+**The set is only this process's memory, so before posting it asks Agora
+what was already sent.** It used to say a restart re-arms it and that a
+duplicate was the cheap direction to be wrong in. Measured 2026-09-19 over
+the newest 60 cycle threads: Cycle 1832's notice had been posted 8 times,
+1837's 9 times and 1875's 5 times -- 22 pushes to his phone for three
+silent cycles, each one ending "You will not get this one again", because
+nova-site rolls on nearly every runner merge. So the record is the notices
+themselves: every one sits in a cycle thread as a system message from
+`Agora` whose first line names the cycle, and `already_announced` reads
+those back. No state file, so nothing stale can silence the alarm; a thread
+that will not load counts as "not announced", which keeps the duplicate as
+the failure direction rather than silence.
 
 **It reads the site's own payload builders, not the site's own HTTP.**
 `nova_site` runs on a `ThreadingHTTPServer`, so a self-request would not
@@ -59,6 +67,7 @@ from agora_runner.log import log
 from agora_runner.reply_check import (
     GRACE_MINUTES,
     WINDOW_HOURS,
+    cycle_threads,
     find_silences,
 )
 from agora_runner.stall_notice import nova_conversation
@@ -96,9 +105,8 @@ def notice_text(silence):
     rather than an alarm -- 721's last words were "Both images built green.
     Writing my reply now."
     """
-    name = silence.name or "A cycle"
     lines = [
-        f"{name} finished without ever replying to you.",
+        notice_heading(silence.name),
         "",
         "It ran, and the thread it left you is all narration — no answer at "
         "the end. Its journal entry is the record of what it actually did, "
@@ -109,6 +117,38 @@ def notice_text(silence):
         lines += ["", f"The last thing it said was: {narration!r}"]
     lines += ["", "One message per cycle. You will not get this one again."]
     return "\n".join(lines)
+
+
+def notice_heading(name):
+    """The notice's first line -- also how `already_announced` recognises one."""
+    return f"{name or 'A cycle'} finished without ever replying to you."
+
+
+def already_announced(silences, listing, raw_messages):
+    """Ids in `silences` whose notice already sits in some cycle thread.
+
+    Every cycle thread in the listing is read, not only the ones newer than
+    the silence: the notice lands in whichever thread the heartbeat was bound
+    to when it was posted, and with cycles running concurrently that thread
+    can have gone quiet before the silent one did. It matches on the cycle's
+    name because that is all the text carries, so two silent sessions sharing
+    one cycle number are announced once between them.
+    """
+    by_heading = {}
+    for silence in silences:
+        by_heading.setdefault(notice_heading(silence.name), set()).add(silence.id)
+    found = set()
+    for conversation in cycle_threads(listing):
+        try:
+            messages = raw_messages(conversation.get("id")) or []
+        except Exception:  # noqa: BLE001 -- unread means "not announced"
+            continue
+        for message in messages:
+            if not message.get("system"):
+                continue
+            text = message.get("text") or message.get("content") or ""
+            found |= by_heading.get(text.split("\n", 1)[0], set())
+    return found
 
 
 def due(silences, announced):
@@ -133,7 +173,7 @@ class ReplyWatch:
     """
 
     def __init__(self, listing=None, fetch_thread=None, heartbeats=None,
-                 post=None, interval=REPLY_CHECK_SECONDS,
+                 post=None, raw_messages=None, interval=REPLY_CHECK_SECONDS,
                  grace_minutes=GRACE_MINUTES, window_hours=WINDOW_HOURS,
                  clock=None, warm_up=REPLY_WARM_UP_SECONDS):
         # `clock` is wall time and is separate from `tick`'s `now`, which is
@@ -145,6 +185,7 @@ class ReplyWatch:
         self._fetch_thread = fetch_thread or _live_thread
         self._heartbeats = heartbeats or _live_heartbeats
         self._post = post or _live_post
+        self._raw_messages = raw_messages or _live_raw_messages
         self._interval = interval
         self._warm_up = warm_up
         self._grace_minutes = grace_minutes
@@ -179,8 +220,9 @@ class ReplyWatch:
         self._checked_at = now
         self._due_in = self._interval
         try:
+            listing = self._listing()
             found = find_silences(
-                self._listing(), self._fetch_thread, now=self._clock(),
+                listing, self._fetch_thread, now=self._clock(),
                 grace_minutes=self._grace_minutes,
                 window_hours=self._window_hours)
             for note in found.notes:
@@ -200,6 +242,17 @@ class ReplyWatch:
                 f"{found.unreadable} unreadable, "
                 f"{len(found.silent)} silent")
             pending = due(found.silent, self._announced)
+            if pending:
+                # Only on this process's first sight of a silence, so the
+                # extra reads cost one sweep per silent cycle per pod start.
+                sent = already_announced(
+                    [s for s in found.silent if s.id not in self._announced],
+                    listing, self._raw_messages)
+                if sent:
+                    log(f"reply notice: {len(sent)} silent cycle(s) already "
+                        f"announced in Agora, not posting again")
+                    self._announced |= sent
+                    pending = due(found.silent, self._announced)
             if not pending:
                 return 0
             conversation_id, push = nova_conversation(self._heartbeats())
@@ -241,6 +294,17 @@ def _live_thread(conversation_id):
     from agora_runner.nova_conversations import thread
 
     return thread(conversation_id)
+
+
+def _live_raw_messages(conversation_id):
+    # Agora's own list, not `nova_conversations.thread`: that drops every
+    # `system` message, and the notices are system messages.
+    from agora_runner.http_util import agora_get
+
+    status, body = agora_get(f"/conversations/{conversation_id}/messages")
+    if status != 200:
+        raise RuntimeError(f"HTTP {status}")
+    return (body or {}).get("messages") or []
 
 
 def _live_heartbeats():
