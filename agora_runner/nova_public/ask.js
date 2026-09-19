@@ -400,4 +400,34 @@
       return button;
     });
   };
+  /* "Delete" -- issue #138's last missing control but search. One message
+   * out of the thread, for good: Agora splices out that message and nothing
+   * after it (`/api/conversations/message/delete`). It asks first, because
+   * nothing brings it back, and the question says the one side effect: with
+   * the answer under his newest question gone, that question is unanswered
+   * again and gets answered again. The thread's own poll redraws it without
+   * the message; a refusal is said out loud rather than swallowed. */
+  window.novaDeleteButton = function (conversationId, message) {
+    if (!conversationId || !message || !message.id) return null;
+    var button = document.createElement("button");
+    button.className = "ask-delete";
+    button.type = "button";
+    button.textContent = "Delete";
+    button.title = "Delete this message from the conversation";
+    button.addEventListener("click", function () {
+      if (!window.confirm("Delete this message? It cannot be undone. "
+          + "If it is the answer to your newest question, that question gets answered again.")) return;
+      fetch("/api/conversations/message/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: conversationId, messageId: String(message.id) }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) window.alert((result && result.message) || "Could not delete the message.");
+        })
+        .catch(function () { window.alert("Could not delete the message."); });
+    });
+    return button;
+  };
 })();

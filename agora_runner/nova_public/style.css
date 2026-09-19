@@ -5429,6 +5429,7 @@ X that summarizes the last 12
 .msg-sheet-body .ask-copy,
 .msg-sheet-body .ask-edit,
 .msg-sheet-body .ask-rate,
+.msg-sheet-body .ask-delete,
 .msg-sheet-body .ask-retry {
   display: block;
   width: 100%;
@@ -5443,6 +5444,10 @@ X that summarizes the last 12
   font-size: 0.95rem;
   text-align: left;
   cursor: pointer;
+}
+/* Delete cannot be undone, so it reads as the one red action. */
+.msg-sheet-body .ask-delete {
+  color: var(--danger);
 }
 /* His current rating, so the drawer says which thumb is his. */
 .msg-sheet-body .ask-rate-picked {

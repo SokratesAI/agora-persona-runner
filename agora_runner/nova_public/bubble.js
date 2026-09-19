@@ -92,6 +92,9 @@
           return askRetryButton(conversationId, retry.question, retry.afterSend);
         });
       }
+      if (!message.partial && message.id && conversationId && window.novaDeleteButton) {
+        actions.push(function () { return window.novaDeleteButton(conversationId, message); });
+      }
       if (actions.length) {
         var more = el("button", "ask-more", "\u22EF");
         more.type = "button";
