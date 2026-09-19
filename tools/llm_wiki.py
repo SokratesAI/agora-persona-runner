@@ -21,6 +21,13 @@ cannot change by accident, `ANTHROPIC_API_KEY` is removed from the CLI's
 environment before it starts. The default model is Haiku, as the idea asks:
 this is summarising, not reasoning.
 
+It writes in two steps: one call plans the pages (keeping the names the
+last run used), then one call per page writes it with every source in
+view, three at a time. A single call for the whole wiki came out at about
+30k characters from 60-90k of sources, an overview rather than the
+textbook depth the owner asked for; a page to itself can go as deep as
+its sources.
+
 The raw files stay the source of truth. Every generated page carries
 `generated_by: llm_wiki` in its frontmatter, and a regeneration deletes the
 generated pages it did not write again -- so a page that lost its source
@@ -37,6 +44,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -52,24 +60,46 @@ OSLO = ZoneInfo("Europe/Oslo")
 MAX_SOURCE_CHARS = 600_000
 
 TOPIC_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
-PAGE_RE = re.compile(r"^=== PAGE: ([a-z0-9][a-z0-9-]*\.md) ===[ \t]*$", re.M)
 
-INSTRUCTIONS = """You are writing a small wiki from raw research sources.
-
-Rules:
+SHARED_RULES = """Rules:
 - Use only what the sources say. Do not add facts from memory. If sources disagree, say so.
 - After each claim, cite the source file it came from in brackets, like [source: notes.md].
 - Plain, direct English. Short paragraphs. Headings with ##.
-- Write 1 to 8 pages. One page must be index.md: a short overview of the topic and a list of the other pages as [[page-name]] links.
-- Name pages in lowercase with hyphens, ending in .md.
-- Output ONLY the pages, each starting with a line exactly like:
-=== PAGE: index.md ===
-and nothing before the first such line.
+"""
+
+PLAN_INSTRUCTIONS = """You are planning a wiki from raw research sources. Do not write the pages yet.
+
+List the pages the wiki should have: as many as the sources can fill with real depth, between 4 and 14. One must be index.md, the overview.
+Name pages in lowercase with hyphens, ending in .md.
+Output ONLY one line per page, exactly in this form, and nothing else:
+PAGE: <name>.md | <title> | <one sentence on what the page covers>
 
 The topic is: {topic}
 
 The sources follow, each starting with a line "--- SOURCE: <file> ---".
 """
+
+PAGE_INSTRUCTIONS = """You are writing ONE page of a wiki from raw research sources: {page} ("{title}"), which covers: {scope}
+
+Go as deep as the sources allow, like a textbook chapter: definitions, how it works, worked examples, trade-offs and common mistakes, wherever the sources support them. Do not repeat what belongs on another page; link to it as [[page-name]] instead.
+""" + SHARED_RULES + """{index_rule}
+Output ONLY the page body in markdown, starting with a # title line.
+
+The whole wiki is these pages:
+{outline}
+
+The topic is: {topic}
+
+The sources follow, each starting with a line "--- SOURCE: <file> ---".
+"""
+
+INDEX_RULE = "- This is the index page: a short overview of the topic, then every other page as a [[page-name]] link with one line on what it covers."
+
+OUTLINE_RE = re.compile(r"^PAGE:\s*([a-z0-9][a-z0-9-]*\.md)\s*\|\s*([^|]+?)\s*\|\s*(.+?)\s*$", re.M)
+
+#: How many page calls run at once. Each is one `claude -p` process on the
+#: bridge pod; three keeps a five-wiki run to minutes without crowding it.
+WORKERS = 3
 
 
 class WikiError(Exception):
@@ -81,7 +111,11 @@ def is_text(body):
     return "\x00" not in body and body.count("\ufffd") < 8
 
 
-def build_prompt(topic, sources, keep=()):
+def _sources_block(sources):
+    return "\n".join(f"--- SOURCE: {name} ---\n{text.strip()}\n" for name, text in sources)
+
+
+def build_plan_prompt(topic, sources, keep=()):
     """`sources` is [(name, text)]; order is kept so the prompt is stable.
 
     `keep` names the pages the last run wrote. Without it the model picks a
@@ -89,38 +123,48 @@ def build_prompt(topic, sources, keep=()):
     one page from the same three sources, and the regeneration deleted the
     other four as stale. Links into the wiki break every time that happens.
     """
-    parts = [INSTRUCTIONS.format(topic=topic)]
+    parts = [PLAN_INSTRUCTIONS.format(topic=topic)]
     if keep:
-        parts.append("The wiki already has these pages. Write every one of them again under the "
+        parts.append("The wiki already has these pages. Keep every one of them under the "
                      "same name, unless the sources no longer support it: "
                      + ", ".join(sorted(keep)) + "\n")
-    for name, text in sources:
-        parts.append(f"--- SOURCE: {name} ---\n{text.strip()}\n")
+    parts.append(_sources_block(sources))
     return "\n".join(parts)
 
 
-def parse_pages(output):
-    """Split the model's output into {page name: body}.
+def parse_outline(output):
+    """The plan call's output as [(page, title, scope)], index.md first.
 
-    Refuses output with no index.md or a page named twice, rather than
+    Refuses an outline with no index.md or a page named twice, rather than
     writing a partial wiki.
     """
-    marks = list(PAGE_RE.finditer(output))
-    if not marks:
-        raise WikiError("model output held no '=== PAGE: <name>.md ===' line")
-    pages = {}
-    for i, m in enumerate(marks):
-        end = marks[i + 1].start() if i + 1 < len(marks) else len(output)
+    outline, seen = [], set()
+    for m in OUTLINE_RE.finditer(output):
         name = m.group(1)
-        if name in pages:
-            raise WikiError(f"model wrote {name} twice")
-        body = output[m.end():end].strip()
-        if not body:
-            raise WikiError(f"model wrote {name} empty")
-        pages[name] = body
-    if "index.md" not in pages:
-        raise WikiError("model wrote no index.md")
-    return pages
+        if name in seen:
+            raise WikiError(f"outline names {name} twice")
+        seen.add(name)
+        outline.append((name, m.group(2), m.group(3)))
+    if not outline:
+        raise WikiError("outline held no 'PAGE: <name>.md | title | scope' line")
+    if "index.md" not in seen:
+        raise WikiError("outline has no index.md")
+    return sorted(outline, key=lambda row: row[0] != "index.md")
+
+
+def build_page_prompt(topic, sources, outline, page):
+    """One page's prompt: every source whole, plus the outline to link into.
+
+    Each page gets the whole source set rather than a slice the plan picked,
+    because the one-call wiki's gap was depth -- 60-90k characters of sources
+    came out as ~30k of wiki -- and a page can only go as deep as what it sees.
+    """
+    name, title, scope = next(row for row in outline if row[0] == page)
+    listing = "\n".join(f"- [[{n[:-3]}]] {t}: {s}" for n, t, s in outline)
+    head = PAGE_INSTRUCTIONS.format(
+        page=name, title=title, scope=scope, topic=topic, outline=listing,
+        index_rule=INDEX_RULE if name == "index.md" else "")
+    return head + "\n" + _sources_block(sources)
 
 
 def render_page(body, model, sources, when):
@@ -186,6 +230,24 @@ def ask_model(prompt, model):
     return r.stdout
 
 
+def write_pages(topic, sources, outline, model, ask=None):
+    """One model call per page, a few at a time; {page: body} in outline order.
+
+    Any page failing or coming back empty fails the whole run, so a wiki is
+    never half regenerated.
+    """
+    ask = ask or ask_model
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        bodies = pool.map(
+            lambda row: ask(build_page_prompt(topic, sources, outline, row[0]), model).strip(),
+            outline)
+        pages = dict(zip((n for n, _, _ in outline), bodies))
+    for name, body in pages.items():
+        if not body:
+            raise WikiError(f"model wrote {name} empty")
+    return pages
+
+
 def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     if not TOPIC_RE.match(topic):
         raise WikiError(f"topic must be lowercase letters, digits and hyphens: {topic!r}")
@@ -206,7 +268,9 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     existing = {p[len(f"{base}wiki/"):]: _get(p) for p in _ls(f"{base}wiki/")}
     keep = stale_pages(existing, {})  # every generated page, since nothing is written yet
     out(f"{len(sources)} source(s), {size:,} characters -> {model}")
-    pages = parse_pages(ask_model(build_prompt(topic, sources, keep), model))
+    outline = parse_outline(ask_model(build_plan_prompt(topic, sources, keep), model))
+    out(f"outline: {len(outline)} page(s) -- {', '.join(n for n, _, _ in outline)}")
+    pages = write_pages(topic, sources, outline, model)
     when = datetime.now(OSLO).strftime("%Y-%m-%d %H:%M")
     names = [n for n, _ in sources]
     if dry_run:
