@@ -159,6 +159,21 @@ def test_miscited_accepts_a_number_any_cited_source_holds_and_ignores_lists():
     assert w.miscited(sources, pages) == []
 
 
+def test_cited_files_splits_derived_from_and_and_keeps_hyphenated_and():
+    para = ("x [source: derived from tax.md and fees-and-salary.md] "
+            "y [source: a.md; b.md, tax.md] z [source: Derived from c.md]")
+    assert w.cited_files(para) == ["tax.md", "fees-and-salary.md", "a.md", "b.md", "c.md"]
+
+
+def test_miscited_reads_a_derived_from_citation_as_its_files():
+    sources = [("tax.md", "Rate 22,000 on 100,000."), ("fees-and-salary.md", "Salary 468,000.")]
+    pages = {"t.md": "On 100,000 profit, 22,000 tax; salary 468,000; left 134,160. "
+                     "[source: derived from tax.md and fees-and-salary.md]"}
+    assert w.miscited(sources, pages) == [
+        ("t.md", "134,160", ["tax.md", "fees-and-salary.md"], []),
+    ]
+
+
 def test_uncited_finds_a_source_no_page_cites():
     pages = {"index.md": "x [source: a.md] y [source: b.md, old-a.md]"}
     assert w.uncited(["a.md", "b.md", "norway.md", "c.md"], pages) == ["norway.md", "c.md"]
