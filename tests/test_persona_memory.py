@@ -158,7 +158,8 @@ def test_mirror_writes_one_document_per_persona_and_skips_empty_ones(tmp_path):
     written = {}
     lines, status = pm.mirror(pm.read_dirs(str(tmp_path)),
                               [{"id": "aaa", "name": "Nova"}], str(tmp_path),
-                              put=lambda t, d: written.setdefault(t, d) and None)
+                              put=lambda t, d: written.setdefault(t, d) and None,
+                              get=lambda t: None)
     assert status == 0
     assert list(written) == [pm.MIRROR_PREFIX + "aaa.md"]
     assert "# What Nova remembers" in written[pm.MIRROR_PREFIX + "aaa.md"]
@@ -169,7 +170,7 @@ def test_a_refused_write_is_exit_1_and_named(tmp_path):
     """A mirror that silently failed would read as a persona that forgot."""
     _dir(tmp_path, "aaa", {"MEMORY.md": "- x"})
     lines, status = pm.mirror(pm.read_dirs(str(tmp_path)), [], str(tmp_path),
-                              put=lambda t, d: "HTTP 409")
+                              put=lambda t, d: "HTTP 409", get=lambda t: None)
     assert status == 1
     assert "MIRROR FAILED" in lines[0] and "HTTP 409" in lines[0]
 
@@ -182,8 +183,27 @@ def test_mirror_flag_reaches_main(tmp_path, monkeypatch):
          else {"conversations": []}), None))
     seen = []
     monkeypatch.setattr(pm, "_vault_put", lambda t, d: seen.append(t))
+    monkeypatch.setattr(pm, "_vault_get", lambda t: None)
     assert pm.main(["--root", str(tmp_path), "--mirror"]) == 0
     assert seen == [pm.MIRROR_PREFIX + "aaa.md"]
     seen.clear()
     pm.main(["--root", str(tmp_path)])
     assert seen == []
+
+
+def test_an_unchanged_persona_is_not_rewritten(tmp_path):
+    """Every cycle runs --mirror, and a put is always a new revision: only
+    the `mirrored:` stamp differing must not write."""
+    _dir(tmp_path, "aaa", {"MEMORY.md": "- x"})
+    root, dirs = str(tmp_path), pm.read_dirs(str(tmp_path))
+    old = pm.render_mirror("aaa", "Nova", str(tmp_path / "aaa"), now=0)
+    written = []
+    lines, status = pm.mirror(dirs, [{"id": "aaa", "name": "Nova"}], root,
+                              put=lambda t, d: written.append(t),
+                              get=lambda t: old + "\n")
+    assert status == 0 and written == []
+    assert lines[0].startswith("unchanged")
+    (tmp_path / "aaa" / "MEMORY.md").write_text("- y")
+    pm.mirror(dirs, [{"id": "aaa", "name": "Nova"}], root,
+              put=lambda t, d: written.append(t), get=lambda t: old)
+    assert written == [pm.MIRROR_PREFIX + "aaa.md"]
