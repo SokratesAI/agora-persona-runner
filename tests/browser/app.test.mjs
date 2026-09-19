@@ -9707,6 +9707,40 @@ describe("editing a message he sent", () => {
     assert.equal(window.posted.length, before, "Edit sent something; it must only fill the box");
     assert.ok(window.document.querySelector(".msg-sheet").hidden, "the drawer stayed open over the box");
   });
+
+  /* Thumbs up/down, the last control on #143: only under an answer, it
+   * posts the rating, and the next opening of the drawer shows his pick,
+   * which a second tap takes back. */
+  test("an answer offers thumbs up and down, and a rating is kept and can be taken back", async () => {
+    const window = await loadAskDock(thread);
+    const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    const offered = [];
+    for (const row of rows) offered.push(!!(await holdFor(window, row, ".ask-rate-up")));
+    assert.deepEqual(offered, [false, true, false], "a rating belongs under Nova's answer only");
+    const up = await holdFor(window, rows[1], ".ask-rate-up");
+    up.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const sent = window.posted.filter((p) => p.url === "/api/chat/rate");
+    assert.deepEqual(sent.map((p) => p.body), [
+      { conversationId: "c-edit", messageId: "2", rating: "up", text: "Seven." }]);
+    const again = await holdFor(window, rows[1], ".ask-rate-up");
+    assert.match(again.textContent, /\(yours\)/, "the drawer forgot what he picked");
+    assert.doesNotMatch((await holdFor(window, rows[1], ".ask-rate-down")).textContent, /yours/);
+    (await holdFor(window, rows[1], ".ask-rate-up")).dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.filter((p) => p.url === "/api/chat/rate").pop().body.rating, null,
+      "a second tap on his own pick should take it back");
+  });
+
+  test("a rating the server did not save is not shown as his", async () => {
+    const window = await loadAskDock(thread);
+    window.postReply = { ok: false, error: "could not save the rating" };
+    const row = [...window.document.querySelectorAll("#chat-thread .ask-msg")][1];
+    (await holdFor(window, row, ".ask-rate-down")).dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.doesNotMatch((await holdFor(window, row, ".ask-rate-down")).textContent, /yours/);
+  });
 });
 
 describe("copying a message", () => {
@@ -18247,6 +18281,17 @@ describe("the chat dock with Preact loaded", () => {
     assert.ok(button, "no Edit on his own message");
     button.dispatchEvent(new window.Event("click"));
     assert.equal(window.document.querySelector("#chat-box").value, "how many pods?");
+  });
+
+  test("the ⋯ offers the thumbs under Nova's answer only", async () => {
+    const window = await open([
+      { id: "1", sender: "Edvard", text: "how many pods?" },
+      { id: "2", sender: "Nova Answers", text: "Seven." },
+    ]);
+    const rows = bubbles(window);
+    assert.equal(await holdFor(window, rows[0], ".ask-rate-up"), null, "a thumb under his own message");
+    assert.ok(await holdFor(window, rows[1], ".ask-rate-up"), "no thumbs up under the answer");
+    assert.ok(await holdFor(window, rows[1], ".ask-rate-down"), "no thumbs down under the answer");
   });
 
   test("a running turn is its steps line alone, and the line opens the drawer", async () => {

@@ -5381,6 +5381,8 @@ X that summarizes the last 12
   padding-top: 0.3rem;
 }
 .msg-sheet-body .ask-copy,
+.msg-sheet-body .ask-edit,
+.msg-sheet-body .ask-rate,
 .msg-sheet-body .ask-retry {
   display: block;
   width: 100%;
@@ -5395,6 +5397,11 @@ X that summarizes the last 12
   font-size: 0.95rem;
   text-align: left;
   cursor: pointer;
+}
+/* His current rating, so the drawer says which thumb is his. */
+.msg-sheet-body .ask-rate-picked {
+  border-color: var(--accent, var(--text));
+  font-weight: 600;
 }
 
 /* The `⋯` that opens a message's actions -- his ask, 2026-09-07, after the

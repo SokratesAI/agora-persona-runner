@@ -355,4 +355,49 @@
     });
     return button;
   };
+
+  /* Thumbs up / thumbs down -- issue #143's last control. The rating goes to
+   * `/api/chat/rate`, which keeps one row per answer in the vault
+   * (nova_chat_ratings), so a later cycle can read what he thought of what
+   * Nova said. The sheet closes on the tap, so what he chose is shown the
+   * next time he opens it: this device remembers it, and the chosen thumb
+   * reads "(yours)". Tapping it again clears the rating. A save that fails
+   * is forgotten here too, so the drawer never claims a rating the vault
+   * does not have. Two buttons; empty without an answer id to rate. */
+  var RATED_KEY = "nova-chat-rated";
+  function ratedMap() {
+    try { return JSON.parse(localStorage.getItem(RATED_KEY) || "{}") || {}; } catch (e) { return {}; }
+  }
+  function setRated(key, rating) {
+    var map = ratedMap();
+    if (rating) map[key] = rating; else delete map[key];
+    try { localStorage.setItem(RATED_KEY, JSON.stringify(map)); } catch (e) { /* private mode */ }
+  }
+  window.novaRateButtons = function (conversationId, message) {
+    if (!conversationId || !message || !message.id || !message.text) return [];
+    var key = conversationId + "|" + message.id;
+    var current = ratedMap()[key] || null;
+    return [["up", "\uD83D\uDC4D Good answer"], ["down", "\uD83D\uDC4E Bad answer"]].map(function (pair) {
+      var rating = pair[0], picked = current === rating;
+      var button = document.createElement("button");
+      button.className = "ask-rate ask-rate-" + rating + (picked ? " ask-rate-picked" : "");
+      button.type = "button";
+      button.textContent = pair[1] + (picked ? " (yours)" : "");
+      button.title = picked ? "Take this rating back" : "Rate this answer";
+      button.addEventListener("click", function () {
+        var next = picked ? null : rating;
+        setRated(key, next);
+        fetch("/api/chat/rate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversationId: conversationId, messageId: String(message.id),
+                                 rating: next, text: String(message.text).slice(0, 300) }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (result) { if (!result || !result.ok) throw new Error("not saved"); })
+          .catch(function () { setRated(key, current); });
+      });
+      return button;
+    });
+  };
 })();
