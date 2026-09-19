@@ -5625,6 +5625,11 @@ X that summarizes the last 12
   margin: 0.9rem 0 0;
 }
 
+/* The Colours heading after it starts a second section, not a caption. */
+.settings-device + .settings-heading {
+  margin-top: 1.6rem;
+}
+
 .settings-choice {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
