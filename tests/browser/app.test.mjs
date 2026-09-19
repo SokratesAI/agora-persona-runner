@@ -10159,6 +10159,36 @@ describe("the questions page", () => {
     assert.equal(pending.querySelector(".ask-pending-count"), null);
   });
 
+  test("the loader carries a line in Nova's voice that says the question landed, then moves on", async () => {
+    /* Issue #142: the wait felt dead -- he wanted a Nova-personality line,
+     * "Got it, give me a parsec to work it out", that changes while it
+     * works. The first seconds acknowledge; later ones are working lines. */
+    const quipAt = async (askedAt, latest) => {
+      const window = await loadAskDock({
+        ask: () => ({
+          conversationId: "c",
+          waiting: true,
+          messages: [{ id: "1", sender: "Edvard", text: "q" }],
+          progress: { askedAt, steps: latest ? 1 : 0, latest: latest || null },
+        }),
+      });
+      const quip = window.document.querySelector(".ask-pending .ask-pending-quip");
+      return quip && quip.textContent;
+    };
+    const acks = /parsec|void|Plotting|stardrive/;
+    const fresh = await quipAt(new Date().toISOString());
+    assert.match(fresh, acks, "a question just asked is not acknowledged");
+    const at = new Date(Date.now() - 30000).toISOString();
+    const later = await quipAt(at);
+    assert.ok(later && !acks.test(later), "still acknowledging thirty seconds in: " + later);
+    assert.match(later, /\u2026$/);
+    /* The bubble is rebuilt on every poll; a random pick would flicker. */
+    assert.equal(await quipAt(at), later, "the same moment drew a different line");
+    /* Once a tool is running, the tool line is the truthful thing to show. */
+    assert.equal(await quipAt(at, { capability: "vault_read", detail: "x" }), null,
+      "the quip talks over a real tool line");
+  });
+
   test("an old thread with no progress block still draws a pending bubble", async () => {
     /* The server only sends `progress` while the turn is running, and a
      * cached page or an older pod sends none at all. The bubble must not

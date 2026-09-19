@@ -213,6 +213,54 @@
       return orbit;
     }
 
+    /* A line in Nova's own voice beside the orbit (issue #142).
+     *
+     * His capture, 2026-08-30: *"The 'thinking' box while Nova works is
+     * static and feels dead -- wanted a dynamic, Nova-personality
+     * acknowledgement (supernova/cosmos theme, humor, made-up words, e.g.
+     * 'Expanding...' or 'Got it, give me a parsec to work it out')"*. The
+     * static word "Thinking…" went on 09-07; this is the living line that
+     * replaces it, not the dead one coming back.
+     *
+     * The first few seconds say the question landed, which is the half of
+     * the wait he asked about in #143; after that the line changes every
+     * `QUIP_SECONDS`. It is chosen from the clock rather than at random,
+     * because the bubble is rebuilt on every four-second poll and a random
+     * pick would flicker to a new line on each one. The question's own
+     * `askedAt` seeds it, so two questions do not recite the same order. */
+    var QUIP_ACK_SECONDS = 6;
+    var QUIP_SECONDS = 7;
+    var QUIP_ACKS = [
+      "Got it — give me a parsec to work it out.",
+      "Heard you across the void. On it.",
+      "Caught it. Plotting a course…",
+      "Received. Spinning up the stardrive…",
+    ];
+    var QUIPS = [
+      "Expanding…",
+      "Supernovating…",
+      "Consulting the nebula…",
+      "Gathering stardust…",
+      "Folding a little spacetime…",
+      "Cosmoodling…",
+      "Negotiating with gravity…",
+      "Aligning the planets…",
+      "Stellarifying the details…",
+      "Listening to the pulsars…",
+      "Orbiting the question…",
+      "Brewing a small galaxy…",
+      "Counting moons, carrying the one…",
+      "Starweaving…",
+    ];
+
+    function askQuip(askedAt) {
+      var seed = 0;
+      for (var i = 0; askedAt && i < askedAt.length; i++) seed += askedAt.charCodeAt(i);
+      var secs = askPendingSeconds(askedAt);
+      if (secs === null || secs < QUIP_ACK_SECONDS) return QUIP_ACKS[seed % QUIP_ACKS.length];
+      return QUIPS[(seed + Math.floor((secs - QUIP_ACK_SECONDS) / QUIP_SECONDS)) % QUIPS.length];
+    }
+
     function askPending(progress) {
       var row = el("div", "ask-msg ask-theirs ask-pending");
       var secs = askPendingSeconds(progress && progress.askedAt);
@@ -241,6 +289,7 @@
          * message bubble, it repaints on a four-second poll, and a canvas per
          * pending turn would be an animation frame loop with no off switch. */
         row.appendChild(askOrbit());
+        row.appendChild(el("div", "ask-pending-quip", askQuip(progress && progress.askedAt)));
       }
       return row;
     }
@@ -252,6 +301,7 @@
       askOrbit: askOrbit,
       askPending: askPending,
       askPendingSeconds: askPendingSeconds,
+      askQuip: askQuip,
       chatTime: chatTime,
     };
   };

@@ -24,11 +24,12 @@ SHARED = ("OWNER_RECORD", "appendRichText", "askCopyButton", "askRetryButton",
           "el", "openMessageActions", "stepMessageKey", "stepsLine")
 
 HANDED_BACK = ("PENDING_CLOCK_AFTER_SECONDS", "askElapsed", "askMessage",
-               "askOrbit", "askPending", "askPendingSeconds", "chatTime")
+               "askOrbit", "askPending", "askPendingSeconds", "askQuip",
+               "chatTime")
 
 MOVED = ("function chatTime(", "function askMessage(", "function askElapsed(",
          "function askPendingSeconds(", "function orbitPhase(",
-         "function askOrbit(", "function askPending(")
+         "function askOrbit(", "function askQuip(", "function askPending(")
 
 
 def read(name):

@@ -306,6 +306,7 @@ w.novaChat = {
   pendingClockAfter: 20,
   askPendingSeconds: (at) => (at ? 75 : null),
   askElapsed: () => "1m 15s",
+  askQuip: () => "Expanding\u2026",
   askOrbit: () => { made.orbit += 1; const o = w.document.createElement("div"); o.className = "ask-orbit"; return o; },
   askRetryButton: (id, q) => { made.retry.push([id, q]); const b = w.document.createElement("button"); b.className = "ask-retry"; b.textContent = "Ask again"; return b; },
 };
@@ -354,14 +355,15 @@ def test_app_js_hands_the_tail_to_the_component():
     # The thread painter and `window.novaChat` moved to `askthread.js` (issue #233).
     app = read("askthread.js")
     assert '{ tail: lost ? "lost" : "pending"' in app
-    for name in ("askPendingSeconds", "askElapsed", "askOrbit"):
+    for name in ("askPendingSeconds", "askElapsed", "askOrbit", "askQuip"):
         assert name + ": " + name in app
     assert "pendingClockAfter: PENDING_CLOCK_AFTER_SECONDS" in app
 
 
 def test_the_loader_has_the_hand_built_structure_and_keeps_its_orbit(tails):
     orbit = {"cls": "thread-slot", "kids": [{"cls": "ask-orbit", "kids": []}]}
-    assert tails["loader"] == {"cls": "ask-msg ask-theirs ask-pending", "kids": [orbit]}
+    quip = {"cls": "ask-pending-quip", "kids": []}
+    assert tails["loader"] == {"cls": "ask-msg ask-theirs ask-pending", "kids": [orbit, quip]}
     assert tails["orbitKept"] is True
 
 

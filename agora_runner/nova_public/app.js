@@ -5168,6 +5168,7 @@
   var askOrbit = bubbleModule.askOrbit;
   var askPending = bubbleModule.askPending;
   var askPendingSeconds = bubbleModule.askPendingSeconds;
+  var askQuip = bubbleModule.askQuip;
   var chatTime = bubbleModule.chatTime;
 
   /* The drawer those actions open in.
@@ -5477,6 +5478,7 @@
     askOrbit: askOrbit,
     askPending: askPending,
     askPendingSeconds: askPendingSeconds,
+    askQuip: askQuip,
     askRetryButton: askRetryButton,
     chatTime: chatTime,
     el: el,

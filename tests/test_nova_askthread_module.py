@@ -22,7 +22,7 @@ PUBLIC = os.path.join(os.path.dirname(nova_site.__file__), "nova_public")
 
 SHARED = ("OWNER_RECORD", "PENDING_CLOCK_AFTER_SECONDS", "appendRichText",
           "askCopyButton", "askElapsed", "askMessage", "askOrbit",
-          "askPending", "askPendingSeconds", "askRetryButton", "chatTime",
+          "askPending", "askPendingSeconds", "askQuip", "askRetryButton", "chatTime",
           "el", "openMessageActions", "openStepSheet", "refreshStepSheet",
           "stepMessageKey", "stepsLabel")
 
