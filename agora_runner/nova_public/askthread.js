@@ -27,6 +27,7 @@
     var askOrbit = shared.askOrbit;
     var askPending = shared.askPending;
     var askPendingSeconds = shared.askPendingSeconds;
+    var askQuip = shared.askQuip;
     var askRetryButton = shared.askRetryButton;
     var chatTime = shared.chatTime;
     var el = shared.el;
@@ -72,7 +73,7 @@
       openStepSheet: openStepSheet, stepMessageKey: stepMessageKey, appendRichText: appendRichText,
       askCopyButton: askCopyButton, askRetryButton: askRetryButton, openMessageActions: openMessageActions,
       askPendingSeconds: askPendingSeconds, askElapsed: askElapsed, askOrbit: askOrbit,
-      pendingClockAfter: PENDING_CLOCK_AFTER_SECONDS };
+      askQuip: askQuip, pendingClockAfter: PENDING_CLOCK_AFTER_SECONDS };
     function renderAskThread(container, payload, afterSend) {
       var rows = [], messages = payload.messages || [];
       function put(node, key, sig) { rows.push({ node: node, key: key, sig: sig }); }
