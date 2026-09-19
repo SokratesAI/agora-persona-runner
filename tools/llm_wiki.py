@@ -13,6 +13,7 @@ The folder is in the owner's Obsidian vault on purpose (it is not under a
 
     python3 -m tools.llm_wiki <topic>             # regenerate wiki/ from raw/
     python3 -m tools.llm_wiki <topic> --dry-run   # print the pages, write nothing
+    python3 -m tools.llm_wiki --stale             # regenerate only topics whose raw/ changed
 
 Runs from the bridge pod: it needs `/app/bridge/vault_tool.py` and the
 `claude` CLI. The model is reached through that CLI, which is the flat
@@ -38,6 +39,15 @@ The raw files stay the source of truth. Every generated page carries
 generated pages it did not write again -- so a page that lost its source
 disappears -- while a page without that marker (one somebody wrote by hand)
 is never touched.
+
+`--stale` is the schedule: prompt.md step 1a runs it every cycle, so a
+file dropped in raw/ becomes wiki pages without anyone asking for it. A
+topic is rebuilt when a raw file changed at or after the `generated:` stamp
+on its index page (a new, edited or deleted file all count), when a source
+the index names is gone from raw/, or when it has no index yet. Otherwise it
+costs one `ls` and one `recent` per topic and makes no model call. The stamp
+is taken when the sources are read, not when the pages are written, so a
+file dropped during a run is still newer than it.
 
 Exit 0 when the wiki was written (or printed, with --dry-run); 1 on any
 failure, with nothing written unless every page parsed.
@@ -224,6 +234,92 @@ def stale_pages(existing, written):
     )
 
 
+STAMP_RE = re.compile(r"^generated:\s*(\d{4}-\d\d-\d\d \d\d:\d\d)\s*$", re.M)
+RECENT_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d)\s+(\S.*?)(\s+\[DELETED\])?\s*$")
+
+
+def front_sources(body):
+    """(generated stamp, [sources]) from a generated page's frontmatter."""
+    head = body.split("\n---", 1)[0]
+    stamp = STAMP_RE.search(head)
+    names = re.findall(r"^\s+-\s+(\S.*?)\s*$", head.split("sources:", 1)[1], re.M) if "sources:" in head else []
+    return (stamp.group(1) if stamp else None), names
+
+
+def why_stale(index_body, raw_names, raw_changes):
+    """Why a topic needs rebuilding, or None.
+
+    `index_body` is wiki/index.md or None; `raw_names` the files in raw/ now;
+    `raw_changes` is [(\"YYYY-MM-DD HH:MM\", name)] from `recent`, Oslo time,
+    deleted files included. The stamp is the same format, so text compares.
+    """
+    if index_body is None:
+        return "no wiki yet"
+    stamp, sources = front_sources(index_body)
+    if stamp is None:
+        return "index.md carries no generated: stamp"
+    gone = sorted(set(sources) - set(raw_names))
+    if gone:
+        return f"source(s) gone from raw/: {', '.join(gone)}"
+    newer = sorted({name for when, name in raw_changes if when >= stamp})
+    if newer:
+        return f"raw/ changed since {stamp}: {', '.join(newer)}"
+    return None
+
+
+def raw_changes(base, stamp, now=None):
+    """[(when, name)] for raw/ files changed since `stamp`, via `recent`."""
+    now = now or datetime.now(OSLO)
+    since = datetime.strptime(stamp, "%Y-%m-%d %H:%M").replace(tzinfo=OSLO)
+    hours = max(1, int((now - since).total_seconds() // 3600) + 2)
+    r = _vault("recent", str(hours), f"{base}raw/")
+    if r.returncode != 0:
+        raise WikiError(f"recent {base}raw/ failed: {r.stderr.strip()}")
+    if "[INCOMPLETE" in r.stdout:
+        raise WikiError(f"recent {base}raw/ was incomplete; cannot judge staleness")
+    out = []
+    for line in r.stdout.splitlines():
+        m = RECENT_RE.match(line)
+        if m and m.group(2).startswith(f"{base}raw/"):
+            out.append((m.group(1), m.group(2)[len(f"{base}raw/"):]))
+    return out
+
+
+def topics():
+    r = _vault("ls", ROOT)
+    if r.returncode != 0:
+        raise WikiError(f"ls {ROOT} failed: {r.stderr.strip()}")
+    return sorted({p[len(ROOT):].split("/", 1)[0] for p in r.stdout.splitlines()
+                   if p.startswith(ROOT) and "/raw/" in p})
+
+
+def check_topic(topic):
+    base = f"{ROOT}{topic}/"
+    names = [p[len(f"{base}raw/"):] for p in _ls(f"{base}raw/")]
+    wiki = _ls(f"{base}wiki/")
+    index = _get(f"{base}wiki/index.md") if f"{base}wiki/index.md" in wiki else None
+    stamp = front_sources(index)[0] if index else None
+    changes = raw_changes(base, stamp) if stamp else []
+    return why_stale(index, names, changes)
+
+
+def run_stale(model=DEFAULT_MODEL, only=None, out=print):
+    """Rebuild every stale topic; the number that failed."""
+    failed = 0
+    for topic in ([only] if only else topics()):
+        try:
+            why = check_topic(topic)
+            if why is None:
+                out(f"{topic}: current")
+                continue
+            out(f"{topic}: rebuilding ({why})")
+            run(topic, model, out=lambda line, t=topic: out(f"  {t}: {line}"))
+        except (WikiError, subprocess.TimeoutExpired) as e:
+            out(f"{topic}: FAILED -- {e}")
+            failed += 1
+    return failed
+
+
 def _vault(*args):
     return subprocess.run(
         [sys.executable, VAULT_TOOL, *args],
@@ -313,6 +409,7 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     if not TOPIC_RE.match(topic):
         raise WikiError(f"topic must be lowercase letters, digits and hyphens: {topic!r}")
     base = f"{ROOT}{topic}/"
+    when = datetime.now(OSLO).strftime("%Y-%m-%d %H:%M")
     sources, skipped = [], []
     for path in sorted(_ls(f"{base}raw/")):
         body = _get(path)
@@ -336,7 +433,6 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
     missing = uncited(names, pages)
     if missing:
         raise WikiError(f"no page cites {', '.join(missing)}; nothing written")
-    when = datetime.now(OSLO).strftime("%Y-%m-%d %H:%M")
     if dry_run:
         for name, body in pages.items():
             out(f"=== {base}wiki/{name} ===\n{render_page(body, model, names, when)}")
@@ -353,10 +449,18 @@ def run(topic, model=DEFAULT_MODEL, dry_run=False, out=print):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("topic")
+    p.add_argument("topic", nargs="?")
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--stale", action="store_true",
+                   help="rebuild only topics whose raw/ changed since their last build")
     a = p.parse_args(argv)
+    if a.stale:
+        if a.dry_run:
+            p.error("--stale writes; it has no --dry-run")
+        return 1 if run_stale(a.model, a.topic) else 0
+    if not a.topic:
+        p.error("a topic, or --stale")
     try:
         run(a.topic, a.model, a.dry_run)
     except (WikiError, subprocess.TimeoutExpired) as e:
