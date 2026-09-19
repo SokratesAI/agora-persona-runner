@@ -259,13 +259,15 @@ from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
                                      dumps as dumps_demos, load as load_demos,
                                      lookup as lookup_demo, mark_opened,
                                      opened_by_a_person, public_rows)
-from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_rev,
+from agora_runner.vault import (vault_bulk_fetch, vault_doc_rev, vault_read_path, vault_read_path_rev,
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_stop_timings import record as record_stop_timing
 from agora_runner import nova_app_opens
 from agora_runner import nova_chat_ratings
 from agora_runner.nova_planned_done import planned_done, render_page as render_planned_done
+from agora_runner.nova_persona_memory import (MIRROR_PREFIX as PERSONA_MEMORY_PREFIX,
+                                             memory_payload, render_page as render_persona_memory)
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_next import (next_payload_from_contents,
                                     project_milestones, rank)
@@ -1786,6 +1788,13 @@ def planned_done_payload():
     """
     journal, _, _ = cached_payload("journal", journal_payload)
     return planned_done(claims_history_json(), journal.get("entries") or [])
+
+
+def persona_memory_payload():
+    """What each persona remembers, from the mirror `tools.persona_memory`
+    writes (idea #165). One batched read of that folder -- one document per
+    persona, 48KB for Nova today."""
+    return memory_payload(vault_bulk_fetch(PERSONA_MEMORY_PREFIX))
 
 
 def retros_payload():
@@ -4264,6 +4273,11 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # this page needs no client code at all.
                 payload, _, _ = cached_payload("planned", planned_done_payload)
                 self._send(200, render_planned_done(payload), "text/html; charset=utf-8")
+                return
+            if path == "/memory":
+                # Server-rendered for `/planned`'s reason: app.js may not grow.
+                payload, _, _ = cached_payload("memory", persona_memory_payload)
+                self._send(200, render_persona_memory(payload), "text/html; charset=utf-8")
                 return
             if path == "/api/next":
                 self._send_cached_json("next", next_up_payload)
