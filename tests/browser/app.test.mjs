@@ -13429,6 +13429,42 @@ describe("the chat dock folds the heartbeat threads away", () => {
       "chat-list-fab", "the new-conversation control is not above the list");
   });
 
+  /* His capture, issues.md 2026-09-19: "Sort the chats based on latest
+   * message sent/received. Not based on last opened." The rank used to be
+   * the later of a per-device "opened at" map and the row's `updatedAt`, so
+   * reading an old thread lifted it -- and its fold -- to the top. Both ways
+   * in are pinned here: a map an older build left on his phone, and opening a
+   * thread now. Either one reorders this list on the old code. */
+  test("opening a thread does not move it; only its newest message does", async () => {
+    const window = await loadSite("/journal", {
+      ask: askThread,
+      convList: MIXED,
+      convThread: () => ({ conversationId: "c-b2", waiting: false, messages: [] }),
+      install: (w) => w.localStorage.setItem("nova.convOpened.v1",
+        JSON.stringify({ "c-1": Date.parse("2030-01-01T00:00:00Z") })),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    const before = folds(window);
+    const older = [...window.document.querySelectorAll("#chat-list .chat-list-row")]
+      .find((r) => r.querySelector(".chat-list-name").textContent === "Nova — Cycle 470");
+    assert.ok(older, "the older heartbeat row was not drawn, so tapping it proves nothing");
+    older.dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.equal(window.document.getElementById("chat-title").textContent,
+      "Nova — Cycle 470", "the tap did not open the thread");
+    tap(window, "chat-menu");
+    await tick();
+    for (const seen of [before, folds(window)]) {
+      assert.deepEqual(seen.map((f) => [f.name, f.rows]), [
+        ["Heartbeats", ["Nova — Cycle 471", "Nova — Cycle 470"]],
+        ["Conversations", ["Roofing"]],
+      ]);
+    }
+  });
+
   test("a folded heartbeat is still one tap away, not filtered out", async () => {
     const asked = [];
     const window = await openSwitcher({
