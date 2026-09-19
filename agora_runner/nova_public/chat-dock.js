@@ -1568,61 +1568,25 @@
       }, true);
     }
 
-    /* When he last opened each thread, so the list can put the ones he
-     * actually uses at the top -- his ask, 2026-09-07: *"the sorting of the
-     * conversation should be based on which conversation i opened last and
-     * which one gave me a notification last."*
-     *
-     * The second half of that is already on the row: `updatedAt` is when the
-     * thread last moved, which is the same event that raises a notification.
-     * The first half is not on the row and cannot be -- the server has no
-     * session and no idea which browser is his (the same reason
-     * `CHAT_SOURCE_KEY` above is per-device), so it is kept here and merged
-     * into the sort rather than sent anywhere.
-     */
     /* What the header says while the listing that knows the real name is
      * still in flight. A uuid would be worse and an empty header reads as
      * broken, so it is briefly generic and then replaced. */
     var UNNAMED_THREAD = "Conversation";
 
-    var CHAT_OPENED_KEY = "nova.convOpened.v1";
-    var openedAt = null;
-
-    function loadOpened() {
-      if (openedAt) return openedAt;
-      openedAt = {};
-      var store = localStore();
-      if (!store) return openedAt;
-      try {
-        var raw = store.getItem(CHAT_OPENED_KEY);
-        var parsed = raw ? JSON.parse(raw) : null;
-        if (parsed && typeof parsed === "object") openedAt = parsed;
-      } catch (err) { /* unreadable is the same as never opened */ }
-      return openedAt;
-    }
-
-    function markOpened(id) {
-      if (!id) return;
-      var map = loadOpened();
-      map[id] = Date.now();
-      var store = localStore();
-      if (!store) return;
-      try {
-        store.setItem(CHAT_OPENED_KEY, JSON.stringify(map));
-      } catch (err) { /* full or disabled: the list falls back to updatedAt */ }
-    }
-
-    /* One number per row: the later of "he opened it" and "it moved".
+    /* Each thread ranks by its newest message, sent or received -- his ask,
+     * `issues.md` 2026-09-19: *"Sort the chats based on latest message
+     * sent/received. Not based on last opened."*
      *
-     * Both are wanted and neither wins on principle -- a thread he opened an
-     * hour ago should sit above one he has never opened that moved two hours
-     * ago, and a thread that answered a minute ago should sit above one he
-     * opened yesterday. Taking the max of the two is what says that. */
+     * Until then the rank was the later of "he opened it" (kept per device in
+     * localStorage) and "it moved", from his earlier ask of 2026-09-07. Opening
+     * a thread to read it pushed it to the top without anything new in it, so
+     * the order stopped saying where the conversation was. `updatedAt` is
+     * Agora's `lastMessageAt` (`nova_conversations.conversations()`), which is
+     * exactly the newest message either way, so it is the whole rank now.
+     * A `nova.convOpened.v1` map left on a phone is simply no longer read.
+     */
     function rowRank(row) {
-      var map = loadOpened();
-      var mine = map[row.id] || 0;
-      var moved = Date.parse(row.updatedAt || "") || 0;
-      return Math.max(mine, moved);
+      return Date.parse(row.updatedAt || "") || 0;
     }
 
     function switchTo(next) {
@@ -1636,7 +1600,6 @@
       source = next;
       sourceToken += 1;
       rememberSource();
-      if (next.kind === "conv") markOpened(next.id);
       stopChatPoll();
       // A fresh thread has its own message count, and `loaded` is what stops
       // the first paint of it lighting the unread dot on a thread he is
@@ -1919,7 +1882,7 @@
       // `cycleThread` is `nova_conversations.conversations()`'s own flag
       // for an `evolve-cycle:` tag. Reading the tag here as well would
       // be a second copy of that rule in a second language.
-      // Newest-first on that combined rank, inside every group. The
+      // Newest message first, inside every group. The
       // grouping itself is unchanged -- folders, loose threads and the
       // heartbeat folds are still the folds; this is the order within them.
       rows = rows.slice().sort(function (a, b) { return rowRank(b) - rowRank(a); });
@@ -1978,7 +1941,7 @@
       /* The folds themselves are ordered by what is in them -- his ask,
        * 2026-09-07: *"make also the folder with the latest messages be the
        * folder on top"*. A fold ranks as its newest row, on the same
-       * combined "opened or moved" rank the rows inside it are sorted by,
+       * newest-message rank the rows inside it are sorted by,
        * so the two orders cannot disagree with each other.
        *
        * `Conversations` and `Heartbeats` are ranked with the named folders
