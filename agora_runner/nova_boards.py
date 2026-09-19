@@ -2193,8 +2193,8 @@ def row_order_seats(items, number, position):
 
     **The first placement numbers the whole group, not just the row moved,
     and the seed is the ranking the picker used before this existed** --
-    rating first, then the order the rows already sit in. That is
-    `set_project_order`'s rule one level down, and it is also the migration
+    rating first, then the order the rows already sit in. That was
+    the project list's rule one level down (its writer is gone, issue #229), and it is also the migration
     the spec asks for, performed per milestone at the moment he first drags
     one: after it, "high at the top and low at the bottom" is written into
     the cells where he can see it and edit it, rather than being re-derived
@@ -2521,80 +2521,6 @@ def project_positions(markdown):
     return out
 
 
-def set_project_priority(markdown, project, priority, dated=""):
-    """Rate one project. Returns the new markdown, or `None` if refused.
-
-    Refused: a name `set_row_project` would refuse for the same reasons
-    (a `|` splits the row into a fourth column, a `*` leaves unbalanced
-    emphasis in his own file, a line break ends the table, over 40
-    characters is not a name), and a rating outside the four labels.
-
-    `""` is a real rating and means *unrated* -- it clears the cell rather
-    than deleting the row, so a project he has deliberately un-prioritised
-    reads the same as one he has never rated, which is the truth.
-
-    An empty or absent file is written whole from `PROJECT_META_TEMPLATE`.
-    The alternative -- refusing until he creates it -- would make the first
-    rating the one that fails.
-    """
-    name = (project or "").strip()
-    if not name or len(name) > 40:
-        return None
-    if any(c in name for c in "|*\r\n"):
-        return None
-    label = canonical_priority(priority)
-    if label is None:
-        return None
-
-    text = markdown or ""
-    if not text.strip():
-        text = PROJECT_META_TEMPLATE
-    lines = text.split("\n")
-
-    rule = None
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped.startswith("|"):
-            continue
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        if all(set(cell) <= set("-: ") and cell for cell in cells):
-            rule = index
-            continue
-        if cells and cells[0].lower() == name.lower():
-            while len(cells) < _PROJECT_META_WIDTH:
-                cells.append("")
-            # `cells[0]` is deliberately left alone. The match above is
-            # case-insensitive because he types the name on a phone, and
-            # writing his casing back would rename the project on his own
-            # page every time he re-rated it from a different spelling.
-            cells[1] = label
-            cells[2] = dated or cells[2]
-            lines[index] = "| " + " | ".join(cells[:_PROJECT_META_WIDTH]) + " |"
-            return "\n".join(lines)
-
-    if rule is None:
-        # A file that exists but has lost its table. Append a whole one
-        # rather than guessing where the old one was: the alternative is
-        # writing a row into prose, where `parse_project_meta` will never
-        # find it again.
-        body = text.rstrip("\n") + "\n\n" + PROJECT_META_TEMPLATE.split("---\n", 2)[-1]
-        lines = body.split("\n")
-        rule = max(
-            i for i, line in enumerate(lines)
-            if line.strip().startswith("|") and set(line.strip().strip("|"))
-            <= set("-| ")
-        )
-
-    row = "| " + " | ".join([name, label, dated, ""][:_PROJECT_META_WIDTH]) + " |"
-    # Newest last: this table is small and read whole, and appending keeps
-    # the file's diff to one line so his own edits stay legible in git.
-    insert = rule + 1
-    while insert < len(lines) and lines[insert].strip().startswith("|"):
-        insert += 1
-    lines.insert(insert, row)
-    return "\n".join(lines)
-
-
 _PROJECT_ORDER_HEADING = "Order"
 _PROJECT_TRL_HEADING = "TRL"
 _PROJECT_SATISFACTION_HEADING = "Satisfaction"
@@ -2660,128 +2586,6 @@ def _write_project_cells(cells):
     return "| " + " | ".join(padded[:_PROJECT_META_WIDTH]) + " |"
 
 
-def set_project_order(markdown, project, position, names=None):
-    """Place one project at `position` in his hand-ranked list, 1-based.
-
-    Milestone M3 of idea #260. His words in the spec: *"the list of
-    projects... is an ordered list where the top one has the highest
-    priority... the ui for me also makes it easy with a drag and drop
-    list."* The rating column stays and keeps meaning what it meant; what
-    changes is that a placed list outranks it, because a position he set
-    by hand is a decision and a label is a description.
-
-    **The first placement numbers every row, not just the one moved**, and
-    the seed is the ranking the picker used before this existed --
-    rating first, then the order the rows already sit in. That is the
-    spec's surface-don't-silently-act rule: the moment he drags one
-    project, the whole list gets an explicit order he can see, rather than
-    a single numbered row and seven that still rank by something else.
-
-    **`names` is the list he is looking at, and `position` is an index into
-    it.** Without it this function orders the rows of *this* table, which
-    is a different and smaller list than the page draws: the set of
-    projects that exist comes off the `Project` column of his two boards,
-    and a project he has never rated has no row here at all. On 2026-09-12
-    that was every reorder of the bottom three: the page listed eleven
-    projects, the table held eight rows, and `Infra`, `Maintenance` and
-    `Research` -- which no row named -- were refused outright, while
-    positions 9, 10 and 11 were past the end of a list nobody was looking
-    at. So the caller passes the page's own order, a project in it with no
-    row gets one (unrated -- which is what it already was, now with a seat
-    written down), and a row for a project that is *not* in it has its
-    `Order` cell cleared, because an order is a seat in his list.
-
-    Returns the new markdown, or `None` if refused: a project that is not
-    in the list being ordered (a position is a statement about a list, and
-    a name outside it has nowhere to go), a position outside `1..N`, or a
-    file with no table to order.
-    """
-    name = (project or "").strip()
-    if not name:
-        return None
-    try:
-        position = int(position)
-    except (TypeError, ValueError):
-        return None
-
-    lines = (markdown or "").split("\n")
-    table = _project_meta_table(lines)
-    if table is None:
-        return None
-    heading, rule, rows = table
-
-    parsed = []
-    for index in rows:
-        cells = [c.strip() for c in lines[index].strip().strip("|").split("|")]
-        cells += [""] * (_PROJECT_META_WIDTH - len(cells))
-        parsed.append((index, cells))
-
-    meta = parse_project_meta(markdown or "")
-
-    if names is None:
-        if not parsed:
-            return None
-        # Seed order: `rank_projects` already puts a placed project ahead of
-        # an unplaced one and falls back to the rating for the rest, which is
-        # exactly the order this list has to start from -- so there is no
-        # separate "has he ordered it yet" branch here. A file he has never
-        # ordered seeds from the ratings M1 shipped; a file he has seeds from
-        # what it says, with any unplaced row falling in behind.
-        seed = rank_projects([cells[0] for _index, cells in parsed], meta)
-    else:
-        # Taken as given rather than re-ranked: the caller hands over the
-        # order the page drew, and `position` counts rows on that page.
-        # Re-deriving it here would be a second opinion about a list he can
-        # see, and the two would drift the first time the ranking changed.
-        seed = []
-        seen = set()
-        for entry in names:
-            text = (entry or "").strip()
-            if text and text.lower() not in seen:
-                seen.add(text.lower())
-                seed.append(text)
-        if not seed:
-            return None
-
-    keys = [text.lower() for text in seed]
-    if name.lower() not in keys:
-        return None
-    if position < 1 or position > len(keys):
-        return None
-
-    by_key = {}
-    for entry in parsed:
-        by_key.setdefault(entry[1][0].lower(), entry)
-    added = []
-    for text in seed:
-        if text.lower() not in by_key:
-            cells = [text] + [""] * (_PROJECT_META_WIDTH - 1)
-            entry = (None, cells)
-            by_key[text.lower()] = entry
-            added.append(entry)
-
-    ordered = [key for key in keys if key != name.lower()]
-    ordered.insert(position - 1, name.lower())
-
-    for rank, key in enumerate(ordered, start=1):
-        by_key[key][1][3] = str(rank)
-
-    for _index, cells in parsed:
-        if cells[0].lower() not in set(keys):
-            cells[3] = ""
-
-    for index, cells in parsed:
-        lines[index] = _write_project_cells(cells)
-    if added:
-        after = rows[-1] if rows else rule
-        lines[after + 1:after + 1] = [
-            _write_project_cells(cells) for _index, cells in added]
-
-    _name_project_headings(lines, heading, rule)
-
-    return "\n".join(lines)
-
-
 def set_project_trl(markdown, project, level):
     """Set one project's TRL. Returns the new markdown, or `None` if refused.
 
@@ -2828,8 +2632,7 @@ def set_project_trl(markdown, project, level):
 
     index, cells = hit
     cells += [""] * (_PROJECT_META_WIDTH - len(cells))
-    # `cells[0]` is left alone for the same reason `set_project_priority`
-    # leaves it: the match is case-insensitive because he types the name on
+    # `cells[0]` is left alone: the match is case-insensitive because he types the name on
     # a phone, and writing my casing back renames his project.
     cells[4] = label
     lines[index] = _write_project_cells(cells)
@@ -3301,7 +3104,7 @@ def set_milestone_pin(markdown, project, milestone, position, updated=""):
     and a milestone absent from it reads the same as a milestone he has
     never touched, because those are the same thing.
 
-    Unlike `set_project_order` this does **not** renumber the other rows,
+    Unlike the project-list writer this replaced (removed, issue #229) this does **not** renumber the other rows,
     and the difference is not an oversight. His project list is a list he
     owns end to end, so placing one project has to give the whole list an
     order he can see. Milestones are mine by default -- *"I want the

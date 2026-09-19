@@ -141,9 +141,7 @@ from agora_runner.nova_capture import (
     ROW_ORDER_AUTHORS,
     set_row_order,
     set_project,
-    set_project_priority,
     pin_milestone,
-    set_project_order,
     set_project_satisfaction,
     resolve_project_lifecycle,
     project_priorities,
@@ -5334,8 +5332,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
         Part 3 of `row-order-and-priority-migration.md`: *"Lets me
         organise/sort the milestones and tasks aswell."* Milestones already
-        move (`/api/milestone/pin`) and projects already move
-        (`/api/project/order`); a task had the cell since #918 and no way to
+        move (`/api/milestone/pin`); a task had the cell since #918 and no way to
         write one, so the ordering he was promised existed only as a column
         a cycle could fill in by hand.
 
@@ -5479,121 +5476,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "is not a row" in message
         self._send_json(200 if ok else (409 if stale else 502), {"ok": ok, "message": message})
 
-    def _post_project_priority(self, payload):
-        """`POST /api/project/priority` -- rating a project, not a row.
-
-        The last line of his 2026-09-01 capture: *"Each project should also
-        be able to be assigned a priority, making one project and its tasks
-        more important than others."*
-
-        **This writes to a document neither board owns, and that is the
-        decision worth naming.** Cycle 770 built the project *picker* on the
-        deliberate design that the set of projects is read off the `Project`
-        cells, so there is no second list that can disagree with the rows. A
-        project-level rating cannot live there: it belongs to the project
-        rather than to any one of its rows, and writing it onto every row
-        would be thirty cells that have to stay equal. So `PROJECT_META_PATH`
-        is a second document, and it is scoped as narrowly as it can be --
-        it holds ratings only, and a name in it that no row carries still
-        does not bring a project into existence.
-
-        `project` is free text bounded by `set_project_priority`, the same
-        boundary `_post_project` leans on and for the same reason. `priority`
-        *is* checked against the four labels here, the same as
-        `_post_priority`: four labels is a closed set, so anything else in
-        that cell is a client writing arbitrary text into his file.
-        """
-        project = payload.get("project")
-        priority = payload.get("priority")
-        if not isinstance(project, str) or not project.strip():
-            self._send_json(400, {"error": "project must be a non-empty string"})
-            return
-        project = project.strip()
-        priority = canonical_priority(priority)
-        if priority is None:
-            self._send_json(
-                400, {"error": f"priority must be one of {sorted(PRIORITY_LABELS.values())}"})
-            return
-
-        try:
-            ok, message = set_project_priority(project, priority)
-        except Exception as e:
-            log(f"nova-site project priority failed: {e}")
-            self._send_json(502, {"error": str(e)[:300]})
-            return
-
-        # Nothing to invalidate: `project_payload` reads the ratings
-        # uncached, the same call `/api/comments` makes, because this is one
-        # small table and a stale rating is a page ordered against the
-        # picker he is looking at.
-        audit(
-            "Nova",
-            "",
-            "nova_capture",
-            f"Rate project {project} \u00b7 {'ok' if ok else message}",
-            after=priority,
-            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
-            is_error=not ok,
-        )
-        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
-
-    def _post_project_order(self, payload):
-        """`POST /api/project/order` -- where a project sits in his list.
-
-        Milestone M3 of idea #260: *"the list of projects... is an ordered
-        list where the top one has the highest priority... the ui for me
-        also makes it easy with a drag and drop list."* This is the write
-        end of that drag.
-
-        `position` is 1-based and is checked as an `int` here rather than
-        coerced, the same call `_post_priority` makes about a row number: a
-        client that sends `"2"` is a client that will one day send `"top"`,
-        and the markdown layer is not where a type is decided. Everything
-        else the write can refuse -- an unknown project, a position past the
-        end of the list, a file with no table -- is `set_project_order`'s to
-        answer, because those are facts about the document rather than about
-        the request.
-
-        **The list it is a position in comes from here, not from the file.**
-        `projects.md` holds one row per *rated* project; the page draws every
-        project his boards name, ranked. Those were the same list only by
-        luck, and on 2026-09-12 they were not: eleven projects on the page,
-        eight rows in the file, and the three at the bottom -- `Infra`,
-        `Maintenance` and `Research` -- could not be moved at all. So the
-        page's own order is what goes down, out of the same cached payload
-        the page itself was built from.
-        """
-        project = payload.get("project")
-        position = payload.get("position")
-        if not isinstance(project, str) or not project.strip():
-            self._send_json(400, {"error": "project must be a non-empty string"})
-            return
-        if not isinstance(position, int) or isinstance(position, bool) or position < 1:
-            self._send_json(400, {"error": "position must be an integer of 1 or more"})
-            return
-
-        try:
-            ok, message = set_project_order(
-                project.strip(), position,
-                names=project_payload().get("projects") or [])
-        except Exception as e:
-            log(f"nova-site project order failed: {e}")
-            self._send_json(502, {"error": str(e)[:300]})
-            return
-
-        # Nothing to invalidate, the same as the rating beside it: the
-        # project payload reads this table uncached on every page load.
-        audit(
-            "Nova",
-            "",
-            "nova_capture",
-            f"Place project {project.strip()} \u00b7 {'ok' if ok else message}",
-            after=str(position),
-            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
-            is_error=not ok,
-        )
-        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
-
     def _post_milestone_pin(self, payload):
         """`POST /api/milestone/pin` -- he overrides where a milestone sits.
 
@@ -5603,12 +5485,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         beats it, and until now the only way to set one was a cycle
         running `tools.milestone_pin` from a terminal he does not have.
 
-        `position` is checked as an `int` here rather than coerced, the
-        same call `_post_project_order` makes one function up and for the
-        same reason. **Zero is legal here and is not legal there**, which
-        is the one difference worth stating: a project always sits
-        somewhere in his list, so there is no "unplaced"; a milestone is
-        pinned or it is not, and `0` is how he takes a pin back off.
+        `position` is checked as an `int` here rather than coerced: a client
+        that sends `"2"` is a client that will one day send `"top"`. **Zero
+        is legal**: a milestone is pinned or it is not, and `0` is how he
+        takes a pin back off.
 
         Everything else the write can refuse -- a `|` in either name, a
         document with no table -- is `set_milestone_pin`'s to answer,
@@ -5716,7 +5596,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         would let a cycle write his opinion for him.
 
         `score` is checked as an `int` here rather than coerced, the same
-        call `_post_project_order` makes -- and `canonical_satisfaction`
+        call `_post_milestone_pin` makes -- and `canonical_satisfaction`
         refuses a `bool` explicitly, because `True == 1` in Python and a
         client sending `true` would otherwise score a project 1 out of 5.
         `0` is legal and clears the score back to unrated; the markdown
@@ -6713,7 +6593,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture/convert", "/api/capture/promote", "/api/comment",
             "/api/board/project",
             "/api/row/order",
-            "/api/project/priority", "/api/project/order",
             "/api/project/satisfaction",
             "/api/project/lifecycle", "/api/milestone/pin",
             "/api/board/edit", "/api/board/delete", "/api/board/archive",
@@ -6863,12 +6742,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/project":
             self._post_project(payload)
-            return
-        if path == "/api/project/priority":
-            self._post_project_priority(payload)
-            return
-        if path == "/api/project/order":
-            self._post_project_order(payload)
             return
         if path == "/api/row/order":
             self._post_row_order(payload)

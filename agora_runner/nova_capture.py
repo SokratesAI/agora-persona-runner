@@ -60,8 +60,6 @@ from agora_runner.nova_boards import (
     PROJECT_META_PATH,
     parse_project_meta,
     set_milestone_pin as _set_milestone_pin_md,
-    set_project_priority as _set_project_priority_md,
-    set_project_order as _set_project_order_md,
     set_project_satisfaction as _set_project_satisfaction_md,
     resolve_project_lifecycle as _resolve_project_lifecycle_md,
     canonical_priority,
@@ -1119,87 +1117,6 @@ def archive_row(target, number, dated=None, store=None):
     return True, f"#{number} archived on {target}"
 
 
-def set_project_priority(project, priority, dated=None):
-    """Rate a project. Returns (ok, message).
-
-    The sixth write path on this site and the first that does not write to
-    one of his two boards -- a project-level rating has no row to live on,
-    so it goes to `PROJECT_META_PATH`. Same read-modify-write and same 409
-    retry as the other five, and for the same reason: a cycle boarding his
-    files is the concurrent writer.
-
-    A file that does not exist yet is not an error here. `vault_read_path_rev`
-    answers `None` for a missing document, and `set_project_priority` in
-    `nova_boards` writes the template whole in that case -- so the first
-    rating creates the file rather than failing on it. The `if_rev` is
-    passed through unchanged, so two cycles rating two projects in the same
-    second still cannot both create it.
-
-    `None` back from the markdown layer is a refusal, not a write failure,
-    and is not retried: the name or the rating is out of bounds and
-    re-reading gives the same answer, the same distinction `set_priority`
-    draws.
-    """
-    if dated is None:
-        # Oslo, not UTC, and stamped here rather than by the caller so the
-        # one write path owns the one clock. Rule 7: anything he reads.
-        dated = datetime.now(OSLO).strftime("%m-%d")
-    result = ""
-    for _ in range(WRITE_ATTEMPTS):
-        current, rev = vault_read_path_rev(PROJECT_META_PATH)
-        updated = _set_project_priority_md(current or "", project, priority, dated=dated)
-        if updated is None:
-            return False, f"cannot rate {project!r} as {priority!r}"
-        result = vault_write_path(PROJECT_META_PATH, updated, if_rev=rev)
-        if result == "written":
-            log(f"nova-capture rated project {project!r} as {priority or '(unrated)'}")
-            return True, f"{project} is now {priority or 'unrated'}"
-        if "409" not in result:
-            break
-    log(f"nova-capture failed rating project {project!r}: {result}")
-    return False, f"could not write project ratings: {result}"
-
-
-def set_project_order(project, position, names=None):
-    """Place a project at `position` in his hand-ranked list. Returns (ok, message).
-
-    Milestone M3 of idea #260. Same read-modify-write and same 409 retry as
-    `set_project_priority` one function up, against the same document, and
-    for the same reason -- a cycle boarding his files is the concurrent
-    writer.
-
-    **A missing file is a refusal here, unlike a rating.** A rating creates
-    the table because the first rating has to be able to land somewhere; a
-    position is a statement about a list, and a list nobody has written has
-    no positions in it. `set_project_order` in `nova_boards` answers `None`
-    for that, and for a project outside the list being ordered, and for a
-    position outside it -- none of the three is retried, because re-reading
-    gives the same answer.
-
-    `names` is the list he is looking at, in the order the page drew it, and
-    it is what `position` indexes. Passing it is how a project he has never
-    rated becomes orderable at all: this table holds a row per *rated*
-    project while the page lists every project his boards name, so without
-    it the bottom of his list is unreachable -- which is exactly what he
-    reported on 2026-09-12. It stays optional so a caller that really is
-    ordering this table alone keeps working unchanged.
-    """
-    result = ""
-    for _ in range(WRITE_ATTEMPTS):
-        current, rev = vault_read_path_rev(PROJECT_META_PATH)
-        updated = _set_project_order_md(current or "", project, position, names=names)
-        if updated is None:
-            return False, f"cannot place {project!r} at {position!r}"
-        result = vault_write_path(PROJECT_META_PATH, updated, if_rev=rev)
-        if result == "written":
-            log(f"nova-capture placed project {project!r} at {position}")
-            return True, f"{project} is now #{position}"
-        if "409" not in result:
-            break
-    log(f"nova-capture failed placing project {project!r}: {result}")
-    return False, f"could not write project order: {result}"
-
-
 def pin_milestone(project, milestone, position):
     """Pin one milestone to a position inside its project. Returns (ok, message).
 
@@ -1208,8 +1125,8 @@ def pin_milestone(project, milestone, position):
     is that you do it"*. The formula in `nova_next.milestone_ranks` is
     the default; this is him saying otherwise about one milestone.
 
-    Same read-modify-write and same 409 retry as `set_project_order`
-    above, and for the same reason -- a cycle running `tools.milestone_pin`
+    Same read-modify-write and same 409 retry as `set_project_satisfaction`
+    below, and for the same reason -- a cycle running `tools.milestone_pin`
     against the same document is the concurrent writer -- but against
     `MILESTONE_PINS_PATH` rather than `projects.md`, because a pin is a
     decision about a milestone and not a column on a project.
@@ -1251,7 +1168,7 @@ def set_project_satisfaction(project, score):
 
     Milestone M5 of idea #260, and the only write path this field has:
     *"satisfaction 1-5: mine alone"*. Same read-modify-write and same 409
-    retry as `set_project_order` one function up, against the same
+    retry as `pin_milestone` one function up, against the same
     document, and for the same reason -- a cycle boarding his files is the
     concurrent writer.
 
@@ -1289,7 +1206,7 @@ def resolve_project_lifecycle(project, decision):
     `set_project_satisfaction` one function up. The proposing half is
     `tools.project_lifecycle`, a CLI, because that half is mine.
 
-    A missing file is a refusal for `set_project_order`'s reason, and so is
+    A missing file is a refusal because there is nothing to decide on, and so is
     a decision on a project with nothing proposed -- `resolve_project_lifecycle`
     in `nova_boards` answers `None` for both, and neither is retried,
     because re-reading gives the same answer.
