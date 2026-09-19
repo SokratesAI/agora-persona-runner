@@ -217,3 +217,43 @@ def test_a_pin_inside_its_window_or_not_yet_read_says_nothing():
 def test_a_pin_check_that_could_not_measure_is_a_concern():
     [line] = _with_pin({"error": "could not read the npm registry: boom"})
     assert line.startswith("I could not check the Claude Code pin")
+
+
+def _with_nodes(nodes):
+    return health_block(
+        {"cycle": 1457, "lastWrittenAt": "2026-09-12T16:00:00+02:00",
+         "recentMissingCycles": []},
+        QUIET_ALERTS, HEALTHY_QUOTA, 40, nodes=nodes,
+    )["concerns"]
+
+
+def test_nodes_near_end_of_security_support_are_named_once_per_version():
+    """Idea #322: both nodes on one release are one upgrade and one line."""
+    nodes = {"warn": True, "nodes": [
+        {"node": "server1", "kubelet": "v1.34.4+k3s1", "securityEnds": "2026-10-27", "days": 38},
+        {"node": "server2", "kubelet": "v1.34.4+k3s1", "securityEnds": "2026-10-27", "days": 38},
+    ]}
+    assert _with_nodes(nodes) == [
+        "Kubernetes v1.34.4+k3s1 on server1 and server2 loses security support on 2026-10-27"
+    ]
+
+
+def test_a_node_past_its_date_says_lost_and_a_healthy_one_is_left_out():
+    nodes = {"warn": True, "nodes": [
+        {"node": "server1", "kubelet": "v1.33.9+k3s1", "securityEnds": "2026-06-28", "days": -83},
+        {"node": "server2", "kubelet": "v1.36.4+k3s1", "securityEnds": "2027-06-28", "days": 282},
+    ]}
+    assert _with_nodes(nodes) == [
+        "Kubernetes v1.33.9+k3s1 on server1 lost security support on 2026-06-28"
+    ]
+
+
+def test_nodes_outside_the_window_or_not_yet_read_say_nothing():
+    assert _with_nodes({"warn": False, "nodes": [
+        {"node": "server1", "kubelet": "v1.36.4+k3s1", "securityEnds": "2027-06-28", "days": 282}]}) == []
+    assert _with_nodes(None) == []
+
+
+def test_a_node_read_that_failed_is_a_concern():
+    [line] = _with_nodes({"error": "could not read nodes: boom", "nodes": [], "warn": False})
+    assert line.startswith("I could not read the nodes' Kubernetes version")

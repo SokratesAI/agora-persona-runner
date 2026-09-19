@@ -288,6 +288,7 @@ from agora_runner.nova_sources import (
     catalog_markdown,
     comments_markdown,
     cli_pin_json,
+    node_versions_json,
     cost_ledger_json,
     digest_markdown,
     journal_markdown,
@@ -1930,7 +1931,8 @@ def _health(status):
     """
     try:
         return health_block(status, alerts_payload(), _newest_quota(),
-                            cadence_minutes(), pin=_pin_reading())
+                            cadence_minutes(), pin=_pin_reading(),
+                            nodes=_json_reading(node_versions_json, "node versions"))
     except Exception as problem:  # noqa: BLE001 -- deliberate, see above
         log(f"nova-site health line unavailable, the landing page is unaffected: {problem}")
         return None
@@ -1944,6 +1946,17 @@ def _pin_reading():
         return json.loads(raw) if raw else None
     except Exception as problem:  # noqa: BLE001 -- see `_health`
         log(f"nova-site pin reading unavailable: {problem}")
+        return None
+
+
+def _json_reading(source, label):
+    """A published JSON verdict (idea #322's node versions), or `None` --
+    swallowed like `_pin_reading`, for the same reason."""
+    try:
+        raw = source()
+        return json.loads(raw) if raw else None
+    except Exception as problem:  # noqa: BLE001 -- see `_health`
+        log(f"nova-site {label} reading unavailable: {problem}")
         return None
 
 

@@ -103,15 +103,23 @@ judged is supported.
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
+
+# Repo root on sys.path so `python3 tools/eol_watch.py` works and not only
+# `-m`. See tests/test_tools_run_as_scripts.py.
+import pathlib as _pathlib  # noqa: E402
+sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from tools.pin_drift import _tree, read_file
 from tools.running_images import (_run, classify, normalise, read_workloads,
                                   split_ref)
 from tools.security_alerts import _repos_to_sweep
+from agora_runner.nova_home import NODE_VERSION_PATH, NODE_WARN_DAYS
 
 CATALOGUE = "https://endoflife.date/api/v1/products/full"
 
@@ -178,6 +186,7 @@ SETUP_ACTION_RE = re.compile(r"uses:\s*\S*setup-([a-z][a-z0-9]*)@")
 
 WORKFLOW_DIR = ".github/workflows/"
 
+VAULT_TOOL = "/app/bridge/vault_tool.py"
 DEFAULT_WITHIN_DAYS = 180
 
 
@@ -827,6 +836,53 @@ def cause_counts(not_judged):
                                     else len(CAUSE_ORDER), item[0]))
 
 
+def node_record(node_pins, node_problems, today):
+    """What the landing page's health line needs about the nodes (idea #322).
+
+    The page is served from a cache and must not consult a clock (see
+    `nova_home.health_block`), so the one judgement that needs today's date
+    -- is a node inside `NODE_WARN_DAYS` of losing security support -- is
+    made here and published as `warn`, beside the date itself. This runs
+    weekly, so the flag can come on up to a week late inside a two-month
+    window, and after an upgrade it stays on until the next run: run
+    `python3 -m tools.eol_watch --publish` by hand once the nodes are done.
+    """
+    record = {"checkedAt": dt.datetime.now(dt.timezone.utc).isoformat(
+        timespec="seconds"), "nodes": [], "warn": False}
+    if node_problems:
+        record["error"] = "; ".join(node_problems)
+    for pin in node_pins:
+        node = {"node": pin["path"].removeprefix("node "),
+                "kubelet": pin.get("kubelet", pin["tag"])}
+        days = pin.get("days")
+        if days is not None:
+            node["securityEnds"] = (today + dt.timedelta(days=days)).isoformat()
+            node["days"] = days
+            if days <= NODE_WARN_DAYS:
+                record["warn"] = True
+        elif pin.get("reason"):
+            node["unjudged"] = pin["reason"]
+        record["nodes"].append(node)
+    return record
+
+
+def publish(record, runner=subprocess.run):
+    """Write `record` as JSON to the vault; the error text, or `""`."""
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(record, f, indent=1)
+    try:
+        done = runner([sys.executable, VAULT_TOOL, "put", NODE_VERSION_PATH,
+                       f.name, "--allow-shrink"],
+                      capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc) or exc.__class__.__name__
+    finally:
+        os.unlink(f.name)
+    if done.returncode != 0:
+        return (done.stderr or done.stdout or "vault put failed").strip()
+    return ""
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", action="append",
@@ -836,6 +892,10 @@ def main(argv=None):
     parser.add_argument("--within-days", type=int, default=DEFAULT_WITHIN_DAYS,
                         help="raise on a line whose support ends inside this "
                              "many days (default %d)" % DEFAULT_WITHIN_DAYS)
+    parser.add_argument("--publish", action="store_true",
+                        help="also write the nodes' Kubernetes verdict to the "
+                             "vault, where the Nova landing page's health line "
+                             "reads it (idea #322)")
     args = parser.parse_args(argv)
 
     if args.repo:
@@ -874,7 +934,14 @@ def main(argv=None):
 
     print(format_report(judged, not_judged, problems, notes, args.within_days))
 
-    unreadable = bool(problems or incomplete or unplaceable)
+    published_badly = ""
+    if args.publish:
+        record = node_record(node_pins, node_problems, today)
+        published_badly = publish(record)
+        if published_badly:
+            print(f"COULD NOT PUBLISH — {published_badly}")
+
+    unreadable = bool(problems or incomplete or unplaceable or published_badly)
     if unreadable:
         print("Something here was unreadable, so this run cannot claim the "
               "sweep was complete.")
