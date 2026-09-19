@@ -203,6 +203,12 @@ def cost_ledger_json():
     return vault_read_path(COST_LEDGER_PATH) or ""
 
 
+def cli_pin_json():
+    """`tools.cli_pin --publish`'s last verdict, raw, or `""` if none yet."""
+    from agora_runner.nova_home import PIN_READING_PATH
+    return vault_read_path(PIN_READING_PATH) or ""
+
+
 def retro_ledger_json():
     """The Friday retrospective ledger, raw.
 

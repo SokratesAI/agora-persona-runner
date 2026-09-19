@@ -191,3 +191,29 @@ def test_health_and_top_cannot_be_passed_positionally():
     """
     with pytest.raises(TypeError):
         home_payload({}, {}, {}, [], block())
+
+
+def _with_pin(pin):
+    return health_block(
+        {"cycle": 1457, "lastWrittenAt": "2026-09-12T16:00:00+02:00",
+         "recentMissingCycles": []},
+        QUIET_ALERTS, HEALTHY_QUOTA, 40, pin=pin,
+    )["concerns"]
+
+
+def test_a_stale_claude_code_pin_is_named_on_the_line():
+    """Idea #308: the gap reaches the page he opens, not only my turn."""
+    assert _with_pin({"stale": True, "behind": 11, "ageDays": 10.4,
+                      "subject": "2.1.261", "latest": "2.1.272"}) == [
+        "Claude Code is 11 releases behind: on 2.1.261, published 10 days ago, newest 2.1.272"
+    ]
+
+
+def test_a_pin_inside_its_window_or_not_yet_read_says_nothing():
+    assert _with_pin({"stale": False, "behind": 2, "ageDays": 1.0}) == []
+    assert _with_pin(None) == []
+
+
+def test_a_pin_check_that_could_not_measure_is_a_concern():
+    [line] = _with_pin({"error": "could not read the npm registry: boom"})
+    assert line.startswith("I could not check the Claude Code pin")

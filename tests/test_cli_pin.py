@@ -320,3 +320,89 @@ def test_a_checkout_ahead_of_the_branch_is_not_called_behind(
     warning = next(l for l in out.splitlines() if "the checkout at" in l)
     assert "says 2.1.246, and the default branch says 2.1.245" in warning
     assert "behind" not in warning
+
+
+def _capture_publish(monkeypatch, result=""):
+    """Stub `publish` and hand back the list every record lands in."""
+    sent = []
+
+    def fake(record):
+        sent.append(record)
+        return result
+
+    monkeypatch.setattr(cli_pin, "publish", fake)
+    return sent
+
+
+def test_publish_carries_a_stale_verdict_for_the_health_line(
+        dockerfile, monkeypatch, capsys):
+    """Idea #308: the gap has to reach a page he opens, not only my turn."""
+    dockerfile("2.1.226")
+    sent = _capture_publish(monkeypatch)
+    code = run(
+        monkeypatch, "2.1.245",
+        ["2.1.226", "2.1.230", "2.1.243", "2.1.245"],
+        {"2.1.226": "2026-08-08T01:53:22.182Z"},
+        argv=["--publish"],
+    )
+    assert code == 2
+    [record] = sent
+    assert record["stale"] is True
+    assert record["behind"] == 3
+    assert record["ageDays"] == 17.5
+    assert record["subject"] == "2.1.226" and record["latest"] == "2.1.245"
+    assert "error" not in record
+
+
+def test_publish_says_current_is_not_stale(dockerfile, monkeypatch, capsys):
+    dockerfile("2.1.245")
+    sent = _capture_publish(monkeypatch)
+    assert run(monkeypatch, "2.1.245", ["2.1.245"], {}, argv=["--publish"]) == 0
+    assert sent[0]["stale"] is False
+
+
+def test_publish_records_an_unreadable_registry_as_an_error(
+        dockerfile, monkeypatch, capsys):
+    """A blind check must not publish something the page reads as calm."""
+    dockerfile("2.1.245")
+    sent = _capture_publish(monkeypatch)
+    monkeypatch.setattr(cli_pin, "read_remote_pin",
+                        lambda runner=None: (None, "gh failed: no token"))
+    monkeypatch.setattr(cli_pin, "fetch_registry",
+                        lambda: (None, None, None, "boom"))
+    assert cli_pin.main(["--publish"], now=NOW) == 1
+    assert "boom" in sent[0]["error"]
+
+
+def test_a_failed_publish_is_not_a_clean_exit(dockerfile, monkeypatch, capsys):
+    dockerfile("2.1.245")
+    _capture_publish(monkeypatch, result="409 conflict")
+    assert run(monkeypatch, "2.1.245", ["2.1.245"], {}, argv=["--publish"]) == 1
+    assert "COULD NOT PUBLISH — 409 conflict" in capsys.readouterr().out
+
+
+def test_no_publish_flag_writes_nothing(dockerfile, monkeypatch, capsys):
+    dockerfile("2.1.245")
+    sent = _capture_publish(monkeypatch)
+    run(monkeypatch, "2.1.245", ["2.1.245"], {})
+    assert sent == []
+
+
+def test_publish_puts_json_at_the_path_the_site_reads(tmp_path):
+    from agora_runner.nova_home import PIN_READING_PATH
+    calls = []
+
+    class Done:
+        returncode = 0
+        stdout = stderr = ""
+
+    def runner(cmd, **kw):
+        calls.append(cmd)
+        import json as _json
+        with open(cmd[4]) as f:
+            calls.append(_json.load(f))
+        return Done()
+
+    assert cli_pin.publish({"stale": False}, runner=runner) == ""
+    assert calls[0][2:4] == ["put", PIN_READING_PATH]
+    assert calls[1] == {"stale": False}

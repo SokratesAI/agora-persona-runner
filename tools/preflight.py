@@ -665,6 +665,9 @@ CHECK_ARGS = {
     # telegram message!"* An ask of mine waiting 4h+ on him pages him once a
     # day; the Agora push it opened with is not enough on its own.
     "ask_watch": ["--notify"],
+    # The fourth, idea #308: the pin gap was only ever read inside my own
+    # turn. Publishing it puts it on the landing page's health line.
+    "cli_pin": ["--publish"],
 }
 
 
