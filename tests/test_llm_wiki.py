@@ -174,8 +174,13 @@ def test_a_file_dropped_in_raw_after_the_build_makes_it_stale():
     assert "c.md" in why
 
 
-def test_a_change_in_the_stamp_minute_counts():
-    assert w.why_stale(INDEX, ["a.md", "b.md"], [("2026-09-19 12:21", "b.md")])
+def test_a_new_file_in_the_stamp_minute_counts():
+    assert "c.md" in w.why_stale(INDEX, ["a.md", "b.md", "c.md"], [("2026-09-19 12:21", "c.md")])
+
+
+def test_a_built_source_written_in_the_stamp_minute_does_not_rebuild_again():
+    # measured Cycle 1886: sources put at 18:39, build stamped 18:39, next run rebuilt
+    assert w.why_stale(INDEX, ["a.md", "b.md"], [("2026-09-19 12:21", "b.md")]) is None
 
 
 def test_a_source_gone_from_raw_makes_it_stale():

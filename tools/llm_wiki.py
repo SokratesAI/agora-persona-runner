@@ -42,8 +42,9 @@ is never touched.
 
 `--stale` is the schedule: prompt.md step 1a runs it every cycle, so a
 file dropped in raw/ becomes wiki pages without anyone asking for it. A
-topic is rebuilt when a raw file changed at or after the `generated:` stamp
-on its index page (a new, edited or deleted file all count), when a source
+topic is rebuilt when a raw file changed after the `generated:` stamp on
+its index page (a new, edited or deleted file all count; in the stamp's own
+minute, only a file the build did not include), when a source
 the index names is gone from raw/, or when it has no index yet. Otherwise it
 costs one `ls` and one `recent` per topic and makes no model call. The stamp
 is taken when the sources are read, not when the pages are written, so a
@@ -250,7 +251,7 @@ def why_stale(index_body, raw_names, raw_changes):
     """Why a topic needs rebuilding, or None.
 
     `index_body` is wiki/index.md or None; `raw_names` the files in raw/ now;
-    `raw_changes` is [(\"YYYY-MM-DD HH:MM\", name)] from `recent`, Oslo time,
+    `raw_changes` is [("YYYY-MM-DD HH:MM", name)] from `recent`, Oslo time,
     deleted files included. The stamp is the same format, so text compares.
     """
     if index_body is None:
@@ -261,7 +262,11 @@ def why_stale(index_body, raw_names, raw_changes):
     gone = sorted(set(sources) - set(raw_names))
     if gone:
         return f"source(s) gone from raw/: {', '.join(gone)}"
-    newer = sorted({name for when, name in raw_changes if when >= stamp})
+    # The stamp has minute resolution and is taken as the sources are read, so
+    # a change in that same minute is ambiguous: count it only for a file the
+    # build did not include, or every drop-then-build would rebuild twice.
+    newer = sorted({name for when, name in raw_changes
+                    if when > stamp or (when == stamp and name not in sources)})
     if newer:
         return f"raw/ changed since {stamp}: {', '.join(newer)}"
     return None
