@@ -17375,6 +17375,26 @@ describe("talking to Nova", () => {
     assert.equal(window.posted.length, 0, "dictation sent itself");
   });
 
+  test("closing the dock or leaving the app turns the mic off", async () => {
+    const record = { made: [], started: 0, stopped: 0, live: null };
+    const window = await loadSite("/journal", {
+      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
+    });
+    tap(window, "chat-btn");
+    const mic = window.document.getElementById("chat-mic");
+    mic.dispatchEvent(new window.Event("click"));
+    tap(window, "chat-btn");
+    assert.equal(record.stopped, 1, "the phone kept listening behind a closed dock");
+    assert.equal(mic.getAttribute("aria-pressed"), "false");
+
+    tap(window, "chat-btn");
+    mic.dispatchEvent(new window.Event("click"));
+    Object.defineProperty(window.document, "visibilityState", { configurable: true, get: () => "hidden" });
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    assert.equal(record.stopped, 2, "the phone kept listening after he left the app");
+    assert.equal(record.started, 2, "leaving the app restarted the recogniser");
+  });
+
   test("a blocked microphone ends dictation instead of restarting into it forever", async () => {
     const record = { made: [], started: 0, stopped: 0, live: null };
     const window = await loadSite("/journal", {

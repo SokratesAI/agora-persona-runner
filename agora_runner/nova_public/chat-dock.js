@@ -637,6 +637,9 @@
      * The mic is revealed only if the API behind it is present, so a
      * browser without one shows exactly the composer it always had.
      */
+    /* Closing the dock turns the mic off (see setOpen). Assigned below, and
+     * a no-op on a browser with no recogniser. */
+    var stopDictation = function () {};
     (function () {
       var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       var micBtn = document.getElementById("chat-mic");
@@ -692,9 +695,9 @@
         rec.onend = function () {
           if (listening !== rec) return;
           listening = null;
-          /* The browser ends a recogniser at the first pause, and a phone
-           * browser will not hold one open however `continuous` is set. So
-           * the mic stays on by starting a fresh one until he taps it off:
+          /* This recogniser runs with `continuous = false`, so the browser
+           * ends it at the first pause. The mic stays on by starting a fresh
+           * one until he taps it off:
            * describing a demo in a meeting is several sentences with gaps
            * between them, and one tap per sentence is not speaking instead
            * of typing (ideas.md #140, part of #134). */
@@ -719,12 +722,22 @@
       }
 
       if (micBtn && Recognition) {
+        /* A mic that stays on must not outlive the screen that shows it:
+         * closing the dock or leaving the app turns it off, so the phone is
+         * never listening with no pressed button in view. */
+        stopDictation = function () {
+          if (!wanted) return;
+          wanted = false;
+          if (listening) listening.stop();
+          else syncMic();
+        };
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "hidden") stopDictation();
+        });
         micBtn.removeAttribute("hidden");
         micBtn.addEventListener("click", function () {
           if (wanted) {
-            wanted = false;
-            if (listening) listening.stop();
-            else syncMic();
+            stopDictation();
             return;
           }
           wanted = true;
@@ -2146,6 +2159,7 @@
         void dock.offsetHeight;
         dock.classList.remove("chat-dock--closed");
       } else {
+        stopDictation();
         dock.classList.add("chat-dock--closed");
         function hideDock() {
           pendingHide = null;
