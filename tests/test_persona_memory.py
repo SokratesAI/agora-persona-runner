@@ -127,3 +127,63 @@ def test_stamps_are_oslo_not_utc():
     """Rule 7. 1757000000 is 2025-09-04T15:33:20Z, which is 17:33 in Oslo."""
     assert pm._oslo(1_757_000_000) == "2025-09-04 17:33 Oslo"
     assert time.gmtime(1_757_000_000).tm_hour == 15, "the UTC hour differs"
+
+
+# --- --mirror: idea #165 slice 3's prerequisite. nova-site mounts no shared
+# volume, so what a persona remembers has to reach the vault before any page
+# can show it.
+
+def test_mirror_keeps_every_file_whole_with_the_index_first(tmp_path):
+    _dir(tmp_path, "aaa", {"user_b.md": "second\nline two",
+                           "MEMORY.md": "- [b](user_b.md)",
+                           "feedback_a.md": "first"})
+    doc = pm.render_mirror("aaa", "Nova", str(tmp_path / "aaa"), now=0)
+    heads = [l for l in doc.splitlines() if l.startswith("## ")]
+    assert heads == ["## MEMORY.md", "## feedback_a.md", "## user_b.md"]
+    for body in ("- [b](user_b.md)", "first", "second\nline two"):
+        assert body in doc
+    assert 'persona: "Nova"' in doc and "persona_id: aaa" in doc
+
+
+def test_a_fence_inside_a_memory_cannot_close_the_wrapper(tmp_path):
+    _dir(tmp_path, "aaa", {"x.md": "before\n~~~~\nafter"})
+    doc = pm.render_mirror("aaa", "Nova", str(tmp_path / "aaa"), now=0)
+    assert doc.count(pm.FENCE) == 2
+    assert "before\n~~~\nafter" in doc
+
+
+def test_mirror_writes_one_document_per_persona_and_skips_empty_ones(tmp_path):
+    _dir(tmp_path, "aaa", {"MEMORY.md": "- x"})
+    _dir(tmp_path, "bbb", {})
+    written = {}
+    lines, status = pm.mirror(pm.read_dirs(str(tmp_path)),
+                              [{"id": "aaa", "name": "Nova"}], str(tmp_path),
+                              put=lambda t, d: written.setdefault(t, d) and None)
+    assert status == 0
+    assert list(written) == [pm.MIRROR_PREFIX + "aaa.md"]
+    assert "# What Nova remembers" in written[pm.MIRROR_PREFIX + "aaa.md"]
+    assert len(lines) == 1
+
+
+def test_a_refused_write_is_exit_1_and_named(tmp_path):
+    """A mirror that silently failed would read as a persona that forgot."""
+    _dir(tmp_path, "aaa", {"MEMORY.md": "- x"})
+    lines, status = pm.mirror(pm.read_dirs(str(tmp_path)), [], str(tmp_path),
+                              put=lambda t, d: "HTTP 409")
+    assert status == 1
+    assert "MIRROR FAILED" in lines[0] and "HTTP 409" in lines[0]
+
+
+def test_mirror_flag_reaches_main(tmp_path, monkeypatch):
+    """`main()` must carry the flag through, not just the helper."""
+    _dir(tmp_path, "aaa", {"MEMORY.md": "- x"})
+    monkeypatch.setattr(pm, "_get", lambda path, **k: (
+        ({"personas": [{"id": "aaa", "name": "Nova"}]} if path == "/personas"
+         else {"conversations": []}), None))
+    seen = []
+    monkeypatch.setattr(pm, "_vault_put", lambda t, d: seen.append(t))
+    assert pm.main(["--root", str(tmp_path), "--mirror"]) == 0
+    assert seen == [pm.MIRROR_PREFIX + "aaa.md"]
+    seen.clear()
+    pm.main(["--root", str(tmp_path)])
+    assert seen == []
