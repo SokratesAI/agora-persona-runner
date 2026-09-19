@@ -38,6 +38,7 @@ client that pod actually has:
     python3 /app/bridge/vault_tool.py put '<digest>'  live.md
 """
 
+import argparse
 import re
 import sys
 
@@ -278,7 +279,60 @@ def verify(live, archive, new_live, new_archive):
     return rolling.verify(live, archive, new_live, new_archive, SPEC)
 
 
+# Idea #321: a digest line says what changed for the owner first, and my own
+# code's name after it, if at all. The shape to write is who is affected,
+# what went wrong, the fix -- prompt.md step 7 carries it. This catches the
+# one mechanical half: a line that opens on a PR or a module of mine. Measured
+# over all 1,767 lines in the live digest and its archive on 2026-09-19: four
+# match within the first six words, and all four open on the PR or tool
+# ("Rebased and merged PR #1215: ...", "Fixed `tools.waitfor` ..."). The
+# owner's own files (`issues.md`, `/plan`) and his board numbers (`#227`,
+# `idea #93`) are not code and are deliberately not matched.
+_STAMP_RE = re.compile(r"^\*\*[^*]+\*\*\s*(?:\([^)]*\))?\s*[—–-]+\s*")
+_CODE_RE = re.compile(
+    r"\b[A-Za-z][\w.-]*#\d+"             # agora#100, platform-config#789
+    r"|\bPRs?\s+#?\d+"                    # PR #1215
+    r"|\b(?:tools|agora_runner)\.\w+"     # tools.waitfor
+    r"|\b[\w/-]+\.(?:py|js|mjs)\b"        # chat-dock.js, nova_site.py
+)
+LEAD_WORDS = 6
+
+
+def lead_advisory(live):
+    """A note when the newest digest line opens on my code's name, else None.
+
+    Advisory, never a refusal: the roll has nothing to do with the wording,
+    and `lint_entry`'s scope advisory is the precedent -- a phrase put in
+    front of me to judge, not a rule that makes me delete a true sentence.
+    """
+    halves = split_at_heading(live, MARKER)
+    if halves is None:
+        return None
+    lines = [e for e in split_digest_entries(halves[1]) if _LINE_RE.match(e)]
+    if not lines:
+        return None
+    text = _STAMP_RE.sub("", lines[0], count=1).strip()
+    match = _CODE_RE.search(text)
+    if not match or len(text[: match.start()].split()) >= LEAD_WORDS:
+        return None
+    return (
+        f"advisory: the newest digest line opens on {match.group(0)!r} before "
+        "saying what changed for the owner. Lead with who is affected, what "
+        "went wrong and the fix (idea #321); a PR number goes at the end. "
+        f"Opening: {text[:100]!r}"
+    )
+
+
 def main(argv=None):
+    peek = argparse.ArgumentParser(add_help=False)
+    peek.add_argument("--live", default="live.md")
+    known, _ = peek.parse_known_args(argv)
+    try:
+        note = lead_advisory(open(known.live).read())
+    except OSError:
+        note = None
+    if note:
+        print(note)
     return rolling.run(SPEC, argv, description=__doc__)
 
 
