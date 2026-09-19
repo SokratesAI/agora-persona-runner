@@ -279,3 +279,52 @@ def test_a_bold_paragraph_with_no_stamp_still_stops_the_roll():
     )
     with pytest.raises(SystemExit, match="not a cycle line"):
         plan(strayed, ARCHIVE, keep=2)
+
+
+# Idea #321: the newest line should say what changed for the owner before it
+# names my code. Advisory only, so these test the message and that the roll
+# itself is untouched by it.
+from tools.roll_digest import lead_advisory, main as roll_main
+
+
+def _with_newest(line):
+    return LIVE.replace("**Cycle 5** (2026-08-11 17:00) — Fifth.", line)
+
+
+def test_a_newest_line_that_opens_on_a_pr_gets_an_advisory():
+    live = _with_newest("**Cycle 5** (2026-08-11 17:00) — Rebased and merged PR #1215: the chat dock moved.")
+    note = lead_advisory(live)
+    assert note and "'PR #1215'" in note
+
+
+def test_a_newest_line_that_opens_on_a_tool_gets_an_advisory():
+    live = _with_newest("**Cycle 5** (2026-08-11 17:00) — Fixed `tools.waitfor` treating exit 127 as not yet.")
+    assert "tools.waitfor" in lead_advisory(live)
+
+
+def test_a_pr_named_after_the_outcome_is_fine():
+    live = _with_newest(
+        "**Cycle 5** (2026-08-11 17:00) — You can search the chat now: the list narrows as you type (PR #1253)."
+    )
+    assert lead_advisory(live) is None
+
+
+def test_his_own_files_and_board_numbers_are_not_code():
+    live = _with_newest("**Cycle 5** (2026-08-11 17:00) — Your `issues.md` is current again; #227 still waits.")
+    assert lead_advisory(live) is None
+
+
+def test_only_the_newest_line_is_judged():
+    live = LIVE.replace("— Fourth.", "— Merged PR #9 for the fourth.")
+    assert lead_advisory(live) is None
+
+
+def test_the_advisory_prints_and_the_roll_still_runs(tmp_path, capsys):
+    live = tmp_path / "live.md"
+    archive = tmp_path / "archive.md"
+    live.write_text(_with_newest("**Cycle 5** (2026-08-11 17:00) — Merged PR #7: fifth."))
+    archive.write_text(ARCHIVE)
+    code = roll_main(["--live", str(live), "--archive", str(archive), "--keep", "2"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "advisory:" in out and "verified: 3 digest lines roll off" in out
