@@ -88,6 +88,7 @@ import argparse
 import re
 import subprocess
 import sys
+from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -104,6 +105,10 @@ from agora_runner.nova_boards import (
 )
 from agora_runner import board_records
 from tools import board_migration_preflight
+# Imported rather than re-listed: `goal_measures` owns the research folder's
+# path because `pm-kpi-research-reused` is measured from it, and a second copy
+# of that prefix here would drift the moment the folder moves.
+from tools.goal_measures import research_write_ups
 # The ranking itself lives in `agora_runner` now, not here. The site had to
 # be able to import it and could not: `tools/` is not in the image. Same
 # functions, one definition -- see `nova_next`'s docstring.
@@ -835,11 +840,126 @@ def _share_block(shares, counts, counted, worked, project_meta, horizon=None):
     return out
 
 
+# --- Research write-ups beside the top row (issue #236) -------------------
+#
+# `pm-kpi-research-reused` reads the share of write-ups in
+# `nova/resources/research/` that a later journal entry has cited, and on
+# 2026-09-15 it was 6 of 81 against a floor of 50%. The diagnosis on the row
+# is that nothing ever puts an existing write-up in front of a cycle at the
+# moment it picks, so the cycle investigates the same thing again. This is
+# that: the picker already knows the row it is about to hand over, and the
+# folder listing costs one `ls`.
+
+#: Words a slug and a row title can share without sharing a topic. Deliberately
+#: short -- the rarity test below does most of the work, and a long hand-written
+#: stop list is a place for a real term to get silently dropped.
+_RESEARCH_STOP = frozenset("""
+the a an and or of for to in on is it its at by with from that this what how
+why not no do does be as vs new one all can has have was were are you your
+his him own get gets out
+nova sokrates agora edvard
+""".split())
+
+
+def _topic_words(text):
+    """The words in `text` that could name a topic, singular and plural.
+
+    Both forms are kept rather than a stem taken: `docs`/`doc` and
+    `cycles`/`cycle` have to meet across a slug and a sentence, and a real
+    stemmer for two suffixes is more machinery than the job has.
+    """
+    words = set()
+    for word in re.split(r"[^a-z0-9]+", (text or "").lower()):
+        if len(word) < 3 or word.isdigit() or word in _RESEARCH_STOP:
+            continue
+        words.add(word)
+        if word.endswith("s") and len(word) > 3:
+            words.add(word[:-1])
+    return words
+
+
+def _row_text(row, project_meta=None):
+    """Everything about a row that names what it is about."""
+    parts = [row.get("title") or "", row.get("milestone") or ""]
+    parts.append(_project_tag(row, project_meta or {}) if project_meta
+                 else (row.get("project") or ""))
+    return " ".join(parts)
+
+
+def research_matches(row, slugs, other_rows=(), project_meta=None):
+    """Write-ups whose slug shares distinctive vocabulary with `row`.
+
+    Two corpora decide what counts as distinctive, and using only one of them
+    was the first thing I got wrong here. Rarity among the *slugs* alone
+    promotes `loop-design` onto any row with the word "loop" in it, because
+    `loop` happens to appear in exactly one filename -- it is rare in the
+    folder and utterly ordinary on this board. So a single shared word earns
+    a match only when it is rare in the folder **and** rare across the other
+    open rows; two or more shared words stand on their own.
+
+    Returns `(slug, [words])` pairs, best first, and does not cap the list:
+    the rarity test is the filter, and a cap on top of it would hide a real
+    match to make the block look tidy.
+    """
+    wanted = _topic_words(_row_text(row, project_meta))
+    if not wanted or not slugs:
+        return []
+    # `nas-k3s-2026-08-29` reads as `nas k3s`: the `-2026-08-29` is when the
+    # write-up was made, never what it is about, and `_topic_words` drops it
+    # along with every other bare number. A regex that stripped the trailing
+    # date specifically was here first and was dead code -- it went red on
+    # nothing, because the digit test had already removed every word it
+    # removed.
+    slug_words = {s: _topic_words(s.replace("-", " ")) for s in slugs}
+    in_folder = Counter(w for words in slug_words.values() for w in words)
+    on_board = Counter()
+    for other in other_rows:
+        if other is row:
+            continue
+        for word in _topic_words(_row_text(other, project_meta)):
+            on_board[word] += 1
+    hits = []
+    for slug in slugs:
+        shared = slug_words[slug] & wanted
+        if not shared:
+            continue
+        distinctive = [w for w in shared
+                       if in_folder[w] <= 2 and on_board[w] <= 2]
+        if len(shared) < 2 and not distinctive:
+            continue
+        # Rarest first, in both corpora: `framework` names one write-up and
+        # one row, `real` names one write-up and half the board, and a score
+        # built on the folder alone ranks them equal.
+        score = sum(1.0 / (in_folder[w] * (1 + on_board[w])) for w in shared)
+        hits.append((score, slug, sorted(shared)))
+    hits.sort(key=lambda h: (-h[0], h[1]))
+    return [(slug, words) for _, slug, words in hits]
+
+
+def _research_block(row, slugs, error, other_rows=(), project_meta=None):
+    """The `already written down` lines under the top row, or nothing."""
+    if error:
+        # Said out loud rather than skipped: a folder that could not be read
+        # and a folder with no match in it look identical from here, and the
+        # whole point of this block is that a cycle should not have to guess
+        # whether it was told.
+        return ["     ⚠ could not read the research folder, so this row got no "
+                f"write-ups: {error}"]
+    matches = research_matches(row, slugs, other_rows, project_meta)
+    if not matches:
+        return []
+    out = [f"     already written down — {len(matches)} research write-up(s) "
+           "name what this row is about. Read before investigating again:"]
+    for slug, words in matches:
+        out.append(f"       resources/research/{slug}.md  ({', '.join(words)})")
+    return out
+
+
 def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True,
            projects_markdown="", projects_readable=True,
            milestone_pins_markdown="", milestone_seats_markdown="",
            diagnoses_text="", diagnoses_readable=True, cycle=None,
-           claims=()):
+           claims=(), research_slugs=(), research_error=None):
     """The captures first, then the ranked board. Never one without the other.
 
     The alternative the handoff offered was refusing to rank at all while
@@ -955,6 +1075,11 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
             out.append("  ⚠ PROJECTS.MD UNREADABLE — this ranking is flat across "
                        "projects, which is the old behaviour, not his order.")
         out.append("  -> " + _line(ranked[0], project_meta))
+        # Directly under the row it is about, above the runners-up, because
+        # the sentence it answers -- "has this already been looked into" --
+        # is asked at the moment the row is read, not at the end of the page.
+        out.extend(_research_block(ranked[0], research_slugs, research_error,
+                                   ranked, project_meta))
         rest = ranked[1:1 + runners_up]
         if rest:
             out.append("  next:")
@@ -1053,6 +1178,8 @@ def main(argv=None):
     ap.add_argument("--proposed-projects",
                     help="local proposed-projects.md instead of a vault fetch")
     ap.add_argument("--claims", help="local claims.json instead of a vault fetch")
+    ap.add_argument("--no-research", action="store_true",
+                    help="skip the research-folder listing under the top row")
     ap.add_argument("--projects",
                     help="local projects.md instead of a vault fetch")
     ap.add_argument("--milestone-pins",
@@ -1165,6 +1292,12 @@ def main(argv=None):
     else:
         diagnoses_text, diagnoses_readable = fetch_diagnoses()
 
+    # One `ls` of the research folder, for the block under the top row. A
+    # local run on a box with no vault client gets the error rather than a
+    # silent empty list -- see `_research_block`.
+    research_slugs, research_error = ((), None) if args.no_research else \
+        research_write_ups()
+
     print(render(rows, runners_up=args.runners_up, captures=captures,
                  closed_waiting=closed_waiting, claims_readable=claims_readable,
                  projects_markdown=projects_md,
@@ -1174,7 +1307,9 @@ def main(argv=None):
                  diagnoses_text=diagnoses_text,
                  diagnoses_readable=diagnoses_readable,
                  cycle=args.cycle,
-                 claims=(ledger or {}).get("claims", ())))
+                 claims=(ledger or {}).get("claims", ()),
+                 research_slugs=research_slugs,
+                 research_error=research_error))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")
