@@ -372,10 +372,10 @@
       extrasGrid.appendChild(button);
     }
     asTile(attach.button, "Files");
-    asTile(document.getElementById("chat-mic"), "Speak");
     /* The model picker left this drawer on 2026-09-11 for the Settings
-     * drawer behind `⋮` (below), and read-aloud was removed outright. This one is "add something to what
-     * I am about to send"; those two are how the conversation behaves. */
+     * drawer behind `⋮` (below); read-aloud was removed outright then, and
+     * the mic followed it on 2026-09-20. This one is "add something to what
+     * I am about to send". */
 
 
     /* The Settings drawer behind `⋮` -- his ask, 2026-09-11: *"a three
@@ -388,7 +388,7 @@
      * Built on `makeActionSheet`, the same drawer factory the message actions
      * and the capture sheet use, so it slides, drags and dismisses like every
      * other drawer here. Nothing closes it on a tap: it holds three settings,
-     * and toggling read-aloud should not take the model picker away.
+     * and changing one of them should not take the model picker away.
      *
      * The model host is MOVED in, never rebuilt, for the reason the `+`
      * drawer gave: it carries its own state and handlers. */
@@ -620,41 +620,6 @@
       onDismiss: function () { setExtras(false); }
     });
 
-    /* Talking to Nova instead of typing at her -- his `ideas.md` #221:
-     * *"I do have a goal of being able to talk to you instead of writing
-     * text like this."*
-     *
-     * This is the browser half and it is the whole of the first slice. The
-     * mic dictates into the same box he types in. (A speaker that read each
-     * answer back was removed on 2026-09-11, his words: *"I will never use
-     * it."*) There is no server, no model and no per-token cost --
-     * `SpeechRecognition` is the phone's own, and on
-     * iOS the recogniser is still only under the `webkit` prefix. The
-     * mechanism the row was open about (a WhatsApp call, some other dialler,
-     * or something in the app) is answered here by the cheapest of the three:
-     * it ships in one page load and needs nothing of his to be set up.
-     *
-     * The mic is revealed only if the API behind it is present, so a
-     * browser without one shows exactly the composer it always had.
-     */
-    /* Closing the dock turns the mic off (see setOpen). Assigned below, and
-     * a no-op on a browser with no recogniser. */
-    var stopDictation = function () {};
-    (function () {
-      var micBtn = document.getElementById("chat-mic");
-      if (!micBtn || !window.novaDictation.supported()) return;
-      /* `dictate.js` holds the recogniser -- the same one this dock has
-       * run since Cycle 1090, lifted out so the two comment boxes could
-       * have it too rather than a second copy of it (ideas.md #221). */
-      stopDictation = window.novaDictation.wire({
-        button: micBtn,
-        onText: function (said) {
-          box.value = box.value ? box.value.replace(/\s*$/, "") + " " + said : said;
-          growChatBox();
-        },
-        onStatus: function (text) { status.textContent = text; },
-      }).stop;
-    })();
 
     function setDot(on) {
       if (on) dot.removeAttribute("hidden");
@@ -2030,7 +1995,6 @@
         void dock.offsetHeight;
         dock.classList.remove("chat-dock--closed");
       } else {
-        stopDictation();
         dock.classList.add("chat-dock--closed");
         function hideDock() {
           pendingHide = null;

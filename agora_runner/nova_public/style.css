@@ -1023,34 +1023,6 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .comment-send:hover:not(:disabled) { border-color: var(--accent); }
 .comment-send:disabled { color: var(--dim); cursor: default; }
 
-/* The mic in the two comment rows (ideas.md #221). It is the same control
- * as the chat dock's Speak, so it is the same shape -- a round 44px tap
- * target with the monochrome glyph treatment `.chat-glyph` gives, and the
- * accent fill while it is listening, which is the only thing on screen
- * that says the phone is hearing him. It is hidden until `dictate.js`
- * finds a recogniser, so on a browser without one these rules draw
- * nothing. */
-.nova-mic {
-  flex: none;
-  min-width: 44px;
-  min-height: 44px;
-  background: none;
-  color: var(--dim);
-  border: 0;
-  border-radius: 999px;
-  padding: 0;
-  font: inherit;
-  line-height: 1;
-  text-align: center;
-  cursor: pointer;
-}
-.nova-mic:hover:not(:disabled) { color: var(--text); }
-.nova-mic[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
-.nova-mic[aria-pressed="true"] .chat-glyph { filter: none; opacity: 1; }
-/* Both rows lay their children out in a flex line already; the mic only
- * needs to sit immediately before Comment rather than stretch. */
-.comment-mic { margin: 0; }
-.item-comment-mic { margin: 0; }
 
 /* The pager under the feed. Full width rather than the pill the comment
  * box uses: it is the last thing on the page and the thumb should not have
@@ -3096,25 +3068,8 @@ body.has-full-chart { overflow: hidden; }
    left of Send (his ask, 2026-09-08 -- it used to be pinned left of the
    model pill, which has since moved into the drawer itself). It is the
    only visible `.attach-btn` left in the row, so it is the one the `auto`
-   margin has to land on; when a voice button is on screen the `~` rule
-   below hands the margin over to that one instead and this drops to 0. */
+   margin has to land on. */
 .chat-actions .chat-plus { margin-left: auto; margin-right: 0.1rem; font-size: 1.5rem; }
-/* The voice button (ideas.md #221 -- the mic; its speaker sibling was
-   removed 2026-09-11) sits in the same right-hand group.
-   The `auto` margin has to land on the first control that is actually on
-   screen, and the mic is hidden on a browser with no speech API --
-   `:not([hidden])` is what keeps the paperclip from being stranded in the
-   middle of a `space-between` row when it is. */
-.chat-actions .chat-voice:not([hidden]) { margin-left: auto; }
-.chat-actions .chat-voice:not([hidden]) ~ .chat-voice,
-.chat-actions .chat-voice:not([hidden]) ~ .attach-btn { margin-left: 0; }
-/* Pressed is a real state here rather than a hover flourish: the mic stays
-   pressed while it is listening, and on a phone there is no hover to tell
-   him either. */
-/* Pressed is still a real state -- the mic while it listens -- drawn as a
- * filled disc now the resting button has no ring to recolour. */
-.chat-voice[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
-.chat-voice[aria-pressed="true"] .chat-glyph { filter: none; opacity: 1; }
 
 .ask-pending { color: var(--dim); font-style: italic; }
 /* The pending bubble carries three lines now (issues.md, 2026-08-30): the
@@ -4336,7 +4291,8 @@ body.chat-open { overflow: hidden; }
  * his ask, 2026-09-07: "the modal picker pill needs to float next to the +
  * button, now its in the middle". `space-between` spread the row's members
  * evenly, which put the pill in the middle of the gap the moment the mic
- * and speaker moved out of this row and into the `+` drawer. */
+ * and speaker moved out of this row and into the `+` drawer. (Both are gone
+ * outright now -- read-aloud 2026-09-11, the mic 2026-09-20.) */
 .chat-actions { display: flex; align-items: center; justify-content: flex-start; gap: 0.4rem; margin-top: 0.45rem; }
 /* Send used to carry the `auto` margin that pushes the right-hand group
  * over. It cannot any more: `+` now sits immediately left of it and carries
@@ -4344,7 +4300,7 @@ body.chat-open { overflow: hidden; }
  * space between them instead of collapsing it -- which is exactly what put
  * `+` in the middle of the row (his report, 2026-09-08). One auto, on the
  * leftmost control of the right-hand group, is the whole mechanism; see the
- * `.chat-plus` / `.chat-voice` rules above for which control that is. */
+ * `.chat-plus` rule above for which control that is. */
 .chat-status { margin: 0; font-size: 0.76rem; color: var(--dim); }
 .chat-send {
   flex: none;

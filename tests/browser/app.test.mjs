@@ -16,7 +16,7 @@
  */
 import { test, before, beforeEach, afterEach, describe, after } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { JSDOM } from "jsdom";
@@ -432,9 +432,6 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
    * `/pool` and every project page would draw
    * nothing.
    * Preact stays opt-in via `install`. */
-  /* `dictate.js` before the three composers that call it, the way
-   * index.html orders the tags. */
-  window.eval(readFileSync(join(publicDir, "dictate.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "mermaid.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "chat-dock.js"), "utf8"));
@@ -2060,10 +2057,9 @@ describe("the vault cannot inject markup", () => {
     const { window } = openWindow(html, { url: "https://nova.example/journal", runScripts: "outside-only" });
     window.fetch = (url) =>
       res(url.includes("/api/digest") ? payload.digest : hostile);
-    // `dictate.js` and `attach.js` first, as index.html orders the tags:
-    // `app.js` mounts the capture box while it loads, and the comment
-    // drawer on every journal card builds an attach button and a mic.
-    window.eval(readFileSync(join(publicDir, "dictate.js"), "utf8"));
+    // `attach.js` first, as index.html orders the tags: `app.js` mounts the
+    // capture box while it loads, and the comment drawer on every journal
+    // card builds an attach button.
     window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
     // `richtext.js` is the renderer these tests are about (issue #233);
     // without it `app.js` draws nothing and a markup check passes vacuously.
@@ -2216,10 +2212,9 @@ describe("a payload cached before the brief existed", () => {
     window.fetch = (url) =>
       res(url.includes("/api/digest") ? stale.digest : stale.journal);
     window.scrollTo = () => {};
-    // `dictate.js` and `attach.js` first, as index.html orders the tags:
-    // `app.js` mounts the capture box while it loads, and the comment
-    // drawer on every journal card builds an attach button and a mic.
-    window.eval(readFileSync(join(publicDir, "dictate.js"), "utf8"));
+    // `attach.js` first, as index.html orders the tags: `app.js` mounts the
+    // capture box while it loads, and the comment drawer on every journal
+    // card builds an attach button.
     window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
     // `richtext.js` is the renderer these tests are about (issue #233);
     // without it `app.js` draws nothing and a markup check passes vacuously.
@@ -13850,9 +13845,13 @@ describe("holding a conversation in the switcher opens edit options", () => {
     });
     const row = window.document.querySelector(".chat-actions");
     assert.equal(row.firstElementChild.id, "chat-settings", "⋮ is not the leftmost control");
-    // `+` keeps Files and Speak, and only those.
+    /* `+` keeps Files and nothing else. Speak went the way read-aloud did --
+     * his comment of 2026-09-20: *"I will actually never use my voice. Only
+     * text. So you can remove everywhere and the functionality behind it."* */
     const extras = window.document.getElementById("chat-extras");
-    assert.ok(extras.contains(window.document.getElementById("chat-mic")), "Speak left the + drawer");
+    const extraLabels = [...extras.querySelectorAll(".extras-label")].map((l) => l.textContent);
+    assert.deepEqual(extraLabels, ["Files"], "the + drawer holds something other than Files");
+    assert.equal(window.document.getElementById("chat-mic"), null, "the mic is back");
     assert.equal(window.document.getElementById("chat-speak"), null,
       "read-aloud was removed and is back");
     window.document.getElementById("chat-settings")
@@ -17315,234 +17314,44 @@ describe("the galaxy page", () => {
   });
 });
 
-/* Talking to Nova instead of typing at her -- his `ideas.md` #221: *"I do
- * have a goal of being able to talk to you instead of writing text like
- * this."* The first slice is the browser's own speech APIs wired into the
- * chat dock: a mic that dictates into the box, and a speaker that reads a
- * new answer back.
+/* Voice is gone, everywhere, and this is the only thing that keeps it gone.
  *
- * jsdom has neither API, which is what makes these tests worth writing --
- * the absent case is the default here, so the "both buttons stay hidden"
- * test cannot pass by accident, and every other test has to install a
- * double before app.js runs. */
-describe("talking to Nova", () => {
-  /* A recogniser shaped like the browser's: `start()` records the call, and
-   * the test decides what it heard by calling `onresult` itself. */
-  function fakeRecognition(record) {
-    return function Recognition() {
-      const rec = {
-        lang: "",
-        interimResults: true,
-        continuous: true,
-        start() { record.started += 1; record.live = rec; },
-        stop() { record.stopped += 1; if (rec.onend) rec.onend(); },
-        onresult: null,
-        onerror: null,
-        onend: null,
-      };
-      record.made.push(rec);
-      return rec;
-    };
+ * His comment on Cycle 1906, 2026-09-20: *"I have changed my mind on this
+ * one. I will actually never use my voice. Only text. So you can remove
+ * everywhere and the functionality behind it. Even the chat voice and read
+ * out loud etc. Its just a waste of space."* Read-aloud went on 09-11 and
+ * dictation went here; what is left is a shape that is easy to reintroduce
+ * one button at a time, because a mic is four lines in a composer.
+ *
+ * So this reads the shipped files as text rather than the built DOM. A DOM
+ * test only sees a control that got wired up; a browser API referenced by
+ * dead code, a stylesheet rule waiting for a class, or a `<script src>` for
+ * a file that no longer exists all pass a DOM test and are exactly what a
+ * half-removal leaves behind. */
+describe("no voice anywhere in the app", () => {
+  const SERVED = [
+    "index.html", "app.js", "chat-dock.js", "style.css", "sw.js",
+    "attach.js", "capture.js", "thread.js", "message.js",
+  ];
+  /* `SpeechSynthesisUtterance` and `webkitSpeechRecognition` are the two
+   * browser APIs; the rest are the names this app gave them. */
+  const VOICE = /speechRecognition|SpeechRecognition|speechSynthesis|SpeechSynthesisUtterance|novaDictation|dictate\.js|chat-mic|chat-voice|nova-mic|comment-mic/i;
+
+  for (const name of SERVED) {
+    test(`${name} references nothing that speaks or listens`, () => {
+      const body = readFileSync(join(publicDir, name), "utf8");
+      const hits = body.split("\n")
+        .map((line, i) => [i + 1, line])
+        .filter(([, line]) => VOICE.test(line) && !/^\s*(\*|\/\*|\/\/)/.test(line));
+      assert.deepEqual(hits, [], `${name} still carries voice code`);
+    });
   }
 
-  /* `tap` and `answersOnPoll` are named this in six other blocks of this
-   * file and scoped to each; these are this block's own copies rather than
-   * a seventh reach into somebody else's closure. */
-  function tap(window, id) {
-    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
-  }
-
-  const waiting = { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] };
-  const answered = {
-    conversationId: "c", waiting: false,
-    messages: [{ id: "1", sender: "Edvard", text: "q" }, { id: "2", sender: "Nova", text: "Seven." }],
-  };
-
-  function answersOnPoll() {
-    let turn = 0;
-    return () => {
-      turn += 1;
-      return turn === 1 ? waiting : answered;
-    };
-  }
-
-  function withSpeech(win, { recognition, synthesis } = {}) {
-    if (recognition) win.webkitSpeechRecognition = recognition;
-    if (synthesis) {
-      win.speechSynthesis = synthesis;
-      win.SpeechSynthesisUtterance = function (text) { this.text = text; this.lang = ""; };
-    }
-  }
-
-  test("a browser with no speech API shows no mic, and there is no speaker at all", async () => {
-    const window = await loadSite("/journal");
-    assert.ok(window.document.getElementById("chat-mic").hasAttribute("hidden"),
-      "a mic that cannot listen is worse than no mic");
-    // Read-aloud was removed on 2026-09-11 -- his words, "I will never use it".
-    assert.equal(window.document.getElementById("chat-speak"), null,
-      "the read-aloud speaker is back");
+  test("dictate.js is not served and not on disk", () => {
+    assert.equal(existsSync(join(publicDir, "dictate.js")), false, "dictate.js is back on disk");
+    const site = readFileSync(join(publicDir, "..", "nova_site.py"), "utf8");
+    assert.equal(site.includes("dictate.js"), false, "nova_site.py still routes /dictate.js");
   });
-
-  test("dictation lands in the box he types in rather than sending on its own", async () => {
-    const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/journal", {
-      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
-    });
-    const mic = window.document.getElementById("chat-mic");
-    assert.equal(mic.hasAttribute("hidden"), false, "the mic stayed hidden on a browser that has one");
-
-    tap(window, "chat-btn");
-    mic.dispatchEvent(new window.Event("click"));
-    assert.equal(record.started, 1, "tapping the mic did not start listening");
-    assert.equal(mic.getAttribute("aria-pressed"), "true", "nothing on screen says it is listening");
-
-    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "how many pods are running" }]] });
-    assert.equal(window.document.getElementById("chat-box").value, "how many pods are running");
-    assert.equal(window.posted.length, 0, "dictation sent itself before he could correct it");
-
-    mic.dispatchEvent(new window.Event("click"));
-    assert.equal(mic.getAttribute("aria-pressed"), "false", "the button stayed pressed after it stopped");
-  });
-
-  /* ideas.md #221, Cycle 1905. The dock's mic was the only one in the app,
-   * and the two comment boxes -- the drawer on a journal card and the
-   * composer under a board row -- are where he writes me the longest
-   * prose. `dictate.js` is the dock's own recogniser lifted out, so these
-   * three tests are the same three properties asserted above, in the two
-   * places that did not have them. */
-  test("the mic on a journal card's comment drawer dictates into that drawer", async () => {
-    const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/journal", {
-      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
-    });
-    window.document.querySelector(".comment-toggle").dispatchEvent(new window.Event("click"));
-    const mic = window.document.querySelector(".comment-mic");
-    assert.ok(mic, "the comment drawer has no mic");
-    assert.equal(mic.hasAttribute("hidden"), false, "the mic stayed hidden on a browser that has one");
-
-    mic.dispatchEvent(new window.Event("click"));
-    assert.equal(record.started, 1, "tapping the mic did not start listening");
-    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "this entry reads badly" }]] });
-    assert.equal(window.document.querySelector(".comment-text").value, "this entry reads badly");
-    assert.equal(window.posted.length, 0, "dictation sent the comment before he could correct it");
-  });
-
-  test("the mic on a board row's comment box dictates into that box", async () => {
-    const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/issues#57", {
-      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
-    });
-    const mic = window.document.querySelector(".item-comment-mic");
-    assert.ok(mic, "the board composer has no mic");
-    assert.equal(mic.hasAttribute("hidden"), false, "the mic stayed hidden on a browser that has one");
-
-    mic.dispatchEvent(new window.Event("click"));
-    assert.equal(record.started, 1, "tapping the mic did not start listening");
-    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "still wrong on my phone" }]] });
-    assert.equal(window.document.querySelector(".item-comment-box").value, "still wrong on my phone");
-    assert.equal(window.posted.length, 0, "dictation sent the comment before he could correct it");
-
-    /* A second phrase joins the first with a space rather than replacing
-     * it or starting a line: a board comment may not contain a newline at
-     * all, and the server refuses one. */
-    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "in dark mode" }]] });
-    assert.equal(window.document.querySelector(".item-comment-box").value,
-      "still wrong on my phone in dark mode");
-  });
-
-  test("a browser with no speech API draws no mic in either comment box", async () => {
-    const window = await loadSite("/journal");
-    window.document.querySelector(".comment-toggle").dispatchEvent(new window.Event("click"));
-    assert.ok(window.document.querySelector(".comment-mic").hasAttribute("hidden"),
-      "a mic that cannot listen is worse than no mic");
-    const board = await loadSite("/issues#57");
-    assert.ok(board.document.querySelector(".item-comment-mic").hasAttribute("hidden"),
-      "a mic that cannot listen is worse than no mic");
-  });
-
-  /* ideas.md #140, part of #134: in a meeting he describes a demo in
-   * several sentences, and the browser ends a recogniser at every pause. */
-  test("a pause does not end dictation: the mic keeps listening until he taps it off", async () => {
-    const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/journal", {
-      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
-    });
-    tap(window, "chat-btn");
-    const mic = window.document.getElementById("chat-mic");
-    mic.dispatchEvent(new window.Event("click"));
-    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "how many pods" }]] });
-    const first = record.live;
-    first.onerror({ error: "no-speech" });
-    first.onend();
-    assert.equal(record.started, 2, "the pause ended dictation instead of starting a new recogniser");
-    assert.notEqual(record.live, first, "restarted the finished recogniser rather than a fresh one");
-    assert.equal(mic.getAttribute("aria-pressed"), "true", "the button let go during a pause");
-    assert.equal(window.document.getElementById("chat-status").textContent, "",
-      "a pause was reported as a failure");
-    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "are running" }]] });
-    assert.equal(window.document.getElementById("chat-box").value, "how many pods are running");
-
-    first.onend();
-    assert.equal(record.started, 2, "a stale recogniser's end started another one");
-
-    mic.dispatchEvent(new window.Event("click"));
-    assert.equal(record.stopped, 1);
-    assert.equal(record.started, 2, "tapping it off started it again");
-    assert.equal(mic.getAttribute("aria-pressed"), "false");
-    assert.equal(window.posted.length, 0, "dictation sent itself");
-  });
-
-  test("closing the dock or leaving the app turns the mic off", async () => {
-    const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/journal", {
-      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
-    });
-    tap(window, "chat-btn");
-    const mic = window.document.getElementById("chat-mic");
-    mic.dispatchEvent(new window.Event("click"));
-    tap(window, "chat-btn");
-    assert.equal(record.stopped, 1, "the phone kept listening behind a closed dock");
-    assert.equal(mic.getAttribute("aria-pressed"), "false");
-
-    tap(window, "chat-btn");
-    mic.dispatchEvent(new window.Event("click"));
-    Object.defineProperty(window.document, "visibilityState", { configurable: true, get: () => "hidden" });
-    window.document.dispatchEvent(new window.Event("visibilitychange"));
-    assert.equal(record.stopped, 2, "the phone kept listening after he left the app");
-    assert.equal(record.started, 2, "leaving the app restarted the recogniser");
-  });
-
-  test("a blocked microphone ends dictation instead of restarting into it forever", async () => {
-    const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/journal", {
-      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
-    });
-    tap(window, "chat-btn");
-    const mic = window.document.getElementById("chat-mic");
-    mic.dispatchEvent(new window.Event("click"));
-    record.live.onerror({ error: "not-allowed" });
-    record.live.onend();
-    assert.equal(record.started, 1, "restarted into a microphone the browser refused");
-    assert.equal(mic.getAttribute("aria-pressed"), "false");
-    assert.equal(window.document.getElementById("chat-status").textContent, "the microphone is blocked");
-
-    mic.dispatchEvent(new window.Event("click"));
-    assert.equal(record.started, 2, "a tap after a refusal did not try again");
-  });
-
-  test("tapping the mic while it is listening stops it", async () => {
-    const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/journal", {
-      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
-    });
-    tap(window, "chat-btn");
-    const mic = window.document.getElementById("chat-mic");
-    mic.dispatchEvent(new window.Event("click"));
-    mic.dispatchEvent(new window.Event("click"));
-    assert.equal(record.stopped, 1, "the second tap started a second recogniser instead of stopping the first");
-    assert.equal(record.started, 1);
-  });
-
 });
 
 /* The page half of the push prefetch (ideas #224 and #226).
