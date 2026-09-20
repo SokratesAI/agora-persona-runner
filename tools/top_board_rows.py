@@ -85,6 +85,7 @@ fetch and a `capture_entries` parse, after the switchover as before it.
 """
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -125,9 +126,11 @@ from tools.satisfaction_diagnosis import (
     DIAGNOSES_PATH as SAT_DIAGNOSES_PATH,
 )
 from agora_runner.nova_shares import (
-    FLOOR_DAYS, cycle_attribution, floor_is_measurable, last_worked,
-    ledger_horizon, project_shares, share_deficits, share_ranks, starved,
+    FLOOR_DAYS, attribution_rows, cycle_attribution, floor_is_measurable,
+    last_worked, ledger_horizon, project_shares, share_deficits, share_ranks,
+    starved,
 )
+from tools.claim_history import HISTORY_PATH
 from agora_runner.nova_claims import (
     CLAIMS_PATH, ClaimError, container_started_at, finished_claims, held_by,
     load as load_claims,
@@ -226,6 +229,27 @@ def fetch_claims(path=CLAIMS_PATH):
     if done.stdout.lstrip().startswith("[not found:"):
         return "", True
     return done.stdout, True
+
+
+def fetch_claim_history(path=HISTORY_PATH):
+    """The append-only claim history as a list of rows, `[]` if unreadable.
+
+    Only the share attribution reads this, and an attribution with no
+    history is the behaviour that shipped with issue #214 rather than a
+    broken board -- so an absent or unparseable document is `[]` and is not
+    said out loud. `tools.claim_history` is the check that goes red when the
+    history stops growing; repeating that here would be a second voice on
+    one fact.
+    """
+    text = _fetch(path)
+    if not text:
+        return []
+    try:
+        document = json.loads(text)
+    except ValueError:
+        return []
+    rows = document.get("rows") if isinstance(document, dict) else document
+    return rows if isinstance(rows, list) else []
 
 
 def fetch_projects(path=PROJECTS_PATH):
@@ -817,7 +841,7 @@ def _share_block(shares, counts, counted, worked, project_meta, horizon=None):
     if not live:
         return []
     out = [f"SHARES OF CYCLES — measured over the last {counted} attributable "
-           "cycle(s) in the claims ledger (issue #214):"]
+           "cycle(s) in the claim history plus the live ledger (issue #214):"]
     hungry = set(starved(shares, worked, horizon=horizon))
     if not floor_is_measurable(horizon):
         # Not silence, and not a floor applied anyway: `prune` collects
@@ -825,7 +849,7 @@ def _share_block(shares, counts, counted, worked, project_meta, horizon=None):
         # and every project then reads as untouched. Saying the check did not
         # run is the honest answer; running it would rescue the whole board.
         out.append(f"  (the {FLOOR_DAYS}-day floor was not evaluated — the "
-                   "claims ledger does not reach back that far)")
+                   "claim history does not reach back that far yet)")
     for name in sorted(live, key=lambda n: -deficits[n][2]):
         share, actual, deficit = deficits[name]
         label = (project_meta.get(name) or {}).get("project") or name
@@ -1032,9 +1056,10 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     else:
         base_ranks = project_ranks(projects_markdown)
         if shares:
-            out.append("⚠ SHARES NOT APPLIED — no cycle in the claims ledger "
-                       "resolves to a project, so the project tier is his hand "
-                       "order, which is the behaviour issue #214 replaces.")
+            out.append("⚠ SHARES NOT APPLIED — no cycle in the claim history "
+                       "or the live ledger resolves to a project, so the "
+                       "project tier is his hand order, which is the "
+                       "behaviour issue #214 replaces.")
     project_rank_map, reservation = reserve_maintenance(base_ranks, rows, cycle)
     if reservation:
         out.append(reservation)
@@ -1307,7 +1332,8 @@ def main(argv=None):
                  diagnoses_text=diagnoses_text,
                  diagnoses_readable=diagnoses_readable,
                  cycle=args.cycle,
-                 claims=(ledger or {}).get("claims", ()),
+                 claims=attribution_rows(fetch_claim_history(),
+                                         (ledger or {}).get("claims", ())),
                  research_slugs=research_slugs,
                  research_error=research_error))
     if missing:

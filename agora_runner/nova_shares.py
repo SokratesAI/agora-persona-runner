@@ -22,8 +22,10 @@ project tier names first.
 
 **Two numbers decide it**: the share a project is owed, and the share it
 actually got. The first is `project_shares`; the second is
-`cycle_attribution`, read off the claims ledger, which is the only record
-this loop keeps of what a cycle actually worked on. `share_ranks` subtracts
+`cycle_attribution`, read off the claim rows this loop keeps of what a cycle
+actually worked on -- the append-only `claims-history.json` merged with the
+live ledger, which is what `attribution_rows` at the bottom of this module
+builds and why. `share_ranks` subtracts
 one from the other and puts the biggest deficit first.
 
 **Why the seed is written down rather than derived.** He asked for shares
@@ -286,3 +288,37 @@ def starved(shares, worked=None, now=None, floor_days=FLOOR_DAYS, horizon=None):
     names = [name for name, share in shares.items()
              if share > 0 and (worked.get(name) is None or worked[name] < cutoff)]
     return sorted(names, key=lambda name: (-shares[name], name))
+
+
+def attribution_rows(history_rows, ledger_rows):
+    """Every claim the share tier may count, from both documents.
+
+    **The live ledger is the wrong instrument for a 30-cycle window and it
+    was the only one being read.** `tools.claim prune` collects finished
+    claims, so the ledger is a rolling day: measured 2026-09-20 it held 49
+    rows over 37 cycles, of which **9** carried a board slug the attribution
+    can resolve to a project, and `top_board_rows` printed its share table
+    over six attributable cycles. `claims-history.json` -- append-only, one
+    row per (item, cycle), written every cycle by `tools.claim_history` -- held
+    180 rows over 174 cycles and **115** cycles with a board slug, the same
+    morning. His #214 asks for "the last ~30 cycles" and a floor of "zero
+    cycles in 14 days"; neither number is measurable against a document that
+    is emptied daily, and the second one never would be.
+
+    The ledger is still merged in rather than dropped: a claim taken this
+    cycle is in the ledger and not yet in the history, and the history run
+    that would have folded it in happens in this same cycle's preflight. A
+    row present in both is taken from the **ledger**, because that is the
+    live state -- the history carries whatever the field said when it was
+    last folded.
+
+    This is only the attribution. The 🔒 marks, `finished` and `progressed`
+    all still read the live ledger alone, because "is another cycle holding
+    this row right now" is a question about right now.
+    """
+    merged = {}
+    for row in list(history_rows or []) + list(ledger_rows or []):
+        if not isinstance(row, dict):
+            continue
+        merged[(row.get("item"), row.get("cycle"))] = row
+    return list(merged.values())
