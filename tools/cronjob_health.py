@@ -557,6 +557,47 @@ def judge(row, now):
         f"{row['scheduled']}, last success {row['succeeded']}")
 
 
+def failure_window(failures):
+    """One line on whether several failed runs are one event, or `None`.
+
+    `failures` is `[(who, creation stamp)]` for every CronJob whose newest
+    Job ended `Failed`. Below two of them there is nothing to correlate and
+    this returns `None`.
+
+    **It states the span and does not name a cause, because the span is the
+    only thing this check can measure.** Three cycles in a row have assembled
+    this by hand: on 2026-09-20 five CronJobs read `LAST RUN FAILED` at once
+    — agora-backup, newspaper-generator, newspaper-suggestions,
+    telegram-bridge-state-backup, couchdb-compact — and each cycle re-derived,
+    from five `kubectl get job -o jsonpath` calls, that all five stamps sat
+    inside the 8.5-hour window in which server2 was NotReady and CouchDB
+    unreachable. That is one event with five symptoms, and read as five faults
+    it is five investigations. The stamps were already in `read_last_jobs`;
+    nothing printed them together.
+
+    A wide span is not evidence of separate faults either, and the wording
+    says so: a daily CronJob and a six-hourly one hit by the same outage fail
+    up to a day apart simply because that is when their slots came round.
+    """
+    if len(failures) < 2:
+        return None
+    stamps = sorted(
+        (when, who) for who, when in failures if _as_datetime(when) is not None)
+    if len(stamps) < 2:
+        return None
+    first, last = _as_datetime(stamps[0][0]), _as_datetime(stamps[-1][0])
+    span = last - first
+    hours = span.total_seconds() / 3600
+    return (
+        f"{len(stamps)} of the failed runs above were created within "
+        f"{hours:.1f}h of each other, {stamps[0][0]} ({stamps[0][1]}) to "
+        f"{stamps[-1][0]} ({stamps[-1][1]}) — before treating them as "
+        f"{len(stamps)} faults, check whether one node or one dependency was "
+        f"down across that window. A wide span does not rule that out: each "
+        f"job fails at its own next slot, so a daily and a six-hourly one hit "
+        f"by the same outage are a day apart.")
+
+
 def report(rows, now=None, claim_nodes=None, last_jobs=None):
     """The printed lines and the exit status, as (lines, status)."""
     if now is None:
@@ -575,6 +616,7 @@ def report(rows, now=None, claim_nodes=None, last_jobs=None):
     run_judged = 0
     run_inflight = []
     run_unseen = []
+    run_failures = []
 
     for row in sorted(rows, key=lambda r: (r["namespace"], r["name"])):
         who = f"{row['namespace']}/{row['name']}"
@@ -610,6 +652,9 @@ def report(rows, now=None, claim_nodes=None, last_jobs=None):
             run_judged += 1
             actionable = True
             lines.append(f"{run_verdict}  {who}: {run_detail}")
+            run_failures.append(
+                (who, (last_jobs.get((row["namespace"], row["name"])) or {})
+                 .get("created") or ""))
         elif run_verdict == "NOT JUDGED":
             run_inflight.append(who)
             lines.append(f"NOT JUDGED  {who}: {run_detail}")
@@ -663,6 +708,9 @@ def report(rows, now=None, claim_nodes=None, last_jobs=None):
             f" Pinned to a node that neither a PersistentVolume's hostname "
             f"affinity nor a scheduled Pod places, so the pin could not be "
             f"compared: {', '.join(pin_unseen)}.")
+    together = failure_window(run_failures)
+    if together:
+        lines.append(together)
     lines.append(swept)
     if suspended:
         lines.append(

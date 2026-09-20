@@ -745,3 +745,77 @@ def test_a_refused_jobs_read_never_reads_as_every_run_passing(capsys):
     out = capsys.readouterr().out
     assert "no CronJob's last run was judged" in out
     assert status == 1
+
+
+# --- several failures that are one event ------------------------------
+#
+# Cycles 1901, 1904 and 1909 each re-derived by hand that the five CronJobs
+# reading `LAST RUN FAILED` on 2026-09-20 had all failed inside the same
+# server2 outage. The stamps were already read; nothing printed them together.
+
+
+def test_two_failures_print_the_window_they_share():
+    rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[
+        cronjob("agora-backup", "40 3 * * *",
+                scheduled="2026-09-04T03:40:00Z",
+                succeeded="2026-09-04T03:41:00Z"),
+        cronjob("newspaper-generator", "0 0 * * *",
+                scheduled="2026-09-04T00:00:00Z",
+                succeeded="2026-09-03T00:16:00Z"),
+    ]))
+    # Deliberately out of report order: `report` walks the CronJobs sorted by
+    # name, so agora-backup is collected first while its failure is the LATER
+    # of the two. A line built in collection order would name them backwards.
+    lines, status = cronjob_health.report(rows, now=NOW, last_jobs=last_jobs_for([
+        job("agora-backup", created="2026-09-04T03:40:00Z"),
+        job("newspaper-generator", created="2026-09-03T22:40:00Z"),
+    ]))
+    assert status == 2
+    together = [l for l in lines if "within" in l and "of each other" in l]
+    assert len(together) == 1
+    assert "5.0h" in together[0]
+    assert "agora-backup" in together[0] and "newspaper-generator" in together[0]
+    # The earlier stamp is named first, so the line reads as a window.
+    assert together[0].index("2026-09-03T22:40:00Z") < \
+        together[0].index("2026-09-04T03:40:00Z")
+
+
+def test_one_failure_alone_gets_no_window_line():
+    # Nothing to correlate. A line saying "1 of the failed runs were created
+    # within 0.0h of each other" would be noise on every ordinary red.
+    rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[
+        cronjob("agora-backup", "40 3 * * *",
+                scheduled="2026-09-04T03:40:00Z",
+                succeeded="2026-09-04T03:41:00Z")]))
+    lines, status = cronjob_health.report(
+        rows, now=NOW, last_jobs=last_jobs_for([job("agora-backup")]))
+    assert status == 2
+    assert not [l for l in lines if "of each other" in l]
+
+
+def test_a_completed_run_is_not_counted_into_the_window():
+    # Only the runs that actually printed LAST RUN FAILED belong in the span;
+    # a healthy CronJob's newest Job must not widen it.
+    rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[
+        cronjob("agora-backup", "40 3 * * *",
+                scheduled="2026-09-04T03:40:00Z",
+                succeeded="2026-09-04T03:41:00Z"),
+        cronjob("marcus-backup", "20 * * * *",
+                scheduled="2026-09-04T18:20:00Z",
+                succeeded="2026-09-04T18:20:07Z"),
+    ]))
+    lines, _ = cronjob_health.report(rows, now=NOW, last_jobs=last_jobs_for([
+        job("agora-backup", created="2026-09-03T22:40:00Z"),
+        job("marcus-backup", created="2026-09-04T18:20:00Z",
+            condition="Complete"),
+    ]))
+    assert not [l for l in lines if "of each other" in l]
+
+
+def test_failure_window_needs_two_readable_stamps():
+    assert cronjob_health.failure_window([]) is None
+    assert cronjob_health.failure_window([("agents/a", "2026-09-04T00:00:00Z")]) is None
+    # An unreadable stamp is dropped rather than guessed at, which can take
+    # the pair below two.
+    assert cronjob_health.failure_window([
+        ("agents/a", "2026-09-04T00:00:00Z"), ("agents/b", "")]) is None
