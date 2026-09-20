@@ -274,22 +274,26 @@
     var PENDING_SEND_SKEW_MS = 120000;
     /* An hour, and it used to be ten minutes -- which is the same bound
      * `askthread.js` waits for before it draws the card saying the turn was
-     * lost (`LOST_TURN_AFTER_SECONDS`, 600). Two bounds at the same number
-     * raced, and the drop almost always won: `lostTurn` measures silence
-     * from the newest message in the thread, which for a send the server
-     * never stored is the bubble this merge synthesises, so the card became
-     * drawable within 500ms of the send being thrown away, against a poll
-     * every four seconds. What he actually saw at the ten-minute mark was
-     * his own question disappearing out of the thread, taking the loader
-     * with it and never saying why -- worse than the spinning the card was
-     * built to end, because the text "Ask again" would resend went with it.
+     * lost (`LOST_TURN_AFTER_SECONDS`, 600). Two bounds at the same number,
+     * and this one landed on top of the other rather than after it.
      *
-     * So the drop has to come well after the card, not on top of it. The
-     * card is the end state: it says nothing is coming and offers the one
-     * action that helps, and his question has to still be under it for that
-     * button to have something to send. `pendingSends` is in memory, so a
-     * reload clears this regardless; the hour is only the bound on a tab
-     * left open. */
+     * `lostTurn` measures silence from the newest message in the thread,
+     * which for a send the server never stored is the bubble this merge
+     * synthesises, stamped at `sentAt`. So any repaint late enough to draw
+     * the card was late enough to have thrown the send away first, and for
+     * that case the card was unreachable: what he got at the ten-minute
+     * mark was his own question gone out of the thread, the loader gone
+     * with it, and nothing said. Worse than the spinning the card was built
+     * to end, because the text "Ask again" would resend went with it -- and
+     * `lastAskedQuestion` is read off the painted messages, so the button
+     * would then have re-asked an older question of his.
+     *
+     * So the drop has to come well after the card. The card is the end
+     * state: it says nothing is coming and offers the one action that
+     * helps, and his question has to still be under it for that button to
+     * have something to send. `pendingSends` is in memory, so a reload
+     * clears this regardless; the hour is only the bound on a tab left
+     * open. */
     var PENDING_SEND_EXPIRES_MS = 3600000;
 
     function mergePendingSends(messages, pending, now) {

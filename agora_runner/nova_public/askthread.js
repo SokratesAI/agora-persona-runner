@@ -109,13 +109,12 @@
      * Bash call, a subagent, a model thinking before it reaches for anything.
      * The bound is on SILENCE, not on the turn -- a turn narrating steps every
      * few seconds can run its full 45 minutes and never trip this. */
-    var LOST_TURN_AFTER_SECONDS = 600;
-
     /* Raising this above `ask.js`'s `PENDING_SEND_EXPIRES_MS` puts the two
      * bounds back in the order that lost his question: a send the server
-     * never stored is dropped out of the thread before this ever calls the
-     * turn lost, so the card never draws and the text vanishes instead. The
-     * drop must stay the later of the two. */
+     * never stored is then dropped out of the thread before this ever calls
+     * the turn lost, so the card cannot draw and the text vanishes instead.
+     * The drop must stay the later of the two. */
+    var LOST_TURN_AFTER_SECONDS = 600;
 
     // The newest thing he said in the thread being painted; see `askPaintThread`.
     var lastAskedQuestion = "";
