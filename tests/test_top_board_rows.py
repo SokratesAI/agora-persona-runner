@@ -1983,3 +1983,23 @@ def test_with_no_attributable_claim_the_tier_falls_back_to_his_hand_order():
     assert "SHARES NOT APPLIED" in out
     top = [line for line in out.split("\n") if line.startswith("  -> ")][0]
     assert "a nova row" in top
+
+
+def test_fetch_claim_history_reads_the_rows_document(monkeypatch):
+    """`claims-history.json` is `{"rows": [...]}`; the share attribution wants
+    the list."""
+    monkeypatch.setattr(top_board_rows, "_fetch",
+                        lambda path: '{"rows": [{"item": "issue-1", '
+                                     '"cycle": 7}]}')
+    assert top_board_rows.fetch_claim_history() == [{"item": "issue-1",
+                                                     "cycle": 7}]
+
+
+def test_fetch_claim_history_is_empty_rather_than_loud_when_it_cannot_read(
+        monkeypatch):
+    """An absent or unparseable history is the pre-#214 behaviour, not a
+    broken board -- `tools.claim_history` is the check that goes red on it."""
+    for text in (None, "", "[not found: claims-history.json]", "{",
+                 '{"rows": 3}', '{"no rows": []}'):
+        monkeypatch.setattr(top_board_rows, "_fetch", lambda path, t=text: t)
+        assert top_board_rows.fetch_claim_history() == []

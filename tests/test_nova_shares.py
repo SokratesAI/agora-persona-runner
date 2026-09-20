@@ -5,7 +5,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from agora_runner.nova_shares import (
-    FLOOR_DAYS, SHARE_SEED, WINDOW, cycle_attribution, floor_is_measurable,
+    FLOOR_DAYS, SHARE_SEED, WINDOW, attribution_rows, cycle_attribution,
+    floor_is_measurable,
     last_worked, ledger_horizon, project_shares, share_deficits, share_ranks,
     starved,
 )
@@ -237,3 +238,49 @@ def test_ledger_horizon_is_the_oldest_stamp():
     claims = [{"item": "a", "cycle": 1, "at": _stamp(3)},
               {"item": "b", "cycle": 2, "at": _stamp(9)}]
     assert ledger_horizon(claims) == _now() - timedelta(days=9)
+
+
+def test_attribution_merges_the_history_and_the_live_ledger():
+    """The window is 30 cycles and the ledger is emptied daily, so the
+    history is the only document that can carry one."""
+    history = [{"item": "issue-1", "cycle": 1, "state": "done"},
+               {"item": "issue-2", "cycle": 2, "state": "done"}]
+    ledger = [{"item": "issue-3", "cycle": 3, "state": "open"}]
+    rows = attribution_rows(history, ledger)
+    assert sorted(r["cycle"] for r in rows) == [1, 2, 3]
+
+
+def test_the_live_ledger_wins_on_a_row_both_documents_carry():
+    """The history carries whatever the field said when it was last folded;
+    a claim that progressed since then is only right in the ledger."""
+    history = [{"item": "issue-1", "cycle": 1, "state": "open"}]
+    ledger = [{"item": "issue-1", "cycle": 1, "state": "done",
+               "outcome": "merged"}]
+    rows = attribution_rows(history, ledger)
+    assert len(rows) == 1
+    assert rows[0]["state"] == "done"
+    assert rows[0]["outcome"] == "merged"
+
+
+def test_attribution_survives_a_missing_or_malformed_document():
+    assert attribution_rows(None, None) == []
+    assert attribution_rows([{"item": "a", "cycle": 1}], None) == [
+        {"item": "a", "cycle": 1}]
+    # A history whose rows are not objects is skipped rather than crashing
+    # the board: the ranking is still correct without them.
+    assert attribution_rows(["not a row", 7], [{"item": "a", "cycle": 1}]) == [
+        {"item": "a", "cycle": 1}]
+
+
+def test_the_history_widens_the_window_the_ledger_cannot_fill():
+    """The defect this closes, as arithmetic. Nine attributable cycles in the
+    live ledger against a window of 30; the history holds the rest."""
+    ledger = [{"item": "issue-1", "cycle": c, "at": _stamp(0)}
+              for c in range(1, 10)]
+    history = [{"item": "issue-1", "cycle": c, "at": _stamp(3)}
+               for c in range(1, 40)]
+    project_of = {"issue-1": "nova"}
+    _, ledger_only = cycle_attribution(ledger, project_of)
+    _, both = cycle_attribution(attribution_rows(history, ledger), project_of)
+    assert ledger_only == 9
+    assert both == 30
