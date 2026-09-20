@@ -502,16 +502,18 @@ def _local_path_pv(name, namespace, claim, node, hostnames=None):
     }
 
 
-def three_query_kubectl(cronjobs=(), pods=(), pvs=(), pv_stderr=""):
-    """A `subprocess.run` that answers cronjobs, pods and pv separately.
+def three_query_kubectl(cronjobs=(), pods=(), pvs=(), pv_stderr="", jobs=()):
+    """A `subprocess.run` that answers cronjobs, pods, pv and jobs separately.
 
-    The tool makes three different reads and the failure this file cares about
+    The tool makes four different reads and the failure this file cares about
     is one of them being refused while the others answer, so a fake that hands
-    the same body to all three could not express it.
+    the same body to all four could not express it.
     """
     def runner(args, **kwargs):
         if "cronjobs" in args:
             body = json.dumps({"items": list(cronjobs)})
+        elif "jobs" in args:
+            body = json.dumps({"items": list(jobs)})
         elif "pods" in args:
             body = json.dumps({"items": list(pods)})
         elif "pv" in args:
@@ -603,3 +605,143 @@ def test_the_volume_outranks_a_pod_that_disagrees_with_it():
         cronjobs=[job], pods=[stale_pod],
         pvs=[_local_path_pv("pvc-1", "agents", "agora-data", "server2")])
     assert cronjob_health.main([], runner=runner) == 2
+
+
+# --- the newest Job's own terminal condition -------------------------
+#
+# The axis that exists because the slot arithmetic above structurally cannot
+# see this: `judge` allows one slot of grace, so on the morning after the
+# 2026-09-19 server2 outage a daily generator and a weekly suggestions run
+# that had both died on `Connection refused` each read `1 slot(s) behind` and
+# passed. A terminal `Failed` condition needs no grace, because a run still
+# in flight does not carry one.
+
+
+def job(cronjob_name, name=None, created="2026-09-04T00:00:00Z",
+        condition="Failed", namespace="agents", owner_kind="CronJob"):
+    conditions = [] if condition is None else [
+        {"type": condition, "status": "True"}]
+    return {
+        "metadata": {
+            "name": name or f"{cronjob_name}-1",
+            "namespace": namespace,
+            "creationTimestamp": created,
+            "ownerReferences": [{"kind": owner_kind, "name": cronjob_name}],
+        },
+        "status": {"conditions": conditions},
+    }
+
+
+def last_jobs_for(items):
+    found, why = cronjob_health.read_last_jobs(fake_kubectl(items=items))
+    assert why is None
+    return found
+
+
+def test_a_daily_job_that_failed_last_night_raises_despite_the_slot_grace():
+    # Exactly `agents/newspaper-generator` on the morning of 2026-09-20:
+    # one slot behind, which the slot axis forgives, and a Job that ended
+    # Failed, which it cannot see at all.
+    row = cronjob("newspaper-generator", "0 0 * * *",
+                  scheduled="2026-09-04T00:00:00Z",
+                  succeeded="2026-09-03T00:16:00Z")
+    rows, why = cronjob_health.read_cronjobs(fake_kubectl(items=[row]))
+    assert why is None
+    assert cronjob_health.judge(rows[0], NOW)[0] == "ok"
+
+    lines, status = cronjob_health.report(
+        rows, now=NOW,
+        last_jobs=last_jobs_for([job("newspaper-generator")]))
+    assert status == 2
+    failed = [l for l in lines if l.startswith("LAST RUN FAILED")]
+    assert len(failed) == 1
+    assert "agents/newspaper-generator" in failed[0]
+    assert "newspaper-generator-1" in failed[0]
+
+
+def test_a_later_success_clears_a_failure_kubernetes_still_keeps():
+    # `failedJobsHistoryLimit` keeps the failed Job around after a later run
+    # succeeds, so counting failures would stay red forever. The rule is the
+    # newest Job by creationTimestamp, and nothing else.
+    row = cronjob("marcus-backup", "20 * * * *",
+                  scheduled="2026-09-04T18:20:00Z",
+                  succeeded="2026-09-04T18:20:07Z")
+    rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[row]))
+    lines, status = cronjob_health.report(
+        rows, now=NOW, last_jobs=last_jobs_for([
+            job("marcus-backup", name="marcus-backup-old",
+                created="2026-09-04T17:20:00Z", condition="Failed"),
+            job("marcus-backup", name="marcus-backup-new",
+                created="2026-09-04T18:20:00Z", condition="Complete"),
+        ]))
+    assert status == 0
+    assert not [l for l in lines if l.startswith("LAST RUN FAILED")]
+
+
+def test_a_run_still_in_flight_is_declined_rather_than_judged():
+    row = cronjob("deploy-rollback", "*/5 * * * *",
+                  scheduled="2026-09-04T18:55:00Z",
+                  succeeded="2026-09-04T18:55:07Z")
+    rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[row]))
+    lines, status = cronjob_health.report(
+        rows, now=NOW,
+        last_jobs=last_jobs_for([job("deploy-rollback", condition=None)]))
+    assert status == 0
+    declined = [l for l in lines if "still in flight" in l]
+    assert len(declined) == 1
+    assert declined[0].startswith("NOT JUDGED")
+    # and the summary line preflight collapses to must carry the name, so a
+    # declined CronJob cannot read as one that passed.
+    assert "agents/deploy-rollback" in lines[-1]
+
+
+def test_a_cronjob_with_no_job_left_to_read_is_named_not_passed():
+    row = cronjob("vault-backup", "50 * * * *", namespace="obsidian",
+                  scheduled="2026-09-04T18:50:00Z",
+                  succeeded="2026-09-04T18:50:36Z")
+    rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[row]))
+    lines, status = cronjob_health.report(rows, now=NOW, last_jobs={})
+    assert status == 0
+    assert "obsidian/vault-backup" in lines[-1]
+    assert "No finished Job of their own is readable" in lines[-1]
+
+
+def test_a_suspended_cronjob_is_not_judged_on_its_last_run_either():
+    row = cronjob("heartbeat-liveness", "*/5 * * * *", suspend=True,
+                  scheduled="2026-05-01T18:05:00Z")
+    rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[row]))
+    lines, status = cronjob_health.report(
+        rows, now=NOW,
+        last_jobs=last_jobs_for([job("heartbeat-liveness")]))
+    assert status == 0
+    assert not [l for l in lines if l.startswith("LAST RUN FAILED")]
+
+
+def test_read_last_jobs_keys_on_the_owner_reference_not_the_name_prefix():
+    found = last_jobs_for([
+        job("agora-backup", name="agora-backup-29831140",
+            created="2026-09-20T01:40:00Z"),
+        # a hand-run Job that merely shares the prefix owns nothing
+        {"metadata": {"name": "agora-backup-by-hand", "namespace": "agents",
+                      "creationTimestamp": "2026-09-20T02:00:00Z"},
+         "status": {"conditions": [{"type": "Complete", "status": "True"}]}},
+    ])
+    assert list(found) == [("agents", "agora-backup")]
+    assert found[("agents", "agora-backup")]["failed"] is True
+
+
+def test_a_refused_jobs_read_never_reads_as_every_run_passing(capsys):
+    def runner(args, **kwargs):
+        if "jobs" in args:
+            return subprocess.CompletedProcess(args, 1, "", "Error: forbidden")
+        if "cronjobs" in args:
+            return subprocess.CompletedProcess(args, 0, json.dumps({"items": [
+                cronjob("marcus-backup", "20 * * * *",
+                        scheduled="2026-09-04T18:20:00Z",
+                        succeeded="2026-09-04T18:20:07Z")]}), "")
+        return subprocess.CompletedProcess(args, 0, json.dumps({"items": []}), "")
+
+    status = cronjob_health.main([], runner=runner)
+    out = capsys.readouterr().out
+    assert "no CronJob's last run was judged" in out
+    assert status == 1
