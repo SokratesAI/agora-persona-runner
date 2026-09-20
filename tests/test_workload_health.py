@@ -4,9 +4,32 @@ import datetime
 import json
 import types
 import pytest
+
+from conftest import _pass_through_unless_default_runner
 from unittest import mock
 
 from tools import workload_health as wh
+
+@pytest.fixture(autouse=True)
+def _no_live_cadvisor_scrape(monkeypatch):
+    """No test scrapes a real node's cadvisor endpoint.
+
+    `memory_headroom` -> `measure_unlimited` -> `read_node_container_rss`
+    runs `kubectl get --raw /api/v1/nodes/<node>/proxy/metrics/cadvisor`,
+    a whole-node metrics dump. One test here reached it unstubbed.
+
+    A test that supplies its own `runner=` goes through to the real reader.
+    The default says the scrape was unreadable, which is the branch that
+    test's assertion is about -- a sum that declares itself a floor.
+    """
+    import subprocess as _subprocess
+
+    monkeypatch.setattr(
+        wh, "read_node_container_rss",
+        _pass_through_unless_default_runner(
+            wh.read_node_container_rss, _subprocess.run,
+            (None, "no cadvisor scrape is readable in this test"), "runner"))
+
 
 NOW = datetime.datetime(2026, 8, 29, 8, 0, tzinfo=datetime.timezone.utc)
 

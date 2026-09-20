@@ -16,7 +16,38 @@ import io
 
 import pytest
 
+from conftest import _pass_through_unless_default_runner
+
 from tools import nas, nas_watch
+
+@pytest.fixture(autouse=True)
+def _no_live_nas_ssh(monkeypatch):
+    """No test opens a real ssh connection to the NAS to find a base path.
+
+    `nas.config` calls `discover_base`, which probes a loopback port on the
+    NAS over ssh. Five tests across this file, `test_nas_health.py` and
+    `test_nas_watch.py` reached `main`/`config` without stubbing it, so on
+    the bridge pod -- which mounts the NAS key at `/etc/nas-ssh` -- every
+    unit run dialled the real NAS. On CI there is no key and no route, so
+    it failed the same way whether the stub was there or not.
+
+    The discriminator is the runner itself: `config` passes its own `run=`
+    straight down, so "nobody stubbed this" means the runner still *is*
+    `subprocess.run`. A test that supplied a fake gets the real probe,
+    captured before the replacement. Empty is
+    the honest default: it is what `discover_base` returns for a service
+    with no base path, which is the common case.
+    """
+    import subprocess as _subprocess
+
+    for name, hermetic in (("discover_base", ""),
+                           ("discover_key", None),
+                           ("tautulli_key", None)):
+        monkeypatch.setattr(
+            nas, name,
+            _pass_through_unless_default_runner(
+                getattr(nas, name), _subprocess.run, hermetic, "run"))
+
 
 
 HOP = {"host": "nas.example", "user": "nova", "key": "/etc/nas-ssh/id_ed25519"}
@@ -307,6 +338,10 @@ def test_no_hop_judges_nothing_at_all_including_nzbget():
     assert "NZBGET" not in out.getvalue()
 
 
+def _unreadable_tautulli_key(*args, **kwargs):
+    raise nas.Unreachable("no Tautulli key is readable in this test")
+
+
 def test_nzbget_is_still_judged_when_no_arr_can_be_configured(monkeypatch):
     # The *arrs need a discovered API key and nzbget does not, so whatever
     # broke them does not reach it -- and an open control interface must not
@@ -317,6 +352,12 @@ def test_nzbget_is_still_judged_when_no_arr_can_be_configured(monkeypatch):
         env={}, out=out, get=_get_returning({}), ssh=HOP,
         unlocked=lambda *a, **k: True,
         config=lambda *a, **k: {},
+        # `report`'s `key=` default is `nas.tautulli_key`, bound at import, so
+        # the file's autouse fixture cannot reach it -- unstubbed, this test
+        # ran a real ssh at the NAS to read Tautulli's config file. Tautulli
+        # is not what this test is about; an unreadable key is the branch that
+        # leaves nzbget's judgement alone.
+        key=_unreadable_tautulli_key,
     )
     assert status == 2
     assert "SERVICES UNREADABLE" in out.getvalue()
