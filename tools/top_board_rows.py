@@ -618,6 +618,18 @@ def _claim_tag(item):
     ledger. Deliberately *not* a reason to skip the item: `prompt.md`
     ranks captures above everything, and a spent claim is a fact about
     the ledger, never a fact about the work.
+
+    **The instruction beside it used to be "work it without claiming",
+    and that is the wrong half of the sentence.** `release --done` is a
+    cycle saying it finished; the reading that follows is "go and check
+    whether this is already live", not "go and build it". Cycle 1927 read
+    it the printed way on idea #239 — top of the board, ⚪ Backlog, claim
+    spent by cycle 1917 — and the work had been merged as bridge#125 ten
+    days earlier: the per-turn MCP config file holds `${AGORA_MCP_TOKEN}`
+    and no credential, which one `cat` on the bridge pod shows. The row
+    was open because I had not moved its status, and the line a cycle reads
+    at the top of its board was pointing at the rebuild. It still does
+    not reorder anything, for the reason above.
     """
     # `release --outcome` is free shell text, and this tool's whole output
     # is one item per line -- a newline in there would split the row and
@@ -626,8 +638,10 @@ def _claim_tag(item):
     spent = item.get("spentClaim")
     if spent:
         outcome = " ".join((spent.get("outcome") or "no outcome recorded").split())
-        return (f"  [⛔ claim spent by cycle {spent['cycle']}: {outcome}"
-                f" — work it without claiming]")
+        return (f"  [⛔ claim spent by cycle {spent['cycle']} — released"
+                f" --done: {outcome}"
+                f" — check whether the work is already live before rebuilding"
+                f" it, and close the row if it is]")
     progress = item.get("progressClaim")
     if progress:
         # The take command stays, because `take` really does grant this
@@ -638,6 +652,29 @@ def _claim_tag(item):
         return (f"  [claim: {row_slug(item)}]"
                 f"  🔁 cycle {progress['cycle']} left this open: {outcome}")
     return f"  [claim: {row_slug(item)}]"
+
+
+def _spent_top_block(top):
+    """The one extra line a top row with a finished claim has earned.
+
+    `_claim_tag` already prints the outcome inline, and inline is where a
+    runner-up belongs -- but the top row is the one the header says to
+    take, and "take this" beside "a cycle already finished this" is two
+    instructions in one breath. Cycle 1927 followed the first one.
+
+    So the top row, and only the top row, gets the reading spelled out on
+    its own line: check before you build, and close the row if the work
+    is there. It does not reorder anything and it does not decide -- a
+    `--done` release can still have left the work half-finished, which is
+    exactly why the sentence asks for a check rather than a status move.
+    """
+    spent = top.get("spentClaim")
+    if not spent:
+        return []
+    return [f"     ⛔ CHECK BEFORE YOU BUILD — cycle {spent['cycle']} released "
+            "this `--done` and the row is still open. Confirm whether the work "
+            "is already live; if it is, move the row to Done and say what you "
+            "measured. Rebuilding it is the failure this line exists to stop."]
 
 
 def apply_finished(items, finished):
@@ -1167,6 +1204,7 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
             out.append("  ⚠ PROJECTS.MD UNREADABLE — this ranking is flat across "
                        "projects, which is the old behaviour, not his order.")
         out.append("  -> " + _line(ranked[0], project_meta))
+        out.extend(_spent_top_block(ranked[0]))
         # Directly under the row it is about, above the runners-up, because
         # the sentence it answers -- "has this already been looked into" --
         # is asked at the moment the row is read, not at the end of the page.
