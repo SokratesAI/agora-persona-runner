@@ -989,20 +989,6 @@
     drawer.appendChild(attach.tray);
     actions.appendChild(attach.input);
     actions.appendChild(attach.button);
-    /* Speak instead of typing, in the second place he writes me prose
-     * (ideas.md #221). The recogniser is `dictate.js`, the same one the
-     * chat dock runs; the button reveals itself only on a browser that
-     * has one, so a desktop Firefox shows the row it always had. */
-    var mic = window.novaDictation.button(el, "comment-mic");
-    actions.appendChild(mic);
-    window.novaDictation.wire({
-      button: mic,
-      onText: window.novaDictation.appendTo(box),
-      onStatus: function (text) {
-        status.textContent = text;
-        status.className = text ? "comment-status is-error" : "comment-status";
-      },
-    });
     var send = el("button", "comment-send", "Comment");
     send.type = "button";
     actions.appendChild(send);
@@ -3783,19 +3769,6 @@
       wrap.appendChild(attach.tray);
       foot.appendChild(attach.input);
       foot.appendChild(attach.button);
-      /* The third place he writes me prose gets the same mic (ideas.md
-       * #221). `fill()` rebuilds this panel on every poll, which is why
-       * `dictate.js` stops a recogniser whose button has left the page. */
-      var mic = window.novaDictation.button(el, "item-comment-mic");
-      foot.appendChild(mic);
-      window.novaDictation.wire({
-        button: mic,
-        onText: window.novaDictation.appendTo(box),
-        onStatus: function (text) {
-          status.textContent = text;
-          status.className = text ? "item-comment-status is-error" : "item-comment-status";
-        },
-      });
       foot.appendChild(send);
       wrap.appendChild(foot);
       return wrap;

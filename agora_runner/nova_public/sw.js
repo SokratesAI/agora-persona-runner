@@ -20,7 +20,7 @@
  * read on his phone as "the buttons are gone". The activate handler below
  * deletes every cache whose key is not this one, so changing the name is
  * what evicts the stale shell. Bump it whenever the shell files change. */
-var CACHE = "nova-v36";
+var CACHE = "nova-v37";
 /* Where a push handler parks the thread its notification is about.
  *
  * A second cache rather than a corner of the first one, because the two
@@ -49,7 +49,7 @@ var PUSH_CACHE = "nova-push-v1";
  * falls back to the code block `app.js` leaves on screen.
  */
 var SHELL = ["/", "/app.js", "/style.css", "/icon.svg", "/manifest.webmanifest",
-             "/vendor/echarts.min.js", "/vendor/preact-htm.js", "/message.js", "/thread.js", "/dictate.js",
+             "/vendor/echarts.min.js", "/vendor/preact-htm.js", "/message.js", "/thread.js",
              "/mermaid.js", "/attach.js", "/chat-dock.js", "/charts.js",
              "/diag.js", "/project.js",
              "/beats.js", "/notes.js", "/home.js",
