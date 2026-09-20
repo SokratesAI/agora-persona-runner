@@ -10368,6 +10368,103 @@ describe("the chat dock", () => {
     };
   }
 
+  /* `startsWith` on the query, not `includes`: `/api/asks/chat` is a
+   * different route and it is fetched on a resume too, so a looser filter
+   * counts somebody else's request as a thread load. */
+  const askReads = (window) => window.fetched.filter((u) => u.startsWith("/api/ask?")).length;
+  const texts = (window) => [...window.document.querySelectorAll("#chat-thread .ask-text")]
+    .map((n) => n.textContent);
+
+  /* His capture, 2026-09-20: *"It takes 10 seconds after i get the
+   * notification on my phone that i have received a chat answer before it
+   * shows up in the actual chat."*
+   *
+   * The wait is a `setTimeout` chain in a backgrounded tab. `pollChat` is
+   * the only thing watching an open thread, a phone throttles or suspends
+   * its timers, and the pending 4-second tick lands some way into the
+   * resume rather than when he looks. `app.js` has had a four-way resume
+   * block for the page since runner#332 and the dock had none, so nothing
+   * in the file that owns the thread read `visibilitychange`.
+   *
+   * No timer is advanced anywhere in this test. The answer has to be on
+   * screen off the resume alone, which is what makes it a test of the
+   * resume and not of the poll. */
+  test("coming back to the app reloads the open thread without waiting for the poll", async () => {
+    const window = await loadSite("/journal", { ask: answersOnPoll() });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(texts(window), ["q"], "the dock did not paint the waiting thread");
+    const before = askReads(window);
+
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(askReads(window), before + 1, "coming back asked for nothing");
+    assert.deepEqual(texts(window), ["q", "Seven."],
+      "the answer was still not on screen after he came back to the app");
+  });
+
+  /* The same comeback, through the back/forward cache and a bare window
+   * focus -- a phone fires more than one of these per app switch and an
+   * ordinary desktop tab switch fires only `focus`. */
+  test("a restored page and a refocused window both reload the open thread", async () => {
+    for (const fire of [
+      (window) => {
+        const event = new window.Event("pageshow");
+        Object.defineProperty(event, "persisted", { value: true });
+        window.dispatchEvent(event);
+      },
+      (window) => window.dispatchEvent(new window.Event("focus")),
+    ]) {
+      const window = await loadSite("/journal", { ask: answersOnPoll() });
+      tap(window, "chat-btn");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const before = askReads(window);
+      fire(window);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(askReads(window), before + 1, "the comeback asked for nothing");
+      assert.deepEqual(texts(window), ["q", "Seven."], "the answer never arrived");
+    }
+  });
+
+  /* A `pageshow` that is not a restore is an ordinary first paint, and the
+   * dock has just loaded the thread itself. */
+  test("a first paint is not a comeback", async () => {
+    const window = await loadSite("/journal", { ask: answersOnPoll() });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = askReads(window);
+    window.dispatchEvent(new window.Event("pageshow"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(askReads(window), before, "a non-restore pageshow refetched the thread");
+  });
+
+  /* A shut dock is not showing him anything -- the launcher dot speaks for
+   * it -- so a fetch per app switch there is cost with no reader. */
+  test("a shut dock does not refetch the thread when the app comes back", async () => {
+    const window = await loadSite("/journal", { ask: answersOnPoll() });
+    const before = askReads(window);
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    window.dispatchEvent(new window.Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(askReads(window), before, "a shut dock fetched the thread on an app switch");
+  });
+
+  /* The four events overlap on purpose and arrive in separate tasks. Two
+   * concurrent loads render in completion order, so the older answer can
+   * land last and paint the thread backwards -- `app.js` guards the same
+   * race with `polling` and this is the dock's `threadLoads`. */
+  test("two comeback events in one app switch load the thread once", async () => {
+    const window = await loadSite("/journal", { ask: answersOnPoll() });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = askReads(window);
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    window.dispatchEvent(new window.Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(askReads(window), before + 1, "one comeback started two loads of the thread");
+  });
+
   test("the launcher is on a page that is not /ask, and the dock starts shut", async () => {
     const window = await loadSite("/journal");
     assert.ok(window.document.getElementById("chat-btn"), "no launcher");

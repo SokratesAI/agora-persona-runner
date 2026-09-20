@@ -131,6 +131,10 @@
      * just opened. A counter rather than an id because "ask" has none. */
     var source = { kind: "ask", id: null, name: "Ask Nova" };
     var sourceToken = 0;
+    /* In-flight thread loads. A counter rather than a boolean because
+     * `switchTo` starts a load while an older one is still settling, and a
+     * boolean would be cleared by the older one finishing. */
+    var threadLoads = 0;
     var recalled = false;
 
     /* Same store and the same trade as the read marks at the top of this
@@ -877,6 +881,7 @@
 
     function loadThread() {
       var token = sourceToken;
+      threadLoads += 1;
       return fetchPage(threadUrl(), { poll: true })
         .then(function (payload) {
           if (token !== sourceToken) return;
@@ -900,8 +905,14 @@
           if (!loaded) {
             askPaintNote(thread, "Could not load the thread: " + err);
           }
-        });
+        })
+        // Both arms: a throw inside the `catch` above would otherwise leave
+        // the counter raised forever and `resumeThread` would never fire
+        // again -- the same shape as `schedulePoll` on both arms in app.js.
+        .then(settleLoad, settleLoad);
     }
+
+    function settleLoad() { threadLoads -= 1; }
 
     /* The switcher.
      *
@@ -1974,6 +1985,50 @@
       if (source.kind !== "conv" || source.id !== conversationId) return;
       loadThread();
     };
+
+    /* Four ways the app comes back, and the dock listened for none of them.
+     *
+     * His capture, 2026-09-20: *"It takes 10 seconds after i get the
+     * notification on my phone that i have received a chat answer before it
+     * shows up in the actual chat."* `app.js` already has this exact block
+     * and its comment already names this exact wait -- but it re-polls the
+     * *page*, and the thread has lived in the dock since the conversation
+     * page was deleted. Nothing in this file reads `visibilitychange`.
+     *
+     * So an answer that lands while he is in another app is waited for by
+     * `pollChat` alone, and `pollChat` is a `setTimeout` chain in a
+     * backgrounded tab: a phone throttles or suspends those, so the pending
+     * tick fires some way into the resume rather than at the moment he
+     * looks. That is the ten seconds. It is not the server -- the thread
+     * endpoint answers in well under a second -- and it is not the
+     * notification, which arrived on time.
+     *
+     * `resumeThread` asks for the thread again the moment he is back, which
+     * also re-arms `pollChat` from zero through `loadThread`'s own
+     * `payload.waiting` branch, so the throttled tick is replaced rather
+     * than merely raced.
+     *
+     * Only while the dock is open: a shut dock is not showing him a thread,
+     * the launcher dot is what speaks for it, and a fetch per app switch
+     * for a panel nobody has opened is cost with no reader. `threadLoads`
+     * is the in-flight guard for the same reason `app.js` has `polling` --
+     * these four events overlap on purpose (coming back to a phone fires
+     * two of them) and two concurrent loads render in completion order, so
+     * the older answer can land last and paint the thread backwards.
+     */
+    function resumeThread() {
+      if (document.hidden) return;
+      if (!isOpen) return;
+      if (threadLoads > 0) return;
+      loadThread();
+    }
+
+    document.addEventListener("visibilitychange", resumeThread);
+    window.addEventListener("pageshow", function (event) {
+      if (event && event.persisted) resumeThread();
+    });
+    window.addEventListener("focus", resumeThread);
+    window.addEventListener("online", resumeThread);
 
     function setOpen(next) {
       isOpen = !!next;
