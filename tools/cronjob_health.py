@@ -105,6 +105,33 @@ and this check printed `CANNOT SEE` on the one job it most needed to place. It
 reads both now, the volume winning where both answer, and falls back to Pods
 alone -- saying so out loud -- where reading a PersistentVolume is refused.
 
+**A run that failed is a fact; a slot that is late is an inference.** The slot
+arithmetic above allows one slot of grace because the newest run may still be
+in flight, and that grace is right -- but it means a *daily* job that died last
+night reads clean all day and a *weekly* one reads clean for a week. On
+2026-09-19 server2 went down for eight hours and took CouchDB with it;
+`agents/newspaper-generator` (`0 0 * * *`), `agents/newspaper-suggestions`
+(`0 23 * * 6`), `agents/agora-backup`, `agents/telegram-bridge-state-backup`
+and `obsidian/couchdb-compact` all aborted on `Connection refused`. Every one
+of them was exactly one slot behind the next morning, so every one of them
+passed. I found them by hand.
+
+So this reads the Jobs each CronJob owns as a second, independent axis, the
+same way `judge_pin` is one: take the newest Job by `creationTimestamp` whose
+`ownerReferences` name this CronJob, and report `LAST RUN FAILED` when its
+conditions carry `Failed=True`. **No grace applies and none is needed** -- a
+run still in flight has neither terminal condition and is declined rather than
+judged, so the verdict is never about a job that has not finished. It is
+positional in exactly the sense the slot count is: the *newest* run, not a run
+within some window I invented. A later success clears it, because a later
+success is a newer Job; Kubernetes keeps the failed one around under
+`failedJobsHistoryLimit`, which is why comparing timestamps rather than
+counting failures is the whole of the rule.
+
+Its blind spot is `failedJobsHistoryLimit` and `successfulJobsHistoryLimit`
+themselves: a CronJob whose Jobs have all been garbage-collected has nothing
+to read, and that is `NOT JUDGED`, not `ok`. The slot count still covers it.
+
 """
 
 import argparse
@@ -340,6 +367,74 @@ def judge_pin(row, claim_nodes):
     return "ok", f"pinned to {pinned}, which is where {claim} is"
 
 
+def read_last_jobs(runner=subprocess.run):
+    """The newest Job each CronJob owns, as (dict, None) or (None, why).
+
+    Keyed by `(namespace, cronjob name)`, taken from `ownerReferences` rather
+    than from the Job's name, because the name is only a prefix convention and
+    the owner reference is what Kubernetes itself wrote.
+    """
+    body, why = _run(runner, ["kubectl", "get", "jobs", "-A", "-o", "json"])
+    if why:
+        return None, why
+
+    newest = {}
+    for item in body.get("items") or []:
+        meta = item.get("metadata") or {}
+        owner = next(
+            (r for r in (meta.get("ownerReferences") or [])
+             if r.get("kind") == "CronJob" and r.get("name")),
+            None)
+        if owner is None:
+            continue
+        created = meta.get("creationTimestamp") or ""
+        key = (meta.get("namespace") or "?", owner["name"])
+        conditions = {
+            c.get("type"): c.get("status")
+            for c in ((item.get("status") or {}).get("conditions") or [])
+        }
+        job = {
+            "name": meta.get("name") or "?",
+            "created": created,
+            "failed": conditions.get("Failed") == "True",
+            "complete": conditions.get("Complete") == "True",
+        }
+        previous = newest.get(key)
+        if previous is None or created > previous["created"]:
+            newest[key] = job
+    return newest, None
+
+
+def judge_last_run(row, last_jobs):
+    """Whether this CronJob's newest Job finished or failed.
+
+    Returns `(verdict, detail)` where `verdict` is `ok`, `NOT JUDGED` or
+    `LAST RUN FAILED`, or `(None, None)` when no Job of this CronJob's is
+    readable at all.
+
+    A third axis alongside `judge` and `judge_pin`, and the one that answers
+    the question the slot count structurally cannot: `judge` allows one slot
+    of grace, so a daily job that died last night reads clean until tomorrow
+    and a weekly one reads clean for a week. A terminal `Failed` condition
+    needs no grace, because a run still in flight does not carry one.
+    """
+    if row.get("suspended"):
+        return None, None
+    job = (last_jobs or {}).get((row["namespace"], row["name"]))
+    if job is None:
+        return None, None
+    if job["failed"]:
+        return "LAST RUN FAILED", (
+            f"the newest Job {job['name']} (created {job['created']}) ended "
+            f"Failed — this is a run that finished badly, not a slot that is "
+            f"merely late, so no grace applies; read its pod logs")
+    if job["complete"]:
+        return "ok", f"newest Job {job['name']} completed"
+    return "NOT JUDGED", (
+        f"the newest Job {job['name']} (created {job['created']}) carries "
+        f"neither Complete nor Failed — it is still in flight")
+
+
 def _as_datetime(text):
     """An RFC3339 stamp as an aware datetime, or None when it cannot be read."""
     if not text:
@@ -462,12 +557,14 @@ def judge(row, now):
         f"{row['scheduled']}, last success {row['succeeded']}")
 
 
-def report(rows, now=None, claim_nodes=None):
+def report(rows, now=None, claim_nodes=None, last_jobs=None):
     """The printed lines and the exit status, as (lines, status)."""
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
     if claim_nodes is None:
         claim_nodes = {}
+    if last_jobs is None:
+        last_jobs = {}
     lines = []
     actionable = False
     unreadable = False
@@ -475,6 +572,9 @@ def report(rows, now=None, claim_nodes=None):
     young = []
     pin_judged = 0
     pin_unseen = []
+    run_judged = 0
+    run_inflight = []
+    run_unseen = []
 
     for row in sorted(rows, key=lambda r: (r["namespace"], r["name"])):
         who = f"{row['namespace']}/{row['name']}"
@@ -505,6 +605,19 @@ def report(rows, now=None, claim_nodes=None):
         elif pin_verdict == "ok":
             pin_judged += 1
 
+        run_verdict, run_detail = judge_last_run(row, last_jobs)
+        if run_verdict == "LAST RUN FAILED":
+            run_judged += 1
+            actionable = True
+            lines.append(f"{run_verdict}  {who}: {run_detail}")
+        elif run_verdict == "NOT JUDGED":
+            run_inflight.append(who)
+            lines.append(f"NOT JUDGED  {who}: {run_detail}")
+        elif run_verdict == "ok":
+            run_judged += 1
+        elif not row["suspended"]:
+            run_unseen.append(who)
+
     swept = (
         f"Judged {len(rows)} CronJob(s) from the live cluster, not from git. "
         f"The verdict is scheduled slots between lastSuccessfulTime and "
@@ -529,6 +642,20 @@ def report(rows, now=None, claim_nodes=None):
     swept += (
         f" {pin_judged} of them name both a node and the claim they copy, and "
         f"those two were compared.")
+    swept += (
+        f" {run_judged} of them still have a finished Job to read, and its "
+        f"terminal condition was judged with no grace at all — a run that "
+        f"failed is a fact, where a slot that is late may still be in flight.")
+    if run_unseen or run_inflight:
+        # Same reason as the suspended, young and unseen-pin names above:
+        # `preflight` collapses a check that exits 0 to its last line carrying
+        # a digit, and a CronJob this axis declined must not read as one it
+        # passed.
+        missing = ", ".join(sorted(run_unseen + run_inflight))
+        swept += (
+            f" No finished Job of their own is readable — Kubernetes has "
+            f"collected them all, or the newest is still running — so their "
+            f"last run was not judged: {missing}.")
     if pin_unseen:
         # Same reason as the suspended and young names above: `preflight`
         # collapses a check that exits 0 to its last line carrying a digit.
@@ -590,8 +717,19 @@ def main(argv=None, runner=subprocess.run):
         claim_nodes = dict(pv_nodes)
         unreadable_pods = False
 
-    lines, status = report(rows, claim_nodes=claim_nodes)
-    if unreadable_pods and status == 0:
+    # A third axis, and a refusal here must not read as every run passing:
+    # the slot count above still stands on its own, so this degrades loudly
+    # rather than fatally, the same way an unreadable PersistentVolume does.
+    last_jobs, jobs_why = read_last_jobs(runner)
+    if jobs_why:
+        print(f"COULD NOT READ  {jobs_why} — no CronJob's last run was judged")
+        last_jobs = {}
+        unreadable_jobs = True
+    else:
+        unreadable_jobs = False
+
+    lines, status = report(rows, claim_nodes=claim_nodes, last_jobs=last_jobs)
+    if (unreadable_pods or unreadable_jobs) and status == 0:
         status = 1
     for line in lines:
         print(line)
