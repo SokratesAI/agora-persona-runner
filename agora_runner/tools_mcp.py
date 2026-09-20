@@ -173,11 +173,37 @@ from agora_runner.log import log, debug_log
 from agora_runner.tools_schemas import client_tool_schemas
 from agora_runner.tools_dispatch import ToolImage, execute_tool
 
-# The MCP revision we implement. The CLI sends its own in initialize's
-# params and we echo that back when it is a string, which is what the
-# spec asks for and what keeps this working across CLI upgrades without
-# a code change; this is only the fallback for a client that sends none.
-DEFAULT_PROTOCOL_VERSION = "2025-06-18"
+# The MCP revisions we actually implement, newest first. This server
+# answers `initialize`, `tools/list` and `tools/call` and nothing else,
+# which is the whole of what both of these revisions ask of a
+# tools-only server.
+#
+# We used to echo back whatever the client sent, on the belief that that
+# was what the spec asked for. It is the opposite: a server that does
+# not support the requested version must answer with one it does, so
+# that the client can decide whether to continue. Echoing turns "I do
+# not speak that" into "yes, I speak that" -- and 2026-07-28, which the
+# CLI's v2 MCP client negotiates, is a stateless revision that drops
+# `initialize` and the session header entirely. We implement none of it,
+# so agreeing to it is a promise we break on the next request.
+#
+# Answering with a version the client did not ask for is only safe if the
+# client accepts it, and the spec lets it disconnect instead. Measured
+# against the pinned CLI binary (2.1.272,
+# /usr/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe): its
+# legacy MCP client carries the supported list
+#   ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26",
+#    "2024-11-05", "2024-10-07"]
+# and looks the server's answer up in it, while its v2 client accepts
+# only 2026-07-28. So both of ours are on the legacy client's list and it
+# keeps the connection. That list also leads with 2026-07-28, which is
+# why this is live today rather than after the next pin bump -- the CLI
+# asks for the newest it knows and we have been saying yes to it.
+SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26")
+
+# What we answer with when the client asks for something we do not
+# speak, and when it sends no version at all.
+DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0]
 
 SERVER_NAME = "agora"
 
@@ -401,7 +427,13 @@ def handle(token, request):
     if method == "initialize":
         params = request.get("params") or {}
         client_version = params.get("protocolVersion")
-        version = client_version if isinstance(client_version, str) else DEFAULT_PROTOCOL_VERSION
+        if client_version in SUPPORTED_PROTOCOL_VERSIONS:
+            version = client_version
+        else:
+            version = DEFAULT_PROTOCOL_VERSION
+            if isinstance(client_version, str):
+                log(f"mcp initialize: client asked for {client_version!r}, "
+                    f"answering {version} (unsupported)")
         return _result(request_id, {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},

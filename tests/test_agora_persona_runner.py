@@ -7744,15 +7744,35 @@ def test_mcp_rejects_a_revoked_token(clean_mcp_grants):
     assert status == 401
 
 
-def test_mcp_initialize_echoes_the_client_protocol_version(clean_mcp_grants):
+def test_mcp_initialize_agrees_to_a_version_it_implements(clean_mcp_grants):
+    """The client asked for one of ours, so it gets that one back rather
+    than the newest one we know."""
     token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
     status, payload = clean_mcp_grants.handle(token, {
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": "2099-01-01"},
+        "params": {"protocolVersion": "2025-03-26"},
     })
     assert status == 200
-    assert payload["result"]["protocolVersion"] == "2099-01-01"
+    assert payload["result"]["protocolVersion"] == "2025-03-26"
     assert payload["result"]["serverInfo"]["name"] == "agora"
+
+
+def test_mcp_initialize_refuses_a_version_it_does_not_implement(clean_mcp_grants):
+    """Idea #315. This used to echo the client's version straight back,
+    so a CLI asking for the stateless 2026-07-28 revision was told yes by
+    a server that answers only `initialize`/`tools/list`/`tools/call`.
+    The spec says answer with a version we do support instead."""
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    for asked in ("2026-07-28", "2099-01-01"):
+        status, payload = clean_mcp_grants.handle(token, {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": asked},
+        })
+        assert status == 200
+        answered = payload["result"]["protocolVersion"]
+        assert answered != asked
+        assert answered == clean_mcp_grants.DEFAULT_PROTOCOL_VERSION
+        assert answered in clean_mcp_grants.SUPPORTED_PROTOCOL_VERSIONS
 
 
 def test_mcp_initialize_falls_back_when_the_client_sends_no_version(clean_mcp_grants):
@@ -7761,6 +7781,32 @@ def test_mcp_initialize_falls_back_when_the_client_sends_no_version(clean_mcp_gr
         "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {},
     })
     assert payload["result"]["protocolVersion"] == clean_mcp_grants.DEFAULT_PROTOCOL_VERSION
+
+
+def test_mcp_only_advertises_capabilities_it_implements(clean_mcp_grants):
+    """Idea #52 measured rather than built. The 2026-07-28 spec deprecates
+    Roots, Sampling and Logging on a 12-month clock; we advertise none of
+    the three, so there is nothing to migrate. This test is what makes
+    that stay true -- adding one of them back here is what would put the
+    deadline back on the calendar."""
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    _, payload = clean_mcp_grants.handle(token, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {},
+    })
+    caps = payload["result"]["capabilities"]
+    assert set(caps) == {"tools"}
+    assert not {"roots", "sampling", "logging"} & set(caps)
+
+
+def test_mcp_default_protocol_version_is_the_newest_we_support(clean_mcp_grants):
+    """The literal is on purpose. Written against the constant
+    (`== SUPPORTED_PROTOCOL_VERSIONS[0]`) this test passes for any
+    ordering of the tuple, including one that silently downgrades every
+    client to 2025-03-26 -- measured, that mutation stayed green. What is
+    being ratcheted is a string on the wire, so the assertion has to name
+    it. Changing it here is the deliberate act of bumping it."""
+    assert clean_mcp_grants.DEFAULT_PROTOCOL_VERSION == "2025-06-18"
+    assert clean_mcp_grants.SUPPORTED_PROTOCOL_VERSIONS[0] == "2025-06-18"
 
 
 def test_mcp_notification_gets_no_result_body(clean_mcp_grants):
