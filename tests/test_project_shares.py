@@ -205,3 +205,59 @@ def test_a_named_project_does_not_pay_for_the_ledger(monkeypatch):
     monkeypatch.setattr(nova_site, "vault_read_path_rev", refuse)
     payload = nova_site.project_payload("Nova")
     assert "projectShares" not in payload
+
+
+# --- A deficit against an empty backlog is not starvation (cycle 1923) ----
+
+
+def test_open_row_counts_ride_along_with_the_deficit(monkeypatch):
+    """The fixture board has one open Infra row, two Marcus rows and two Nova
+    rows, and NAS has none at all -- so 0 here means "no row to take" rather
+    than "I did not look"."""
+    shares = _shares(monkeypatch, _ledger(_claim("issue-1", 1500)))
+    assert shares["projects"]["marcus"]["openRows"] == 2
+    assert shares["projects"]["nova"]["openRows"] == 2
+    assert shares["projects"]["infra"]["openRows"] == 1
+    assert shares["projects"]["nas"]["openRows"] == 0
+
+
+def test_a_done_or_blocked_row_is_not_a_row_a_cycle_can_take(monkeypatch):
+    """Marcus's two rows go Done and blocked-on-owner, and its count drops
+    to zero while Nova's is untouched.
+
+    Nova is the control: a change that counted nothing, or that keyed the
+    count wrong, would take Nova's 2 down with it.
+    """
+    monkeypatch.setattr(nova_site, "board_payload", lambda name: {
+        "issues": {"items": [_row(1, "Nova"), _row(2, "Marcus", "done"),
+                             _row(7, "Infra")]},
+        "ideas": {"items": [_row(3, "Marcus", "blocked-on-edvard"),
+                            _row(7, "Nova")]},
+    }[name])
+    shares = _shares(monkeypatch, _ledger(_claim("issue-1", 1500)))
+    assert shares["projects"]["marcus"]["openRows"] == 0
+    assert shares["projects"]["nova"]["openRows"] == 2
+
+
+def test_the_floor_leaves_a_project_with_no_row_to_take_alone(monkeypatch):
+    """The same ledger as `test_the_floor_fires_once_the_ledger_reaches_back_
+    far_enough`, which starves Marcus -- with Marcus's rows closed it must
+    not.
+
+    That test is the positive control: it asserts `starved is True` on this
+    exact ledger, so this one cannot be passing because the floor never fired.
+    """
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+    recent = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(nova_site, "board_payload", lambda name: {
+        "issues": {"items": [_row(1, "Nova"), _row(2, "Marcus", "done"),
+                             _row(7, "Infra")]},
+        "ideas": {"items": [_row(3, "Marcus", "done"), _row(7, "Nova")]},
+    }[name])
+    shares = _shares(monkeypatch, _ledger(
+        _claim("issue-1", 1400, at=old), _claim("issue-1", 1500, at=recent)))
+    assert shares["floorMeasurable"] is True
+    assert shares["projects"]["marcus"]["starved"] is False
+    # Infra has a row and no claim, so the floor still has something to do.
+    assert shares["projects"]["infra"]["starved"] is True

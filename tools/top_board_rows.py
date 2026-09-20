@@ -826,7 +826,40 @@ def _claim_footer(rows, captures, claims_readable):
     return out
 
 
-def _share_block(shares, counts, counted, worked, project_meta, horizon=None):
+def _with_work(open_counts):
+    """`open_counts` -> the set of projects with a row a cycle can take.
+
+    `None` in, `None` out, on purpose: `starved` treats `None` as "do not
+    apply the condition" and an empty set as "no project qualifies", and
+    those are opposite answers. A caller that could not build the counts
+    must get the first one.
+    """
+    if open_counts is None:
+        return None
+    return {name for name, count in open_counts.items() if count}
+
+
+def _open_row_counts(rows, project_of=None):
+    """`{lowercased project: rows a cycle could take}` off the ranked rows.
+
+    "Could take" means present in the ranking and not blocked on the owner
+    -- the same test the blocked block at the bottom of the page uses, so
+    the count and the list cannot disagree. Rows already Done or Outdated
+    never reach here; `nova_next` drops them before ranking.
+    """
+    counts = {}
+    for row in rows:
+        if row.get("statusKey") == _BLOCKED:
+            continue
+        name = (row.get("project") or "").strip().lower()
+        if not name:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def _share_block(shares, counts, counted, worked, project_meta, horizon=None,
+                 open_counts=None):
     """The share-vs-actual table, printed above the ranking it produced.
 
     His issue #214 asks for this on the projects page. It is printed here as
@@ -835,6 +868,19 @@ def _share_block(shares, counts, counted, worked, project_meta, horizon=None):
     it. A ranking whose reason is invisible is one nobody can tell apart from
     a broken one -- the same argument `reserve_maintenance` makes for
     printing its note even when it forced nothing.
+
+    **`open_counts` is how many rows a cycle could actually take, per
+    project, and it is printed beside the deficit because without it the
+    deficit is unreadable.** Cycles 1919, 1920 and 1921 each handed the same
+    line to the next one -- "Marcus owed 35% took 0%, Nova the app owed 30%
+    took 0%" -- as unfinished business, and 1921 wrote that the fix "is a
+    row, not another cycle noticing". I never checked whether there was a
+    row. Measured 2026-09-20: Marcus has 47 rows and **none** open, Infra
+    has 1 and none open, Maintenance 2 and none open. A deficit against an
+    empty backlog is not starvation, and a cycle should be able to see that
+    in the line rather than after a board query it does not know to run.
+    `None` means the caller had no row list and the counts are omitted
+    rather than printed as zero.
     """
     deficits = share_deficits(shares, counts, counted)
     live = [name for name, share in shares.items() if share > 0]
@@ -842,7 +888,8 @@ def _share_block(shares, counts, counted, worked, project_meta, horizon=None):
         return []
     out = [f"SHARES OF CYCLES — measured over the last {counted} attributable "
            "cycle(s) in the claim history plus the live ledger (issue #214):"]
-    hungry = set(starved(shares, worked, horizon=horizon))
+    hungry = set(starved(shares, worked, horizon=horizon,
+                         with_work=_with_work(open_counts)))
     if not floor_is_measurable(horizon):
         # Not silence, and not a floor applied anyway: `prune` collects
         # finished claims, so the ledger is routinely younger than the floor
@@ -850,12 +897,30 @@ def _share_block(shares, counts, counted, worked, project_meta, horizon=None):
         # run is the honest answer; running it would rescue the whole board.
         out.append(f"  (the {FLOOR_DAYS}-day floor was not evaluated — the "
                    "claim history does not reach back that far yet)")
+    empty = []
     for name in sorted(live, key=lambda n: -deficits[n][2]):
         share, actual, deficit = deficits[name]
         label = (project_meta.get(name) or {}).get("project") or name
         mark = "  ⬅ 14-day floor, never mind the arithmetic" if name in hungry else ""
+        if open_counts is None:
+            rows_note = ""
+        elif open_counts.get(name, 0):
+            rows_note = f"  ({open_counts[name]} open row(s))"
+        else:
+            rows_note = "  — no row a cycle can take"
+            empty.append(label)
         out.append(f"  {label}: owed {share:.0f}%, took {actual:.0f}% "
-                   f"({counts.get(name, 0)} of {counted}), deficit {deficit:+.0f}{mark}")
+                   f"({counts.get(name, 0)} of {counted}), deficit "
+                   f"{deficit:+.0f}{rows_note}{mark}")
+    if empty:
+        owed = sum(shares[name] for name in live
+                   if not open_counts.get(name, 0))
+        out.append(f"  {len(empty)} project(s) are owed {owed:.0f}% of the "
+                   "loop between them and have no row a cycle can take: "
+                   + ", ".join(sorted(empty))
+                   + ". That part of the deficit is not starvation and no "
+                   "cycle closes it by working harder — it closes when a row "
+                   "is filed or the share moves.")
     zero = sorted(name for name, share in shares.items() if share <= 0)
     if zero:
         out.append("  0% (Paused/Deprecated, ranked last): "
@@ -1048,11 +1113,13 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     counts, counted = cycle_attribution(claims, project_of)
     worked = last_worked(claims, project_of)
     horizon = ledger_horizon(claims)
+    open_counts = _open_row_counts(rows)
     if shares and counted:
         base_ranks = share_ranks(shares, counts, counted, worked,
-                                 horizon=horizon)
+                                 horizon=horizon,
+                                 with_work=_with_work(open_counts))
         out.extend(_share_block(shares, counts, counted, worked, project_meta,
-                                horizon))
+                                horizon, open_counts))
     else:
         base_ranks = project_ranks(projects_markdown)
         if shares:

@@ -233,7 +233,7 @@ def share_deficits(shares, counts, counted):
 
 
 def share_ranks(shares, counts, counted, worked=None, now=None,
-                floor_days=FLOOR_DAYS, horizon=None):
+                floor_days=FLOOR_DAYS, horizon=None, with_work=None):
     """`{lowercased project: rank}`, furthest below its share first.
 
     A drop-in for `nova_next.project_ranks` -- same shape, same "lower is
@@ -243,10 +243,12 @@ def share_ranks(shares, counts, counted, worked=None, now=None,
 
     Three bands, in order:
 
-    1. **Starved.** A project with a share above zero that no claim has
-       touched in `floor_days` (or ever). His floor. Inside the band the
-       larger share goes first, because if two are starved the one he owes
-       more to is the one to take.
+    1. **Starved.** A project with a share above zero, at least one row a
+       cycle could actually take, and no claim touching it in `floor_days`
+       (or ever). His floor. Inside the band the larger share goes first,
+       because if two are starved the one he owes more to is the one to
+       take. `with_work` is what supplies the middle condition -- see
+       `starved`.
     2. **Everyone else**, by deficit -- share owed minus share taken -- and
        a tie broken by the larger share.
     3. **Zero-share projects last**: Paused and Deprecated earn no cycles,
@@ -255,7 +257,7 @@ def share_ranks(shares, counts, counted, worked=None, now=None,
     """
     worked = worked or {}
     now = now or datetime.now(timezone.utc)
-    hungry = set(starved(shares, worked, now, floor_days, horizon))
+    hungry = set(starved(shares, worked, now, floor_days, horizon, with_work))
     deficits = share_deficits(shares, counts, counted)
 
     def key(name):
@@ -270,7 +272,8 @@ def share_ranks(shares, counts, counted, worked=None, now=None,
             for position, name in enumerate(sorted(shares, key=key), start=1)}
 
 
-def starved(shares, worked=None, now=None, floor_days=FLOOR_DAYS, horizon=None):
+def starved(shares, worked=None, now=None, floor_days=FLOOR_DAYS, horizon=None,
+            with_work=None):
     """The projects the floor is currently rescuing, best share first.
 
     **Empty whenever the ledger cannot see `floor_days` back**, including
@@ -279,6 +282,18 @@ def starved(shares, worked=None, now=None, floor_days=FLOOR_DAYS, horizon=None):
     than the one project it is for -- see `ledger_horizon`. A floor that
     fires on everything is the same as no floor, except that it also hides
     the deficit ordering underneath it.
+
+    **`with_work` is the set of projects that have a row a cycle could take**,
+    and a project outside it is never rescued. Measured on his live boards
+    2026-09-20: Marcus is owed 35% of cycles and has **47 rows, none of them
+    open** -- every one Done or Outdated. Infra (1 row), Maintenance (2) and
+    Sokrates Post (12) are in the same state, and together those four are
+    owed 59% of the loop. Nothing a cycle does can close that deficit, so
+    ranking Marcus first would name a project with nothing under it and the
+    picker would fall through to the next tier having spent its top slot on
+    an empty project. Pass `None` to skip the condition entirely, which is
+    what a caller with no row list in hand should do -- an unknown row count
+    must not read as zero.
     """
     worked = worked or {}
     now = now or datetime.now(timezone.utc)
@@ -286,7 +301,8 @@ def starved(shares, worked=None, now=None, floor_days=FLOOR_DAYS, horizon=None):
         return []
     cutoff = now - timedelta(days=floor_days)
     names = [name for name, share in shares.items()
-             if share > 0 and (worked.get(name) is None or worked[name] < cutoff)]
+             if share > 0 and (worked.get(name) is None or worked[name] < cutoff)
+             and (with_work is None or name in with_work)]
     return sorted(names, key=lambda name: (-shares[name], name))
 
 
