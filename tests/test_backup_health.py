@@ -61,6 +61,37 @@ def _api(payload, code=0, err="", seen=None):
     return run
 
 
+#: Captured before the autouse fixture below can replace the module attribute, so
+#: the one test that exercises the real `read_nas_archives` still can.
+_REAL_READ_NAS_ARCHIVES = bh.read_nas_archives
+
+
+@pytest.fixture(autouse=True)
+def _no_live_reads(monkeypatch):
+    """Nothing in this file may reach the NAS or the cluster.
+
+    `main` calls `read_nas_archives` and `read_claims` with no arguments, so the
+    injection seams those two functions carry are unreachable from a `main` test
+    and three of them had no stub at all. On CI that was invisible — there is no
+    NAS to reach and no cluster to query, so both halves errored and the exit
+    status still came out of the half under test. On the bridge pod, where the
+    ssh key and kubectl both work, `test_main_exits_1_when_the_repo_cannot_be_read`
+    read the *live* backup state, found agora-backup 30 hours stale, and returned
+    2 instead of 1. A unit test whose verdict is decided by production is not a
+    test of anything, and it fails on the days it matters most.
+
+    So the default is hermetic *and healthy*: every other half reports clean, and
+    the exit status a `main` test asserts can only have come from what that test
+    set up. A test that is about one of these halves overrides it as before —
+    `monkeypatch.setattr` in the test body wins over the fixture.
+    """
+    monkeypatch.setattr(bh, "read_nas_archives", lambda: _fresh_nas())
+    monkeypatch.setattr(bh, "read_claims", lambda: (["agents/marcus-data"], None))
+    # Backstop: if some later path calls through to the real reader anyway, it
+    # stops at "no ssh hop" rather than opening a connection from a unit test.
+    monkeypatch.setattr(bh.nas, "ssh_config", lambda *a, **k: None)
+
+
 def test_a_backup_written_an_hour_ago_is_fresh():
     verdict, age = bh.judge(MARCUS, _commit("2026-09-03T11:00:00Z"), NOW)
     assert verdict == "fresh"
@@ -164,19 +195,21 @@ def test_main_exits_2_on_a_stale_backup(monkeypatch, capsys):
         {"sha": "d" * 40, "commit": {"message": SUBJECT,
                                      "committer": {"date": "2026-08-01T00:00:00Z"}}}
     ]))
+    monkeypatch.setattr(bh.datetime, "datetime", _FrozenNow)
     assert bh.main([]) == 2
     assert "BACKUP STALE" in capsys.readouterr().out
 
 
 def test_main_exits_1_when_the_repo_cannot_be_read(monkeypatch, capsys):
-    monkeypatch.setattr(bh, "read_claims", lambda: (["agents/marcus-data"], None))
     monkeypatch.setattr(bh, "_gh", _api(None, code=1, err="boom"))
+    monkeypatch.setattr(bh.datetime, "datetime", _FrozenNow)
     assert bh.main([]) == 1
     assert "CANNOT SEE" in capsys.readouterr().out
 
 
 def test_main_exits_2_when_the_job_has_never_written(monkeypatch, capsys):
     monkeypatch.setattr(bh, "_gh", _api([]))
+    monkeypatch.setattr(bh.datetime, "datetime", _FrozenNow)
     assert bh.main([]) == 2
     assert "NEVER BACKED UP" in capsys.readouterr().out
 
@@ -459,7 +492,7 @@ def test_an_unreachable_nas_never_reads_as_clean():
 
 def test_a_pod_with_no_ssh_key_is_an_error_rather_than_a_skip(monkeypatch):
     monkeypatch.setattr(bh.nas, "ssh_config", lambda: None)
-    now, archives, error = bh.read_nas_archives()
+    now, archives, error = _REAL_READ_NAS_ARCHIVES()
     assert now is None and archives == []
     assert "no ssh hop" in error
 
