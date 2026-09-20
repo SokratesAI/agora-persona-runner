@@ -666,10 +666,17 @@ CHECK_ARGS = {
     # telegram message!"* An ask of mine waiting 4h+ on him pages him once a
     # day; the Agora push it opened with is not enough on its own.
     "ask_watch": ["--notify"],
-    # The fourth, idea #308: the pin gap was only ever read inside my own
+    # The fourth, issue #105: *"Tell me when cycles go missing, instead of
+    # waiting for me to ask."* Two notifiers already push -- the loop
+    # stopping entirely, and a cycle that runs without answering him --
+    # and neither covers a cycle that ran, worked, and filed no journal
+    # entry. That verdict has always been in this sweep and has never left
+    # it; `--notify` is what carries it out.
+    "cycle_postmortem": ["--notify"],
+    # The fifth, idea #308: the pin gap was only ever read inside my own
     # turn. Publishing it puts it on the landing page's health line.
     "cli_pin": ["--publish"],
-    # The fifth, idea #322: the nodes' Kubernetes version, same route.
+    # The sixth, idea #322: the nodes' Kubernetes version, same route.
     "eol_watch": ["--publish"],
 }
 
