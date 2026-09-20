@@ -463,3 +463,19 @@ def test_the_refusal_names_both_ways_to_configure_it():
     assert send is None
     assert "TELEGRAM_BOT_TOKEN" in problem
     assert "VAPID_PRIVATE_KEY" in problem
+
+
+def test_degraded_cannot_miss_the_fifteen_minute_bar_he_set():
+    """Issue #259's success criterion is a number, so it gets a test.
+
+    Two independent constants in two repos' worth of reasoning add up to the
+    detection ceiling, and neither file mentions the promise. Raising either
+    one is an ordinary-looking edit that breaks it.
+    """
+    from agora_runner.nova_site import RECORD_TRUST_SECONDS
+
+    ceiling = RECORD_TRUST_SECONDS + nova_watch.DEFAULT_INTERVAL
+    assert ceiling <= 15 * 60, (
+        f"worst-case DEGRADED detection is {ceiling / 60:.0f} min; issue #259 "
+        "asks for 15"
+    )

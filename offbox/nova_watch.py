@@ -301,6 +301,15 @@ class Watch:
         dedupe correctly by accident and re-arm by nothing. Clearing
         `_degraded_since` when the flag drops is what re-arms it, the same
         way `_down_since` re-arms `UNREACHABLE`.
+
+        **The latency budget, because issue #259 states one.** Its success
+        criterion is a message within 15 minutes. The site sets `recordStale`
+        once its cached record is `RECORD_TRUST_SECONDS` old (300s today),
+        and the worst case adds a whole poll interval on top of that, so the
+        ceiling is `RECORD_TRUST_SECONDS + DEFAULT_INTERVAL` = 10 minutes.
+        `test_degraded_cannot_miss_the_fifteen_minute_bar_he_set` holds that
+        sum against the bar, because either number can be raised innocently
+        in a file that has never heard of the promise.
         """
         if not status.get("recordStale"):
             self._degraded_since = None
