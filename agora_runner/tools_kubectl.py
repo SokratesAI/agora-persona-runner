@@ -24,6 +24,16 @@ def kubectl_read(args):
         return f"[kubectl: verb {verb!r} not allowed -- only {sorted(KUBECTL_ALLOWED_VERBS)}]"
     if not resource:
         return "[kubectl: resource is required]"
+    # `resource` lands in argv straight after the verb, so a value that
+    # starts with a dash is a kubectl FLAG, not a resource -- and it never
+    # passes through the flag allowlist below. Measured cycle 1923 (idea
+    # #328): resource='--raw=/api/v1/namespaces/agents/configmaps' returned
+    # the raw API response, and resource='--kubeconfig=/tmp/x.yaml' reached
+    # the binary (a kubeconfig can run a command via an exec credential
+    # plugin). The Secret guard above reads the same field and sees
+    # '--raw=' rather than 'secrets', so it does not fire.
+    if resource.startswith("-"):
+        return f"[kubectl: resource {resource!r} looks like a flag -- pass flags in 'args', which is allowlisted]"
     resource_kind = resource.split("/")[0].split(".")[0].strip().lower()
     if any(resource_kind.startswith(p) for p in KUBECTL_FORBIDDEN_RESOURCE_PREFIXES):
         return "[kubectl: reading Secrets is never allowed through this tool]"

@@ -24,6 +24,26 @@ GITHUB_ALLOWED_SUBCOMMANDS = {
     "api": {"GET"},  # subcommand here is the request method, enforced GET-only below
 }
 GITHUB_FORBIDDEN_FLAG_PREFIXES = ("--method", "-x", "--input")
+# `args` used to be guarded by the denylist above alone, which is the shape
+# that idea #328 exists to test. Measured cycle 1923: args=['--hostname=...']
+# reached the binary and `gh` opened a connection to that host with GH_TOKEN
+# in its environment -- token exfiltration through the sanctioned field. A
+# denylist of three prefixes cannot enumerate gh's flags, so anything that
+# looks like a flag now has to be named here. Positional values (`per_page=1`
+# after `-f`, a PR number, a repo) do not start with a dash and pass through
+# untouched. Refusing an unlisted flag names it, so adding one is one line.
+GITHUB_ALLOWED_FLAGS = {
+    "-f", "--raw-field", "-F", "--field",
+    "-q", "--jq", "-t", "--template", "--json", "--slurp",
+    "--paginate", "--cache",
+    "-L", "--limit", "-R", "--repo",
+    "-s", "--state", "--label", "--author", "--assignee", "--search",
+    "--branch", "--workflow", "--status", "--comments", "--commit",
+    "-a", "--all", "--archived", "--source", "--fork", "--no-archived",
+    "--name-only", "--patch", "--color", "--visibility", "--topic",
+    "--language", "--exclude-drafts", "--exclude-pre-releases",
+    "--created", "--merged", "--draft", "--base", "--head", "--user",
+}
 
 
 def github_read(args):
@@ -37,8 +57,18 @@ def github_read(args):
     if not isinstance(extra, list):
         return "[gh: 'args' must be a list of strings]"
     for flag in extra:
-        if str(flag).lower().startswith(GITHUB_FORBIDDEN_FLAG_PREFIXES):
+        token = str(flag)
+        if token.lower().startswith(GITHUB_FORBIDDEN_FLAG_PREFIXES):
             return "[gh: only read (GET) requests are allowed through this tool]"
+        if token.startswith("-") and token.split("=", 1)[0] not in GITHUB_ALLOWED_FLAGS:
+            return f"[gh: flag {token!r} not allowed -- only {sorted(GITHUB_ALLOWED_FLAGS)}]"
+    # `sub` lands in argv where gh expects a subcommand or a request path, so
+    # a value starting with a dash is a flag that neither check above ever
+    # sees. Measured cycle 1923 (idea #328): command='api' with
+    # subcommand='--hostname=<host>' made gh connect to that host carrying
+    # GH_TOKEN.
+    if sub.startswith("-"):
+        return f"[gh: subcommand {sub!r} looks like a flag -- pass flags in 'args', which is allowlisted]"
     if command == "api":
         # sub is the HTTP path here, not a subcommand -- method is fixed GET.
         cmd = ["gh", "api", sub, "--method", "GET"] + [str(a) for a in extra]
