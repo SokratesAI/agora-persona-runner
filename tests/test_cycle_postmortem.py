@@ -9,6 +9,8 @@ Every fixture string below is a verbatim closing line taken off a real
 conversation on 2026-08-29, not one invented to match the regex.
 """
 
+import ast
+import inspect
 import json
 import types
 from datetime import datetime as _dt, timezone as _tz
@@ -1712,88 +1714,52 @@ def test_uncovered_does_not_call_an_unreadable_ledger_empty():
 
 # --- issue #105: the verdict has to leave this sweep ------------------------
 #
-# Everything above tests what the report says. These test that a recent,
-# unexplained gap reaches the owner's phone, which is the half of #105 that
-# was open: `stall_notice` pushes when the loop stops writing entirely and
-# `reply_notice` pushes when a cycle runs and never answers him, and neither
-# covers a cycle that ran, did work, and filed no journal entry.
+# Everything above tests what the report says. `--notify` used to live below
+# this line: issue #105 asked for a Telegram message when a cycle goes
+# missing, and it sent exactly one, on 2026-09-20 at 19:01 Oslo, naming
+# cycles 1895 and 1897. He answered at 19:08 -- *"That is not important
+# enough for telegram alerts. Never alert on this again in telegram. This
+# is not even an alert interesting enough for me, this happens daily and
+# you should use it to debug the system, not report it to me."* -- so the
+# nine tests that held that path up are gone with it, and these two stand
+# in their place.
 
 
-def test_a_recent_lost_cycle_is_worth_paging_him_about():
-    worth, text = cycle_postmortem.paging(
-        [{"number": 1897, "verdict": "lost", "recent": True}])
-    assert worth
-    assert "1897" in text
+def test_this_report_cannot_send_him_a_telegram_message():
+    """The channel he closed, held shut at the module.
+
+    Deleting the flag is not enough on its own: the module docstring used
+    to argue for paging, and a later cycle reading #105 would rebuild it
+    from that argument. The docstring now carries his answer instead, and
+    this asserts the code agrees with it -- no notify path, and no helper
+    left behind for one to be re-wired to.
+    """
+    assert not hasattr(cycle_postmortem, "paging")
+    assert not hasattr(cycle_postmortem, "_page_key")
+    assert not hasattr(cycle_postmortem, "PAGE_DEDUPE_HOURS")
+    # The docstring quotes the flag by name while explaining why it is
+    # gone, so this reads the code below it, not the whole file. Taking
+    # `ast.get_docstring` off the parsed module rather than slicing on
+    # `\"\"\"` -- a slice would also cut at the first function docstring.
+    tree = ast.parse(inspect.getsource(cycle_postmortem))
+    body = "\n".join(ast.unparse(node) for node in tree.body
+                     if not (isinstance(node, ast.Expr)
+                             and isinstance(node.value, ast.Constant)
+                             and isinstance(node.value.value, str)))
+    assert "notify" not in body, (
+        "the module can reach a notifier again: " + body[:400])
 
 
-def test_an_old_lost_cycle_is_not_worth_paging_him_about():
-    # The settled tail of this report reaches back to August. Paging on it
-    # would be one message per historical gap, which is the channel he
-    # stops reading.
-    worth, text = cycle_postmortem.paging(
-        [{"number": 359, "verdict": "lost", "recent": False}])
-    assert not worth
-    assert text == ""
+def test_the_verdict_still_reaches_a_sweep():
+    """...and the half he kept: it must still raise in preflight.
 
-
-def test_an_explained_recent_gap_is_not_worth_paging_him_about():
-    # `misfiled` is bookkeeping: the work IS in the journal, a number up.
-    # It never raises the exit status and it must never ring his phone.
-    worth, _ = cycle_postmortem.paging(
-        [{"number": 1920, "verdict": "misfiled", "recent": True},
-         {"number": 1921, "verdict": "failed", "recent": True}])
-    assert not worth
-
-
-def test_the_message_names_every_missing_cycle_not_just_a_count():
-    _, text = cycle_postmortem.paging(
-        [{"number": 1897, "verdict": "lost", "recent": True},
-         {"number": 1644, "verdict": "cut off", "recent": True}])
-    assert "1644" in text and "1897" in text
-    # And it says which is which -- "cut off" and "lost" are different
-    # failures with different next steps.
-    assert "cut off" in text and "lost" in text
-
-
-def test_the_page_key_is_the_identity_of_the_gap_not_its_size():
-    # The window slides every cycle, so a key built from the message text
-    # (which carries a count) would re-page him for the same hole. Same
-    # reasoning as `tools.alerts._page_key`.
-    rows = [{"number": 1897, "verdict": "lost", "recent": True}]
-    first = cycle_postmortem._page_key(rows)
-    second = cycle_postmortem._page_key(
-        rows + [{"number": 1200, "verdict": "lost", "recent": False}])
-    assert first == second
-
-
-def test_a_different_missing_cycle_gets_a_different_key():
-    assert cycle_postmortem._page_key(
-        [{"number": 1897, "verdict": "lost", "recent": True}]
-    ) != cycle_postmortem._page_key(
-        [{"number": 1898, "verdict": "lost", "recent": True}])
-
-
-def test_a_changed_verdict_on_the_same_cycle_gets_a_different_key():
-    # `cut off` becoming `lost` is a new fact about that run, not a repeat.
-    assert cycle_postmortem._page_key(
-        [{"number": 1897, "verdict": "cut off", "recent": True}]
-    ) != cycle_postmortem._page_key(
-        [{"number": 1897, "verdict": "lost", "recent": True}])
-
-
-def test_every_raising_verdict_is_worth_paging_him_about():
-    # The set of gaps worth a red status and the set worth a message are
-    # one judgement. If a fifth verdict is added to RAISING_VERDICTS and
-    # this drifts, that gap goes red in a sweep and silent on his phone.
-    for verdict in cycle_postmortem.RAISING_VERDICTS:
-        worth, _ = cycle_postmortem.paging(
-            [{"number": 1897, "verdict": verdict, "recent": True}])
-        assert worth, verdict
-
-
-def test_he_is_told_about_one_hole_once_a_day_not_once_a_cycle():
-    # The window is 48 cycle numbers, about fourteen hours at the current
-    # cadence, and a cycle runs every eighteen minutes. On the six-hour
-    # default the same two missing cycles would reach him two or three
-    # times on their way out of the window, for a thing he cannot act on.
-    assert cycle_postmortem.PAGE_DEDUPE_HOURS >= 24
+    "use it to debug the system" is the other clause of the same sentence.
+    A cycle that went missing still has to turn a sweep red, or removing
+    the message would have removed the finding too -- which is the failure
+    #105 was filed about in the first place.
+    """
+    from tools import preflight
+    assert "cycle_postmortem" in preflight.CHECKS
+    assert "--notify" not in preflight.CHECK_ARGS["cycle_postmortem"]
+    assert cycle_postmortem.RAISING_VERDICTS, (
+        "a verdict set that raises nothing makes this check unable to go red")

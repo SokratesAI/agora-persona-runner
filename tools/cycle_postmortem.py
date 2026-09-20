@@ -94,23 +94,30 @@ since this loop demonstrably runs on it, and a conversation at the
 message read limit, and never reads as clean --- and **0** means every
 gap in the window is explained.
 
-**`--notify` is how this verdict leaves the sweep (issue #105).** The
-owner's complaint on that row is that the only way he ever notices a
-missing cycle is by asking, and it is accurate about this file: every
-verdict below has only ever been printed into `tools.preflight`, which
-nothing outside this loop reads. Two notifiers already push to his phone
-and neither covers this --- `agora_runner.stall_notice` fires when the
-loop stops writing *at all*, `agora_runner.reply_notice` when a cycle
-runs and never answers him. A cycle that ran, did work, merged, and filed
-no journal entry is silent in both, and cycles 1895 and 1897 were sitting
-in this report on 2026-09-20 having told him nothing. With `--notify`,
-the recent rows carrying a `RAISING_VERDICTS` verdict --- the same set
-that decides the exit status, reused rather than restated --- go out
-through `tools.notify`, so quiet hours and deduplication are decided
-there and not here. It is in `tools.preflight`'s `CHECK_ARGS`, so every
-cycle asks the question; `PAGE_DEDUPE_HOURS` keeps that to one message a
-day per distinct set of holes. **Explained gaps never page** --- an entry
-filed a number up is bookkeeping and the work is in the journal.
+**This report never sends a Telegram message, and must not learn how
+again.** It did, for one day. Issue #105 asked for it --- *"the only way
+to notice is someone asking"* --- so a `--notify` flag paged him with the
+recent `RAISING_VERDICTS` rows, and `tools.preflight` passed it on every
+sweep. The first message it sent, 2026-09-20 19:01 Oslo, named cycles
+1895 and 1897. He answered seven minutes later and the answer closes the
+question: *"That is not important enough for telegram alerts. Never alert
+on this again in telegram. This is not even an alert interesting enough
+for me, this happens daily and you should use it to debug the system, not
+report it to me."*
+
+So the verdict stays and the channel goes. Everything below still runs on
+every sweep and still sets the exit status, which is what he means by
+debugging the system: a cycle reads it in `tools.preflight` and goes and
+looks. What is gone is `--notify`, the `paging`/`_page_key` pair it used,
+and the `--notify` entry in preflight's `CHECK_ARGS`. **The reasoning
+worth keeping for whoever reads #105 next:** the argument for paging was
+sound about coverage --- `stall_notice` fires when the loop stops writing
+at all, `reply_notice` when a cycle runs and never answers him, and
+neither covers a cycle that ran, worked, and filed no entry --- and that
+gap is real. It is just not a gap he wants on his phone, because the
+event is routine rather than actionable. A hole that is worth a red line
+in a sweep is not thereby worth a notification, and #105's "push a
+notification" was my only evidence that it was.
 
 **The window is the newest 48 cycle numbers**, about a day at the
 20-minute cadence, and it is a reporting scope rather than a judgement:
@@ -1852,84 +1859,12 @@ def format_report(results, newest, error, window=DEFAULT_WINDOW,
     return "\n".join(lines), 0
 
 
-#: One message a day per distinct set of missing cycles -- see the call site.
-PAGE_DEDUPE_HOURS = 24
-
-
-#: The cycle numbers this would page him about: recent, and with a verdict
-#: that leaves a real question open. `RAISING_VERDICTS` is reused rather
-#: than restated -- the set of gaps worth a red status and the set worth a
-#: message are the same judgement, and two copies of it would drift the
-#: day a fifth verdict is added.
-def unexplained_recent(results):
-    return [row for row in results
-            if row.get("recent") and row.get("verdict") in RAISING_VERDICTS]
-
-
-def paging(results):
-    """(worth sending, message text) for the owner's phone.
-
-    Issue #105 in his own words: *"Push a notification ... when
-    missingCycles or silentIntervals crosses a small threshold, since right
-    now the only way to notice is someone asking."* Everything above this
-    line already knows which cycles went missing; it has only ever said so
-    into a `preflight` sweep that no reader outside this loop opens. Two
-    notifiers already push -- `stall_notice` when the loop stops writing at
-    all, `reply_notice` when a cycle runs and never answers him -- and
-    neither covers the third failure: a cycle that ran, did work, and left
-    no journal entry. Cycle 1897 is that case, sitting in this report today.
-
-    **Only the recent, unexplained rows.** The historical tail of this
-    report is settled bookkeeping -- entries filed a number up, documents
-    under another name -- and paging on it would be one message per gap
-    back to August. `recent` is the window the exit status already uses,
-    so the message and the red line agree by construction.
-    """
-    rows = unexplained_recent(results)
-    if not rows:
-        return False, ""
-    parts = []
-    for row in sorted(rows, key=lambda r: r["number"]):
-        parts.append(f"{row['number']} ({row.get('verdict')})")
-    # Deliberately not "ran and left no entry": `cut off` and `unjudged`
-    # do not claim the run got that far, and a message that overstates a
-    # verdict is worse than one that names it. The verdict is beside each
-    # number, so the precise claim is the one he reads.
-    head = ("A cycle number is missing from the journal"
-            if len(rows) == 1 else
-            f"{len(rows)} cycle numbers are missing from the journal")
-    return True, (f"{head}: {', '.join(parts)}. "
-                  "Nothing else tells you this -- the stall and silent-reply "
-                  "alarms do not cover it. `python3 -m tools.cycle_postmortem` "
-                  "prints each run's own recovered reply.")
-
-
-def _page_key(results):
-    """One key per distinct set of missing cycles.
-
-    Built from the numbers and their verdicts, never from the text: the
-    message carries a count that changes as the window slides, so keying on
-    it would re-page him every cycle for the same hole. Same reasoning as
-    `tools.alerts._page_key`, which keys on alert names rather than on
-    "firing for 41m".
-    """
-    rows = unexplained_recent(results)
-    return "cycle-postmortem:" + "|".join(
-        f"{row['number']}:{row.get('verdict')}" for row in sorted(
-            rows, key=lambda r: r["number"]))
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW,
                         help="how many of the newest cycle numbers raise the status")
     parser.add_argument("--all", action="store_true", dest="raise_all",
                         help="raise on every entryless cycle, however old")
-    parser.add_argument(
-        "--notify", action="store_true",
-        help="also send the owner a Telegram message naming any recent cycle "
-             "number missing from the journal, through tools.notify's "
-             "quiet-hours gate and PAGE_DEDUPE_HOURS (issue #105)")
     parser.add_argument("--split-at", metavar="ISO8601",
                         help="also report the entryless rate either side of this "
                              "instant, over equal-length windows (idea #170)")
@@ -2025,26 +1960,6 @@ def main(argv=None):
         print()
         print("\n".join(format_rate_split(
             rate_split(results, conversations, split_at, newest))))
-    # After the report, and never when `collect` failed: an unreadable
-    # journal produces an empty `results`, which is indistinguishable from
-    # a clean one here, and "nothing worth paging him about" off a blind
-    # instrument is the negative result that was guaranteed in advance.
-    if args.notify and not error:
-        worth, text = paging(results)
-        if not worth:
-            print("nothing worth paging him about")
-        else:
-            from tools import notify as notify_tool
-
-            # A day, not the six-hour default: a missing cycle is not
-            # something he can act on, and the window here is 48 cycle
-            # numbers -- about fourteen hours at the current cadence -- so
-            # the default would tell him the same thing two or three times
-            # on its way out of the window. `tools.alerts` keeps six
-            # because a firing alert is a thing he might go and fix.
-            code, line = notify_tool.notify(
-                text, key=_page_key(results), dedupe_hours=PAGE_DEDUPE_HOURS)
-            print(f"telegram: {line}")
     return status
 
 

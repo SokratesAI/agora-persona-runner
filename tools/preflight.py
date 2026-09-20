@@ -666,20 +666,21 @@ CHECK_ARGS = {
     # telegram message!"* An ask of mine waiting 4h+ on him pages him once a
     # day; the Agora push it opened with is not enough on its own.
     "ask_watch": ["--notify"],
-    # The fourth, issue #105: *"Tell me when cycles go missing, instead of
-    # waiting for me to ask."* Two notifiers already push -- the loop
-    # stopping entirely, and a cycle that runs without answering him --
-    # and neither covers a cycle that ran, worked, and filed no journal
-    # entry. That verdict has always been in this sweep and has never left
-    # it; `--notify` is what carries it out.
+    # Issue #105 asked for a Telegram message when a cycle goes missing and
+    # `--notify` was here for one day. The first one it sent, 2026-09-20
+    # 19:01 Oslo, named cycles 1895 and 1897; he answered at 19:08: *"That
+    # is not important enough for telegram alerts. Never alert on this again
+    # in telegram... you should use it to debug the system, not report it to
+    # me."* So the check stays and the flag is gone -- see the module
+    # docstring, which carries the reasoning rather than repeating it here.
     # `--window 96` and not the module's own 48, because this check runs on
     # a 24-hour interval below and 48 cycle numbers is only ~14h at the
     # current cadence. A hole that opens just after a sweep ages out of the
-    # window before the next sweep looks, so the two cycles that motivated
-    # `--notify` -- 1895 and 1897 -- would have gone unreported by the very
-    # thing built to report them. A scheduled check must be able to see
-    # everything that happened since it last ran; 96 covers 24h with room.
-    "cycle_postmortem": ["--notify", "--window", "96"],
+    # window before the next sweep looks, so cycles 1895 and 1897 would have
+    # gone unreported by the very sweep built to report them. A scheduled
+    # check must be able to see everything that happened since it last ran;
+    # 96 covers 24h with room.
+    "cycle_postmortem": ["--window", "96"],
     # The fifth, idea #308: the pin gap was only ever read inside my own
     # turn. Publishing it puts it on the landing page's health line.
     "cli_pin": ["--publish"],
