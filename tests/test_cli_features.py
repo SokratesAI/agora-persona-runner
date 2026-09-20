@@ -123,9 +123,11 @@ class MainTests(unittest.TestCase):
         return path
 
     def test_fresh_closed_gate_exits_0(self):
-        path = self.config(
-            {"tengu_onyx_plover": {"enabled": False}}, datetime.now(timezone.utc)
-        )
+        # Every shipped row has to be present and shut for this to be 0 --
+        # a gate missing from the blob is "unknown", which exits 1. Built
+        # from WATCHED so adding a row cannot quietly turn this green.
+        closed = {row["gate"]: {"enabled": False} for row in cli_features.WATCHED}
+        path = self.config(closed, datetime.now(timezone.utc))
         self.assertEqual(cli_features.main(["--config", path]), 0)
 
     def test_fresh_open_gate_exits_2(self):
@@ -181,6 +183,61 @@ class ConfigPathTests(unittest.TestCase):
         finally:
             if old is not None:
                 os.environ["CLAUDE_CONFIG_DIR"] = old
+
+
+class AgentsMdRowTests(unittest.TestCase):
+    """The idea #327 row, which watches a gate I want to stay shut.
+
+    The row is a real entry in the shipped WATCHED table, not a fixture, so
+    these assert against `cli_features.WATCHED` itself -- a row deleted or
+    renamed has to fail here.
+    """
+
+    gate = "tengu_agents_md_mod"
+
+    def row(self):
+        matches = [r for r in cli_features.WATCHED if r["gate"] == self.gate]
+        self.assertEqual(len(matches), 1, "expected exactly one %s row" % self.gate)
+        return matches[0]
+
+    def test_the_action_names_the_mode_that_closes_it(self):
+        # "claude-md" is the plugin's CLAUDE.md-only mode, read out of the
+        # 2.1.278 binary. Naming any other mode would leave AGENTS.md loaded.
+        # The whole key/value pair, not the words separately: the action also
+        # lists the modes that leave AGENTS.md loaded, so a substring check
+        # for "claude-md" alone passes on every one of them.
+        self.assertIn('"instructionFiles": "claude-md"', self.row()["action"])
+        self.assertEqual(self.row()["setting"], "instructionFiles")
+
+    def test_an_open_gate_raises_the_status_to_two(self):
+        out = io.StringIO()
+        status = cli_features.report(
+            cli_features.judge({self.gate: True}, (self.row(),)),
+            self.cached_at(),
+            timedelta(hours=1),
+            out=out,
+        )
+        self.assertEqual(status, 2)
+        self.assertIn("GATE OPEN", out.getvalue())
+        self.assertIn("instructionFiles", out.getvalue())
+
+    def test_a_bare_false_is_closed_and_stays_quiet(self):
+        out = io.StringIO()
+        status = cli_features.report(
+            cli_features.judge({self.gate: False}, (self.row(),)),
+            self.cached_at(),
+            timedelta(hours=1),
+            out=out,
+        )
+        self.assertEqual(status, 0)
+        self.assertNotIn("GATE OPEN", out.getvalue())
+
+    def test_a_missing_gate_is_unknown_not_closed(self):
+        verdicts = cli_features.judge({"tengu_other": True}, (self.row(),))
+        self.assertEqual(verdicts[0]["state"], "unknown")
+
+    def cached_at(self):
+        return datetime(2026, 9, 20, 16, 0, tzinfo=timezone.utc)
 
 
 class LiveTests(unittest.TestCase):

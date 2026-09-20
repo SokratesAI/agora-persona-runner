@@ -45,6 +45,21 @@ not in the blob at all -- is closed. A gate this loop has never seen is
 not evidence of anything, so a missing key reports as unknown rather than
 as closed.
 
+**The second watched row is a gate I want to stay shut** (idea #327, Cycle
+1925), and that is the same instrument pointed the other way. Claude Code
+2.1.277 added an `agents-md` plugin that loads a project's `AGENTS.md` as
+instructions wherever the project has no `CLAUDE.md`; none of our five main
+repos has either file, so any third-party repo a persona clones could hand
+it instructions. Measured in the 2.1.278 binary rather than inferred from
+the changelog: the plugin declares `isOnByDefault = false` and its
+`isAvailable()` is `eX() && ql("tengu_agents_md_mod", false)`, so it does
+not load at all until that flag opens -- and on this account the flag reads
+a bare `false` today. The pinned CLI is 2.1.272, which carries no such
+plugin. So the exposure is not live, nothing needs shipping today, and the
+one thing that could change it is a server-side flag nobody here controls.
+That is precisely what this tool is for: the day it opens, the settings key
+in that row's `action` is the close.
+
 Exit status, matching its siblings so a cycle can read it without parsing
 the text: **2 means a gate has opened and there is a change to make**, 1
 means the cache was unreadable or too old (which never reads as clean),
@@ -71,6 +86,23 @@ WATCHED = (
         "action": (
             "add \"autoDreamEnabled\": true to the settings file the bridge writes "
             "(same place as autoMemoryDirectory, bridge#80)"
+        ),
+    },
+    {
+        "name": "AGENTS.md as project instructions (agents-md plugin)",
+        "gate": "tengu_agents_md_mod",
+        "setting": "instructionFiles",
+        "why": (
+            "idea #327 -- a cloned third-party repo's AGENTS.md would be read as "
+            "instructions wherever the repo has no CLAUDE.md, and none of our five "
+            "main repos has either file"
+        ),
+        "action": (
+            "set \"instructionFiles\": \"claude-md\" in the settings file the bridge "
+            "writes, so only CLAUDE.md is ever loaded (the plugin's other modes are "
+            "claude-md-or-agents-md, which is its default, claude-md-and-agents-md "
+            "and managed-only); a cycle must also confirm the pinned CLI is >= 2.1.277, "
+            "since 2.1.272 has no such plugin and would ignore the key"
         ),
     },
 )
