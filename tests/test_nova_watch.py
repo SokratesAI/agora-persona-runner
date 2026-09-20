@@ -302,3 +302,180 @@ def test_the_push_send_carries_a_timeout():
     assert calls["timeout"] == nova_watch.SEND_TIMEOUT
     assert calls["vapid_private_key"] == "key"
     assert calls["vapid_claims"] == {"sub": "https://example"}
+
+
+# --- DEGRADED: the verdict the 2026-09-19 outage needed (his issue #259) ---
+
+
+def test_a_stale_record_reports_degraded_even_though_stalled_is_false():
+    """The exact live payload of 2026-09-19: 200, `recordStale`, not stalled.
+
+    The site forces `stalled` false whenever `recordStale` is set, so this is
+    not a contrived combination -- it is the only shape this failure has.
+    """
+    phone = Phone()
+    watch = nova_watch.Watch(
+        fetch=answering(cycle=1875, recordStale=True, stalled=False,
+                        lastWrittenAt="2026-09-19T22:22:00+02:00"),
+        send=phone)
+    assert watch.poll(now=100) == "DEGRADED"
+    verdict, text = phone.sent[0]
+    assert verdict == "DEGRADED"
+    assert "database is not" in text
+
+
+def test_degraded_needs_no_grace_unlike_unreachable():
+    """One poll, one message. The box answered, so this is not a home blip."""
+    phone = Phone()
+    watch = nova_watch.Watch(fetch=answering(recordStale=True), send=phone)
+    assert watch.poll(now=100) == "DEGRADED"
+    assert len(phone.sent) == 1
+
+
+def test_a_running_degraded_outage_sends_once_not_once_per_poll():
+    phone = Phone()
+    watch = nova_watch.Watch(fetch=answering(cycle=1875, recordStale=True),
+                             send=phone)
+    assert watch.poll(now=100) == "DEGRADED"
+    assert watch.poll(now=400) is None
+    assert watch.poll(now=700) is None
+    assert len(phone.sent) == 1
+
+
+def test_the_database_coming_back_re_arms_the_degraded_alarm():
+    """A second outage must ring again; the first one must not ring twice."""
+    phone = Phone()
+    status = {"cycle": 1875, "recordStale": True}
+    watch = nova_watch.Watch(fetch=lambda: dict(status), send=phone)
+    assert watch.poll(now=100) == "DEGRADED"
+    status["recordStale"] = False
+    assert watch.poll(now=400) is None
+    status["recordStale"] = True
+    assert watch.poll(now=700) == "DEGRADED"
+    assert len(phone.sent) == 2
+
+
+def test_a_degraded_send_that_failed_is_not_recorded_as_sent():
+    """The one failure mode a watchdog may not have: going quiet on a miss."""
+    phone = Phone(fail=True)
+    watch = nova_watch.Watch(fetch=answering(recordStale=True), send=phone)
+    assert watch.poll(now=100) is None
+    phone.fail = False
+    assert watch.poll(now=400) == "DEGRADED"
+
+
+def test_degraded_is_read_before_stalled_so_it_cannot_be_hidden():
+    """Both flags set: the real cause wins, not the suppressed one."""
+    phone = Phone()
+    watch = nova_watch.Watch(
+        fetch=answering(cycle=1875, recordStale=True, stalled=True,
+                        lastWrittenAt="2026-09-19T22:22:00+02:00",
+                        silentIntervals=4),
+        send=phone)
+    assert watch.poll(now=100) == "DEGRADED"
+
+
+def test_the_three_verdicts_are_never_the_same_message():
+    texts = {
+        nova_watch.unreachable_text(2, "2026-09-19 22:22", "timeout"),
+        nova_watch.silent_text({"cycle": 1875, "silentIntervals": 4}),
+        nova_watch.degraded_text({"cycle": 1875}),
+    }
+    assert len(texts) == 3
+
+
+# --- Telegram: the channel he asked for, and the cheaper handover ---
+
+
+class FakeTelegram:
+    """Stands in for `urllib.request.urlopen` against api.telegram.org."""
+
+    def __init__(self, payload=None):
+        self.payload = payload if payload is not None else {"ok": True}
+        self.calls = []
+
+    def __call__(self, request, timeout=None):
+        self.calls.append((request, timeout))
+        body = json.dumps(self.payload).encode("utf-8")
+        return contextlib.closing(
+            types.SimpleNamespace(read=lambda: body, close=lambda: None))
+
+
+def test_the_telegram_send_goes_to_telegram_not_to_the_cluster():
+    """The whole point: nothing in the path touches the box being watched."""
+    fake = FakeTelegram()
+    send = nova_watch.telegram_sender("123:abc", "4242", post=fake)
+    send("DEGRADED", "the database is gone")
+    request, timeout = fake.calls[0]
+    assert request.full_url == "https://api.telegram.org/bot123:abc/sendMessage"
+    assert "tailc83eb3" not in request.full_url
+    assert timeout == nova_watch.SEND_TIMEOUT
+    body = json.loads(request.data.decode("utf-8"))
+    assert body["chat_id"] == "4242"
+    assert body["text"].startswith("Nova: DEGRADED")
+    assert "the database is gone" in body["text"]
+
+
+def test_telegram_answering_ok_false_on_a_200_is_a_failed_send():
+    """Telegram refuses with HTTP 200, so a bare status check reads as sent."""
+    fake = FakeTelegram({"ok": False, "description": "chat not found"})
+    send = nova_watch.telegram_sender("123:abc", "4242", post=fake)
+    with pytest.raises(RuntimeError, match="chat not found"):
+        send("DEGRADED", "text")
+
+
+def test_a_refused_telegram_send_leaves_the_alarm_armed():
+    """End to end through `Watch`: the outage is not marked announced."""
+    fake = FakeTelegram({"ok": False, "description": "chat not found"})
+    send = nova_watch.telegram_sender("123:abc", "4242", post=fake)
+    watch = nova_watch.Watch(fetch=answering(recordStale=True), send=send)
+    assert watch.poll(now=100) is None
+    fake.payload = {"ok": True}
+    assert watch.poll(now=400) == "DEGRADED"
+
+
+def test_telegram_is_preferred_over_web_push_when_both_are_configured():
+    """One token he owns beats two values copied off the cluster."""
+    send, problem = nova_watch.sender_from_env({
+        "TELEGRAM_BOT_TOKEN": "123:abc",
+        "TELEGRAM_CHAT_ID": "4242",
+        "NOVA_WATCH_SUBSCRIPTION": json.dumps(
+            {"endpoint": "https://push.example/x",
+             "keys": {"p256dh": "p", "auth": "a"}}),
+        "VAPID_PRIVATE_KEY": "k",
+    })
+    assert problem is None
+    # The returned closure is `telegram_sender`'s, not `web_push_sender`'s.
+    # Asserting only `problem is None` would pass on either, and web push
+    # would have been chosen by the code this replaced.
+    assert send.__qualname__.startswith("telegram_sender")
+
+
+def test_a_half_configured_telegram_does_not_count_as_configured():
+    """A token with no chat id cannot send; falling through is correct."""
+    send, problem = nova_watch.sender_from_env({"TELEGRAM_BOT_TOKEN": "123:abc"})
+    assert send is None
+    assert "TELEGRAM_CHAT_ID" in problem
+
+
+def test_the_refusal_names_both_ways_to_configure_it():
+    send, problem = nova_watch.sender_from_env({})
+    assert send is None
+    assert "TELEGRAM_BOT_TOKEN" in problem
+    assert "VAPID_PRIVATE_KEY" in problem
+
+
+def test_degraded_cannot_miss_the_fifteen_minute_bar_he_set():
+    """Issue #259's success criterion is a number, so it gets a test.
+
+    Two independent constants in two repos' worth of reasoning add up to the
+    detection ceiling, and neither file mentions the promise. Raising either
+    one is an ordinary-looking edit that breaks it.
+    """
+    from agora_runner.nova_site import RECORD_TRUST_SECONDS
+
+    ceiling = RECORD_TRUST_SECONDS + nova_watch.DEFAULT_INTERVAL
+    assert ceiling <= 15 * 60, (
+        f"worst-case DEGRADED detection is {ceiling / 60:.0f} min; issue #259 "
+        "asks for 15"
+    )

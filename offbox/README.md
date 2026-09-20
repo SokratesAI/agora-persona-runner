@@ -6,6 +6,7 @@ On 2026-08-24 the server went down and his phone stayed quiet. The stall notifie
 
 So this program is meant to run somewhere else. It polls the loop from outside and reports **two separate things**, never merged into one:
 
+- `DEGRADED` — the site answers and its database does not. **This is the verdict the 2026-09-19 outage needed and did not have.** server2 went NotReady; CouchDB's disk is pinned to that node so the database went with it, while `nova-site` rescheduled onto server1 and kept answering 200. `stalled` was false — the site forces it false whenever `recordStale` is set — so `UNREACHABLE` could not fire and `SILENT` was suppressed, and his phone stayed quiet for eight hours. The site was publishing `recordStale` in the same object this program already polled; nothing read it. No grace: the box answered, so this is not a home-broadband blip.
 - `UNREACHABLE` — the cluster does not answer at all. The box, the network or Tailscale is down, and from outside it cannot tell which. Needs two consecutive failed polls, because home broadband blips look identical to Hetzner dying.
 - `SILENT` — the cluster answers and the loop has stopped writing. That is the runner pod, not the machine.
 
@@ -13,15 +14,19 @@ It reaches the phone with Web Push over VAPID, which is sender-side only: the me
 
 ## What it needs
 
+It sends over **Telegram** when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set, and over Web Push otherwise. Telegram is preferred because it is the channel the owner asked for in issue #259 and because it needs one value he already owns instead of two copied off the cluster. Either way the request goes straight to the provider — `api.telegram.org`, or Google's/Apple's/Mozilla's push service — and never through the box being watched. It deliberately does **not** call `tools.telegram`: that posts to a bridge service in the cluster's `infra` namespace, which is exactly the failure domain this program exists outside of.
+
 | Variable | What it is |
 |---|---|
+| `TELEGRAM_BOT_TOKEN` | the bot token, used against `api.telegram.org` directly. With `TELEGRAM_CHAT_ID`, this is the whole configuration. |
+| `TELEGRAM_CHAT_ID` | the owner's chat with the bot. Both or neither — a token alone is not configured. |
 | `NOVA_WATCH_SUBSCRIPTION` | the push subscription record, as JSON. One file, one operator: `/data/subscription.json` on the `agora` PVC. |
 | `VAPID_PRIVATE_KEY` | from Secret `agora-vapid` in namespace `agents`. |
 | `VAPID_PUBLIC_KEY` | **not needed** — `pywebpush` derives it from the private key. It is in the same Secret; I had it in this table until my reviewer pointed out nothing reads it, which is one fewer value to copy off the cluster. |
 | `NOVA_WATCH_URL` | optional; defaults to the tailnet journal endpoint — which **does not resolve and does not route from the NAS today**. See the section above. |
 | `NOVA_WATCH_INTERVAL` | optional; seconds between polls, default 300. |
 
-It refuses to start without the first two rather than running as a watchdog that cannot speak. A silent watchdog is worse than none, because it looks like coverage.
+It refuses to start without one complete pair rather than running as a watchdog that cannot speak. A silent watchdog is worse than none, because it looks like coverage.
 
 **Both of those values still have to be handed over by a human, and they are no longer the first thing in the way** — see the section above: the NAS has no tailnet route, so this program cannot poll from there even with both secrets in hand.
 

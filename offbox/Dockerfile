@@ -2,12 +2,22 @@
 # Container Manager -- not in this cluster. Anything that runs on server1
 # cannot watch server1; that is the whole design (idea #113, issue #103).
 #
-# Build and run at home:
+# Build and run at home. Telegram is the shorter path and the one he asked
+# for in issue #259 -- one bot token, nothing copied off the cluster:
 #   docker build -t nova-watch offbox/
 #   docker run -d --restart unless-stopped --name nova-watch \
-#     -e NOVA_WATCH_SUBSCRIPTION="$(cat subscription.json)" \
-#     -e VAPID_PRIVATE_KEY=... -e VAPID_PUBLIC_KEY=... \
+#     --add-host nova.tailc83eb3.ts.net:100.89.73.98 \
+#     -e TELEGRAM_BOT_TOKEN=... -e TELEGRAM_CHAT_ID=... \
 #     nova-watch
+#
+# Web Push is still supported and still needs two values copied off the
+# cluster; it is chosen only when the two Telegram variables are absent:
+#   docker run ... -e NOVA_WATCH_SUBSCRIPTION="$(cat subscription.json)" \
+#     -e VAPID_PRIVATE_KEY=... nova-watch
+#
+# `--add-host` is not optional on the NAS: its tailnet route works but
+# MagicDNS does not reach its resolver, so the name does not resolve there.
+# See README.md.
 #
 # The NAS also needs Tailscale, and having the package installed is not
 # enough: measured 2026-08-30, DSM runs tailscaled in userspace-networking
@@ -17,7 +27,11 @@
 # `ip route get <nova tailnet ip>` on that box names a tailscale interface.
 FROM python:3.12-slim
 
-# pywebpush is the only dependency, and it is only needed to send. The
+# pywebpush is the only dependency, and it is only needed for the Web Push
+# sender. The Telegram sender uses `urllib` alone, so an image that only ever
+# sends Telegram carries this for nothing -- left in rather than split,
+# because a second image is a second thing to keep current on a box I cannot
+# build on. The
 # decision logic imports nothing outside the standard library on purpose,
 # so it stays testable in the runner's own test suite.
 #
