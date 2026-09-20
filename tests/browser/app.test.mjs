@@ -503,6 +503,13 @@ function withPending(cycle) {
  *  to count. */
 const PAGE_POLL_MS = 30000;
 
+/** `ask.js`'s own `ASK_POLL_MAX`, read out of the file rather than copied.
+ *  A test that stepped a hard-coded 60 ticks would keep passing while the
+ *  real bound moved, which is the failure it exists to catch. */
+const ASK_POLL_MAX_TICKS = Number(
+  readFileSync(join(publicDir, "ask.js"), "utf8")
+    .match(/var ASK_POLL_MAX = (\d+);/)[1]);
+
 /** Take `window.setTimeout` over so a poll can be stepped rather than waited
  *  out. jsdom runs real timers, and the reply poll is on an 8-second cycle;
  *  a test that slept through two of them would be a 16-second test. The real
@@ -16522,6 +16529,54 @@ describe("the thoughts-and-tools drawer", () => {
       "his question vanished out of the thread instead: " + JSON.stringify(shown));
     const said = window.document.querySelector("#chat-thread .ask-stopped");
     assert.ok(said, "nothing on screen says the turn was lost");
+    assert.ok(window.document.querySelector("#chat-thread .ask-retry"),
+      "no way to send it again");
+  });
+
+  test("the lost card still draws after the poll has given up", async () => {
+    /* My issues #39. The dock polls `ASK_POLL_MAX` times at `ASK_POLL_MS`
+     * -- four minutes -- and then stops on purpose. The lost-turn card is
+     * drawn at ten minutes of silence, from inside a paint. So for the six
+     * minutes between those two numbers nothing repainted, and a dock he
+     * left open on a dead turn spun its loader for ever and never reached
+     * the card at all.
+     *
+     * Fired one tick past the bound rather than at it: `Date.now` is moved
+     * forward here, and the real timer was scheduled against the real
+     * clock, so what is under test is that a timer exists to fire and that
+     * the paint it runs reads the thread as lost. */
+    let timers;
+    let ahead = 0;
+    const asked = new Date().toISOString();
+    const window = await loadSite("/journal", {
+      install: (win) => {
+        timers = captureTimers(win);
+        const real = win.Date.now.bind(win.Date);
+        win.Date.now = () => real() + ahead;
+      },
+      ask: () => ({ conversationId: "c-ask", waiting: true, messages: [
+        { id: "1", sender: "Edvard", text: "how many pods?", createdAt: asked }] }),
+    });
+    window.document.getElementById("chat-btn")
+      .dispatchEvent(new window.Event("click"));
+    await timers.fire();
+    assert.ok(window.document.querySelector("#chat-thread .ask-orbit"),
+      "the turn was not painted as running, so this test pins nothing");
+    /* Every fast tick the dock will ever take. Exactly that many and not
+     * one more: `fire()` runs whatever is queued, so a 61st would fire the
+     * redraw the 60th just scheduled, at a clock that is not past the bound
+     * yet. */
+    for (let i = 0; i < ASK_POLL_MAX_TICKS; i += 1) await timers.fire();
+    assert.equal(window.document.querySelector("#chat-thread .ask-stopped"), null,
+      "the card drew before the bound");
+    assert.equal(timers.queued.length, 1,
+      "the poll gave up and left nothing behind to draw the card with");
+    // Eleven minutes of silence, then the one redraw it left itself.
+    ahead = 11 * 60 * 1000;
+    await timers.fire();
+    const said = window.document.querySelector("#chat-thread .ask-stopped");
+    assert.ok(said, "the loader is still spinning on a turn silent for 11 minutes");
+    assert.match(said.textContent, /No answer came back/);
     assert.ok(window.document.querySelector("#chat-thread .ask-retry"),
       "no way to send it again");
   });
