@@ -16481,6 +16481,51 @@ describe("the thoughts-and-tools drawer", () => {
     assert.equal(window.document.querySelector("#chat-thread .ask-stopped"), null);
   });
 
+  test("a send the server never stored ends in that card too, with his words still under it", async () => {
+    /* The other half of the same rollout, and the one that got away: the
+     * site took the POST and Agora never stored the message. Then every
+     * read of the thread comes back without it and `waiting` is false, so
+     * the only thing holding his question on screen is `mergePendingSends`
+     * -- and that dropped it at ten minutes, the same bound `lostTurn`
+     * waits for before it draws the card. Whichever poll landed first
+     * decided, and with a four-second poll against a 500ms overlap it was
+     * almost always the drop: his question disappeared out of the thread,
+     * the loader went with it, and nothing ever said the turn was lost.
+     * That is worse than the spinning this pair of bounds was built to
+     * end -- the text "Ask again" would resend is gone. */
+    let timers;
+    let ahead = 0;
+    const window = await loadSite("/journal", {
+      install: (win) => {
+        timers = captureTimers(win);
+        const real = win.Date.now.bind(win.Date);
+        win.Date.now = () => real() + ahead;
+      },
+      ask: () => ({ conversationId: "c-ask", waiting: false, messages: [
+        { id: "1", sender: "Nova", text: "Seven.",
+          createdAt: new Date(Date.now() - 3600 * 1000).toISOString() }] }),
+    });
+    window.document.getElementById("chat-btn")
+      .dispatchEvent(new window.Event("click"));
+    await timers.fire();
+    window.document.getElementById("chat-box").value = "how many pods?";
+    window.document.getElementById("chat-form")
+      .dispatchEvent(new window.Event("submit"));
+    await timers.fire();
+    // Eleven minutes of nothing: past the bound at which the turn is called
+    // lost, and past the bound at which the unechoed send used to be dropped.
+    ahead = 11 * 60 * 1000;
+    await timers.fire();
+    const shown = [...window.document.querySelectorAll("#chat-thread .ask-text")]
+      .map((n) => n.textContent);
+    assert.ok(shown.includes("how many pods?"),
+      "his question vanished out of the thread instead: " + JSON.stringify(shown));
+    const said = window.document.querySelector("#chat-thread .ask-stopped");
+    assert.ok(said, "nothing on screen says the turn was lost");
+    assert.ok(window.document.querySelector("#chat-thread .ask-retry"),
+      "no way to send it again");
+  });
+
   test("steps arriving keep a long turn alive", async () => {
     /* The bound is silence, not elapsed time. This turn was asked half an
      * hour ago and made a tool call a minute ago: still running. */
