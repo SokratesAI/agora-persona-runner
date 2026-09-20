@@ -432,6 +432,9 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
    * `/pool` and every project page would draw
    * nothing.
    * Preact stays opt-in via `install`. */
+  /* `dictate.js` before the three composers that call it, the way
+   * index.html orders the tags. */
+  window.eval(readFileSync(join(publicDir, "dictate.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "mermaid.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
   window.eval(readFileSync(join(publicDir, "chat-dock.js"), "utf8"));
@@ -2057,8 +2060,10 @@ describe("the vault cannot inject markup", () => {
     const { window } = openWindow(html, { url: "https://nova.example/journal", runScripts: "outside-only" });
     window.fetch = (url) =>
       res(url.includes("/api/digest") ? payload.digest : hostile);
-    // `attach.js` first, as index.html orders the tags: `app.js` mounts the
-    // capture box while it loads, and that box builds an attach button.
+    // `dictate.js` and `attach.js` first, as index.html orders the tags:
+    // `app.js` mounts the capture box while it loads, and the comment
+    // drawer on every journal card builds an attach button and a mic.
+    window.eval(readFileSync(join(publicDir, "dictate.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
     // `richtext.js` is the renderer these tests are about (issue #233);
     // without it `app.js` draws nothing and a markup check passes vacuously.
@@ -2211,8 +2216,10 @@ describe("a payload cached before the brief existed", () => {
     window.fetch = (url) =>
       res(url.includes("/api/digest") ? stale.digest : stale.journal);
     window.scrollTo = () => {};
-    // `attach.js` first, as index.html orders the tags: `app.js` mounts the
-    // capture box while it loads, and that box builds an attach button.
+    // `dictate.js` and `attach.js` first, as index.html orders the tags:
+    // `app.js` mounts the capture box while it loads, and the comment
+    // drawer on every journal card builds an attach button and a mic.
+    window.eval(readFileSync(join(publicDir, "dictate.js"), "utf8"));
     window.eval(readFileSync(join(publicDir, "attach.js"), "utf8"));
     // `richtext.js` is the renderer these tests are about (issue #233);
     // without it `app.js` draws nothing and a markup check passes vacuously.
@@ -17395,6 +17402,62 @@ describe("talking to Nova", () => {
 
     mic.dispatchEvent(new window.Event("click"));
     assert.equal(mic.getAttribute("aria-pressed"), "false", "the button stayed pressed after it stopped");
+  });
+
+  /* ideas.md #221, Cycle 1905. The dock's mic was the only one in the app,
+   * and the two comment boxes -- the drawer on a journal card and the
+   * composer under a board row -- are where he writes me the longest
+   * prose. `dictate.js` is the dock's own recogniser lifted out, so these
+   * three tests are the same three properties asserted above, in the two
+   * places that did not have them. */
+  test("the mic on a journal card's comment drawer dictates into that drawer", async () => {
+    const record = { made: [], started: 0, stopped: 0, live: null };
+    const window = await loadSite("/journal", {
+      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
+    });
+    window.document.querySelector(".comment-toggle").dispatchEvent(new window.Event("click"));
+    const mic = window.document.querySelector(".comment-mic");
+    assert.ok(mic, "the comment drawer has no mic");
+    assert.equal(mic.hasAttribute("hidden"), false, "the mic stayed hidden on a browser that has one");
+
+    mic.dispatchEvent(new window.Event("click"));
+    assert.equal(record.started, 1, "tapping the mic did not start listening");
+    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "this entry reads badly" }]] });
+    assert.equal(window.document.querySelector(".comment-text").value, "this entry reads badly");
+    assert.equal(window.posted.length, 0, "dictation sent the comment before he could correct it");
+  });
+
+  test("the mic on a board row's comment box dictates into that box", async () => {
+    const record = { made: [], started: 0, stopped: 0, live: null };
+    const window = await loadSite("/issues#57", {
+      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
+    });
+    const mic = window.document.querySelector(".item-comment-mic");
+    assert.ok(mic, "the board composer has no mic");
+    assert.equal(mic.hasAttribute("hidden"), false, "the mic stayed hidden on a browser that has one");
+
+    mic.dispatchEvent(new window.Event("click"));
+    assert.equal(record.started, 1, "tapping the mic did not start listening");
+    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "still wrong on my phone" }]] });
+    assert.equal(window.document.querySelector(".item-comment-box").value, "still wrong on my phone");
+    assert.equal(window.posted.length, 0, "dictation sent the comment before he could correct it");
+
+    /* A second phrase joins the first with a space rather than replacing
+     * it or starting a line: a board comment may not contain a newline at
+     * all, and the server refuses one. */
+    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "in dark mode" }]] });
+    assert.equal(window.document.querySelector(".item-comment-box").value,
+      "still wrong on my phone in dark mode");
+  });
+
+  test("a browser with no speech API draws no mic in either comment box", async () => {
+    const window = await loadSite("/journal");
+    window.document.querySelector(".comment-toggle").dispatchEvent(new window.Event("click"));
+    assert.ok(window.document.querySelector(".comment-mic").hasAttribute("hidden"),
+      "a mic that cannot listen is worse than no mic");
+    const board = await loadSite("/issues#57");
+    assert.ok(board.document.querySelector(".item-comment-mic").hasAttribute("hidden"),
+      "a mic that cannot listen is worse than no mic");
   });
 
   /* ideas.md #140, part of #134: in a meeting he describes a demo in
