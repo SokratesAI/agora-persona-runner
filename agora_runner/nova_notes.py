@@ -164,11 +164,18 @@ def _shape(note, waiting, index=None):
         "index": index,
         "blocks": render_blocks(note["text"]),
         "responses": responses,
-        # A note under `## Read` that nobody wrote a line under is a real
-        # state -- a cycle moved it and skipped the half of the contract
-        # that says what it did -- and the page says so rather than
-        # drawing an answered card with nothing in it.
-        "answered": bool(responses),
+        # **Moving the note is the acknowledgement now.** This used to be
+        # `bool(responses)`, because the contract used to ask a cycle to
+        # write a line under every note it acted on. The owner ended that
+        # on 2026-09-20 -- *"I see you write a huge amount of notes to the
+        # /notes. But i never read thos ... stop writing there as its
+        # basicly a trash can now"* -- and the file is a one-way inbox
+        # from him and Sokrates, answered in the journal entry rather than
+        # in his file. Under `## Read` therefore means answered, and the
+        # old rule would have drawn every note that honours the new
+        # contract as a half-finished one. A reply that is already there
+        # still renders; none are written any more.
+        "answered": not waiting,
         "waiting": waiting,
     }
 

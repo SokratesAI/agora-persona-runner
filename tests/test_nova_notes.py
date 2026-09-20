@@ -143,12 +143,24 @@ def test_the_page_reads_oldest_first_with_the_unanswered_notes_last():
     assert payload["notesTotal"] == 3
 
 
-def test_a_note_moved_to_read_with_no_reply_is_not_reported_as_answered():
-    """Half the contract done is a real state and the page says so."""
-    payload = _payload("- \n\n## Read\n\n- Moved and never written up.\n")
+def test_a_note_moved_to_read_with_no_reply_is_answered():
+    """Moving the note is the whole acknowledgement now.
+
+    The owner ended the write-a-line-under-it half of the contract on
+    2026-09-20. Every note honouring the new contract carries no reply,
+    so the old rule would have drawn all of them as half-finished.
+    """
+    payload = _payload("- \n\n## Read\n\n- Moved, answered in the journal.\n")
     assert payload["waitingTotal"] == 0
-    assert payload["notes"][0]["answered"] is False
+    assert payload["notes"][0]["answered"] is True
     assert payload["notes"][0]["responses"] == []
+
+
+def test_a_waiting_note_is_still_not_answered():
+    """The flip above must not make an unread bullet look handled."""
+    payload = _payload("- Nobody has picked this up.\n- \n")
+    assert payload["notes"][0]["waiting"] is True
+    assert payload["notes"][0]["answered"] is False
 
 
 def test_a_file_with_no_read_section_still_shows_the_waiting_notes():
