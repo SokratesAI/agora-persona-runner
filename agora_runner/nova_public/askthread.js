@@ -42,26 +42,32 @@
      * flat list with no reply-to on them, so position is the only link there is,
      * and reading it here is what keeps `askMessage` from needing the list. */
     function askPaintThread(put, payload, afterSend) {
-      var asked = "", messages = payload.messages || [], newest = -1;
+      var asked = "", askedId = "", messages = payload.messages || [], newest = -1;
       // Only the newest finished message can still be answered with a tap:
       // anything said after a question -- his reply included -- has moved on.
       messages.forEach(function (message, i) { if (!message.partial) newest = i; });
       messages.forEach(function (message, i) {
-        var retry = { question: asked, afterSend: afterSend };
+        var retry = { question: asked, questionId: askedId, afterSend: afterSend };
         var answerable = i === newest && message.sender !== OWNER_RECORD;
         put(window.novaMessage && window.novaThread ? { message: message, conversationId: payload.conversationId,
           limit: payload.limit, retry: retry, answerable: answerable } : askMessage(message, payload.conversationId,
           payload.limit, retry), (message.id || message.createdAt) + message.sender,
-          JSON.stringify([message, asked, payload.conversationId, payload.limit, answerable]));
+          JSON.stringify([message, asked, askedId, payload.conversationId, payload.limit, answerable]));
         // Only his lines become the question to re-ask, and the update happens
         // after the row is built: an answer re-asks what was said *above* it,
         // and two answers in a row both point at the same question.
-        if (message.sender === OWNER_RECORD && message.text) asked = message.text;
+        if (message.sender === OWNER_RECORD && message.text) {
+          asked = message.text;
+          // The id of that same copy, so "Ask again" can take it back out
+          // after the new one lands instead of leaving the thread with two.
+          askedId = message.id ? String(message.id) : "";
+        }
       });
       /* Held for `askLost`, which draws after this loop and needs the same
        * question the `⋯` menu's "Ask again" would send. One source, so the two
        * cannot disagree about what gets re-asked. */
       lastAskedQuestion = asked;
+      lastAskedQuestionId = askedId;
       // Last, and outside the loop: the sheet is one node on <body> rather
       // than something inside a message, so it is repainted once against the
       // whole payload and not once per row.
@@ -86,7 +92,8 @@
           // As props, message.js draws the tail and keeps its nodes across polls.
           put(window.novaMessage && window.novaThread ? { tail: lost ? "lost" : "pending",
             progress: payload.progress, conversationId: payload.conversationId, quietSeconds: lost,
-            question: lastAskedQuestion, afterSend: afterSend } : lost ? askLost(payload.conversationId,
+            question: lastAskedQuestion, questionId: lastAskedQuestionId,
+            afterSend: afterSend } : lost ? askLost(payload.conversationId,
             lost, afterSend) : askPending(payload.progress), "tail", NaN);
         }
       }
@@ -106,6 +113,7 @@
 
     // The newest thing he said in the thread being painted; see `askPaintThread`.
     var lastAskedQuestion = "";
+    var lastAskedQuestionId = "";
 
     /* Has this turn gone silent long enough to call it lost?
      *
@@ -159,7 +167,7 @@
         + Math.round(quietSeconds / 60) + " minutes, so the turn was lost."));
       var asked = lastAskedQuestion;
       if (conversationId && asked) {
-        row.appendChild(askRetryButton(conversationId, asked, afterSend));
+        row.appendChild(askRetryButton(conversationId, asked, afterSend, lastAskedQuestionId));
       }
       return row;
     }

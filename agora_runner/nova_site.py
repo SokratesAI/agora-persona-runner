@@ -224,6 +224,7 @@ from agora_runner.nova_conversations import (
     cancel as conversation_cancel,
     delete_message as conversation_delete_message,
     stop_marcus,
+    resend as conversation_resend,
     send as conversation_send,
     set_model as conversation_set_model,
     step_output as conversation_step_output,
@@ -5880,6 +5881,48 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(200 if ok else (400 if bad_text else 502),
                         {"ok": ok, "message": message})
 
+    def _post_conversation_resend(self, payload):
+        """`/api/conversations/resend` -- ask the same question again, once.
+
+        `_post_conversation_send` with one extra field: the id of the copy
+        already in the thread, which comes out after the new one is in. His
+        capture of 2026-09-20 is the whole reason -- "Ask again" left the
+        question in the thread twice, and every turn after that resends the
+        whole history, so the duplicate is paid for again on each one.
+
+        `messageId` is optional on purpose: a tab running an older build does
+        not know it, and this route then behaves exactly like a send rather
+        than guessing which message he meant.
+        """
+        conversation_id = payload.get("conversationId")
+        text = payload.get("text")
+        message_id = payload.get("messageId")
+        if not isinstance(conversation_id, str) or not isinstance(text, str):
+            self._send_json(400, {"error": "conversationId and text must be strings"})
+            return
+        if message_id is not None and not isinstance(message_id, str):
+            self._send_json(400, {"error": "messageId must be a string"})
+            return
+        try:
+            ok, message = conversation_resend(conversation_id, text, message_id)
+        except Exception as e:
+            log(f"nova-site conversations/resend failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Message asked again · {'ok' if ok else message}",
+            after=text.strip()[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        bad_text = not ok and message.startswith(
+            ("a message needs", "that is longer", "which conversation"))
+        self._send_json(200 if ok else (400 if bad_text else 502),
+                        {"ok": ok, "message": message})
+
     def _post_conversation_cancel(self, payload):
         """`/api/conversations/cancel` -- stop the turn running right now.
 
@@ -6599,7 +6642,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture/comment",
             "/api/board/comment", "/api/board/redraw",
             "/api/ask", "/api/ask/watching",
-            "/api/conversations/send", "/api/conversations/cancel",
+            "/api/conversations/send", "/api/conversations/resend",
+            "/api/conversations/cancel",
             "/api/conversations/new",
             "/api/conversations/watching", "/api/conversations/rename",
             "/api/conversations/autotitle", "/api/conversations/retitle",
@@ -6703,6 +6747,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/model":
             self._post_conversation_model(payload)
+            return
+        if path == "/api/conversations/resend":
+            self._post_conversation_resend(payload)
             return
         if path == "/api/conversations/message/delete":
             self._conversation_write(

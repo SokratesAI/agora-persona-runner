@@ -204,7 +204,15 @@
      * the new answer lands at the bottom beside the old one, which is what the
      * data model actually supports. The label says that rather than hiding it.
      *
-     * It posts to `/api/conversations/send` from both surfaces, including the
+     * It no longer leaves the question in the thread twice. His capture of
+     * 2026-09-20 -- *"my messages is duplicated in the chat ... using
+     * unnecessary amount of tokens"* -- is right, and it costs on every later
+     * turn, not once: each turn resends the whole history. `questionId` is the
+     * copy already in the thread and `/api/conversations/resend` removes it
+     * once the new one is in. No id (an older cached page) still sends, which
+     * is exactly the old behaviour.
+     *
+     * It posts to `/api/conversations/resend` from both surfaces, including the
      * ask thread -- that route takes a conversation id and `nova_ask.thread`
      * hands one out, so the dock does not need `/api/ask`'s find-by-tag.
      *
@@ -212,20 +220,22 @@
      * the dock owns `pollChat` and a `lastCount` that must not read his own
      * question as an unread answer, and the conversation page owns `pollConv`.
      * A button that sent and painted nothing would look like it had failed. */
-    function askRetryButton(conversationId, question, afterSend) {
+    function askRetryButton(conversationId, question, afterSend, questionId) {
       var button = el("button", "ask-retry", "Ask again");
       button.type = "button";
-      button.title = "Send this question again";
+      button.title = questionId ? "Ask this question again, without leaving a second copy of it"
+        : "Send this question again";
       button.addEventListener("click", function () {
         if (button.disabled) return;
         // Disabled for the whole flight, not just re-labelled: a second tap
         // while the first is in the air is two turns spent on one question.
         button.disabled = true;
         button.textContent = "sending…";
-        fetch("/api/conversations/send", {
+        fetch("/api/conversations/resend", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ conversationId: conversationId, text: question }),
+          body: JSON.stringify({ conversationId: conversationId, text: question,
+                                 messageId: questionId || null }),
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (result) {

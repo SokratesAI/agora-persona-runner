@@ -74,7 +74,7 @@
     }
     if (!mine && !m.partial && props.conversationId && retry && retry.question) {
       actions.push(function () {
-        return d.askRetryButton(props.conversationId, retry.question, retry.afterSend);
+        return d.askRetryButton(props.conversationId, retry.question, retry.afterSend, retry.questionId);
       });
     }
     if (!m.partial && m.id && props.conversationId && window.novaDeleteButton) {
@@ -155,7 +155,7 @@
     var d = window.novaChat, p = props.progress, latest = p && p.latest;
     if (props.tail === "lost") {
       var id = props.conversationId, q = props.question;
-      return html`<div class="ask-msg ask-theirs ask-stopped-row"><div class="ask-stopped">${"No answer came back. Nothing has arrived for " + Math.round(props.quietSeconds / 60) + " minutes, so the turn was lost."}</div>${id && q ? html`<${Slot} sig=${id + "\n" + q} make=${function () { return d.askRetryButton(id, q, props.afterSend); }} />` : null}</div>`;
+      return html`<div class="ask-msg ask-theirs ask-stopped-row"><div class="ask-stopped">${"No answer came back. Nothing has arrived for " + Math.round(props.quietSeconds / 60) + " minutes, so the turn was lost."}</div>${id && q ? html`<${Slot} sig=${id + "\n" + q + "\n" + (props.questionId || "")} make=${function () { return d.askRetryButton(id, q, props.afterSend, props.questionId); }} />` : null}</div>`;
     }
     var secs = d.askPendingSeconds(p && p.askedAt);
     return html`<div class="ask-msg ask-theirs ask-pending">${secs !== null && secs >= d.pendingClockAfter ? html`<div class="ask-pending-head">${d.askElapsed(p.askedAt)}</div>` : null}${latest ? html`<div class="ask-pending-step"><span class="ask-pending-tool">${latest.capability}</span>${latest.detail ? html`<span class="ask-pending-detail">${latest.detail}</span>` : null}</div>` : html`<${Slot} sig="orbit" make=${d.askOrbit} />${d.askQuip ? html`<div class="ask-pending-quip">${d.askQuip(p && p.askedAt)}</div>` : null}`}${latest && p.steps > 1 ? html`<div class="ask-pending-count">${p.steps + " steps so far"}</div>` : null}</div>`;

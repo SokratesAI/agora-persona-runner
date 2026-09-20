@@ -695,6 +695,46 @@ def send(conversation_id, text):
     return True, message_id
 
 
+def resend(conversation_id, text, message_id=None):
+    """(ok, message). Ask the same question again without a second copy of it.
+
+    His capture, 2026-09-20: *"I should be able to resens my messages in chat
+    if something went wrong. I am able to do it now, but my messages is
+    duplicated in the chat so i wonder if its duplicated for you aswell using
+    unnecessary amount of tokens. We just want to trigger a session, the
+    recent message does not have to be stored as a duplicate in the chat."*
+
+    He is right about the cost. "Ask again" was built when a message could
+    only be appended, so it posted the question a second time and said so in
+    its label. `delete_message` arrived later (issue #138), and a send
+    followed by a delete of the older copy is the replace the earlier comment
+    said the data model could not do -- so the thread keeps exactly one copy
+    of the question, at the bottom, where it triggers a turn. Every later turn
+    resends the whole history to the model, so a duplicate is not paid for
+    once; it is paid for on every turn after it.
+
+    Order is send-then-delete, deliberately. A delete first would leave the
+    thread with no copy at all if the send then failed, and it is his text.
+    A failed delete is reported and not raised: the turn is running either
+    way, and the only thing lost is the tidying.
+
+    `message_id` is the copy to remove and it is optional -- a page from an
+    older build does not know the id. No id means this behaves exactly like
+    `send`, which is the old behaviour rather than a guess about which
+    message he meant.
+    """
+    ok, sent = send(conversation_id, text)
+    if not ok:
+        return False, sent
+    if not message_id:
+        return True, sent
+    removed, why = delete_message(conversation_id, message_id)
+    if not removed:
+        log(f"nova_conversations: resend could not remove the old copy: {why}")
+        return True, sent
+    return True, sent
+
+
 def cancel(conversation_id):
     """(ok, message). Stop the turn currently running for this thread.
 

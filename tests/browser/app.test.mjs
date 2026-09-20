@@ -9964,9 +9964,27 @@ describe("asking a question again", () => {
 
     const posts = window.posted.slice(before);
     assert.equal(posts.length, 1, "one tap, one send");
-    assert.equal(posts[0].url, "/api/conversations/send");
-    assert.deepEqual(posts[0].body, { conversationId: "c-again", text: "how many pods?" },
-      "it must re-ask the question, not the answer, and into the open thread");
+    assert.equal(posts[0].url, "/api/conversations/resend");
+    assert.deepEqual(posts[0].body,
+      { conversationId: "c-again", text: "how many pods?", messageId: "2" },
+      "it must re-ask the question, not the answer, into the open thread, and "
+      + "name the copy already in it so the thread does not end up with two");
+  });
+
+  /* His capture 2026-09-20: the duplicate is not paid for once. Every turn
+   * resends the whole history, so a question left in the thread twice costs
+   * again on every turn after it. The id is what lets the server take the old
+   * copy back out, and it must be the id of *his* line, never the answer's. */
+  test("it names the question's own id, not the answer it was tapped on", async () => {
+    const window = await loadAskDock({ ask: thread });
+    const before = window.posted.length;
+    const bubbles = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    (await holdFor(window, bubbles[3], ".ask-retry"))
+      .dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const posts = window.posted.slice(before);
+    assert.equal(posts[0].body.messageId, "2",
+      "the second answer re-asks the same question, so it names the same copy");
   });
 
   /* Two answers in a row -- I follow up on myself -- and both belong to the
