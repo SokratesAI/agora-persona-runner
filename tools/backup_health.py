@@ -401,6 +401,17 @@ def format_coverage(claims, error):
             "NOT BACKED UP — %s is held in exactly one place and nothing copies it "
             "anywhere. A lost disk is lost data." % claim
         )
+    if uncovered:
+        lines.append(
+            "How much is at stake: `python3 -m tools.volume_size --claim %s`. "
+            "That runs a read-only `du` on the node in a one-off Job, which is "
+            "the only instrument that can answer it -- the kubelet's own "
+            "`stats/summary` reports the node filesystem for a local-path "
+            "volume, so it gives a large plausible number for an empty "
+            "directory. A backup job for a volume holding nothing is machinery "
+            "guarding nothing, and `MIN_SOURCE_BYTES` needs a measured floor."
+            % " --claim ".join(uncovered)
+        )
     for claim, name in covered:
         lines.append("%s — backed up by the %s job judged above." % (claim, name))
     for claim, reason in acknowledged:
