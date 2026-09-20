@@ -1165,7 +1165,8 @@ def test_main_marks_a_spent_capture_from_the_ledger_it_reads(tmp_path, capsys):
     # unrunnable command is gone.
     assert "switch to Claude 20x by 18:00" in out
     assert f"[claim: {slug}]" not in out
-    assert "claim spent by cycle 343: journal seq race closed" in out
+    assert ("claim spent by cycle 343 — released --done: "
+            "journal seq race closed") in out
     # The board row beside it is untouched.
     assert "[claim: idea-92]" in out
 
@@ -2078,3 +2079,79 @@ def test_open_row_counts_are_keyed_the_way_the_shares_are():
 def test_an_absent_row_list_is_not_a_board_with_no_rows():
     assert top_board_rows._with_work(None) is None
     assert top_board_rows._with_work({"nova": 0, "marcus": 3}) == {"marcus"}
+
+
+# Cycle 1927, measured on the live board: idea #239 sat at the top of the
+# ranking at ⚪ Backlog with its claim spent by cycle 1917, and the line
+# beside it read "work it without claiming". The work was merged as
+# bridge#125 ten days earlier -- the per-turn MCP config file on the bridge
+# pod holds a `${AGORA_MCP_TOKEN}` placeholder and no credential. The header
+# above the row says "take this"; the tag beside it has to say the opposite
+# of "build it", or the two sentences disagree.
+
+
+def test_a_spent_slug_says_to_check_before_rebuilding():
+    rows = open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(
+        rows, {"idea-63": {"cycle": 347, "outcome": "built the last piece"}})
+    line = top_board_rows._line(rows[0])
+    assert "released --done" in line
+    assert "close the row if it is" in line
+    # The instruction that sent cycle 1927 at a finished row.
+    assert "work it without claiming" not in line
+
+
+def test_the_top_row_with_a_spent_claim_gets_the_check_first_line():
+    rows = open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(
+        rows, {"idea-63": {"cycle": 1917, "outcome": "bridge#125 merged"}})
+    block = top_board_rows._spent_top_block(rows[0])
+    assert len(block) == 1
+    assert "CHECK BEFORE YOU BUILD" in block[0]
+    assert "cycle 1917" in block[0]
+    assert "move the row to Done" in block[0]
+
+
+def test_a_top_row_with_no_spent_claim_gets_no_extra_line():
+    """The ordinary case, and the one the block must stay off.
+
+    Every cycle reads this page; a line that prints on a row nobody
+    finished is a line the reader learns to skip, which is how the one
+    that matters stops being read.
+    """
+    rows = open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(rows, {})
+    assert top_board_rows._spent_top_block(rows[0]) == []
+    top_board_rows.apply_progress(
+        rows, {"idea-63": {"cycle": 347, "outcome": "half of it"}})
+    # A row left `--progress` is a row to pick up, not one to go and verify.
+    assert top_board_rows._spent_top_block(rows[0]) == []
+
+
+def test_main_prints_the_check_first_line_under_the_top_row(tmp_path, capsys):
+    """The wiring, not the sentence -- `_spent_top_block` is called with the
+    row the header told the cycle to take, and its line lands under it.
+    """
+    import json
+    issues = tmp_path / "issues.md"
+    issues.write_text(board())
+    ideas = tmp_path / "ideas.md"
+    ideas.write_text(board((92, "a dashboard", BACKLOG, "2026-08-19", IMMEDIATE)))
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    claims = tmp_path / "claims.json"
+    claims.write_text(json.dumps(_spent("idea-92", 1917, "bridge#125 merged")))
+
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "1927"])
+    out = capsys.readouterr().out
+    assert code == 0
+    lines = out.splitlines()
+    top = next(i for i, line in enumerate(lines) if line.startswith("  -> "))
+    assert "idea #92" in lines[top]
+    assert "CHECK BEFORE YOU BUILD" in lines[top + 1]
+    assert "cycle 1917" in lines[top + 1]
