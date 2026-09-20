@@ -1708,3 +1708,92 @@ def test_uncovered_does_not_call_an_unreadable_ledger_empty():
     line = cycle_postmortem._runner_life_lines(results[0]["runner_life"])[0]
     assert "no life this can place on a clock" in line
     assert "empty" not in line
+
+
+# --- issue #105: the verdict has to leave this sweep ------------------------
+#
+# Everything above tests what the report says. These test that a recent,
+# unexplained gap reaches the owner's phone, which is the half of #105 that
+# was open: `stall_notice` pushes when the loop stops writing entirely and
+# `reply_notice` pushes when a cycle runs and never answers him, and neither
+# covers a cycle that ran, did work, and filed no journal entry.
+
+
+def test_a_recent_lost_cycle_is_worth_paging_him_about():
+    worth, text = cycle_postmortem.paging(
+        [{"number": 1897, "verdict": "lost", "recent": True}])
+    assert worth
+    assert "1897" in text
+
+
+def test_an_old_lost_cycle_is_not_worth_paging_him_about():
+    # The settled tail of this report reaches back to August. Paging on it
+    # would be one message per historical gap, which is the channel he
+    # stops reading.
+    worth, text = cycle_postmortem.paging(
+        [{"number": 359, "verdict": "lost", "recent": False}])
+    assert not worth
+    assert text == ""
+
+
+def test_an_explained_recent_gap_is_not_worth_paging_him_about():
+    # `misfiled` is bookkeeping: the work IS in the journal, a number up.
+    # It never raises the exit status and it must never ring his phone.
+    worth, _ = cycle_postmortem.paging(
+        [{"number": 1920, "verdict": "misfiled", "recent": True},
+         {"number": 1921, "verdict": "failed", "recent": True}])
+    assert not worth
+
+
+def test_the_message_names_every_missing_cycle_not_just_a_count():
+    _, text = cycle_postmortem.paging(
+        [{"number": 1897, "verdict": "lost", "recent": True},
+         {"number": 1644, "verdict": "cut off", "recent": True}])
+    assert "1644" in text and "1897" in text
+    # And it says which is which -- "cut off" and "lost" are different
+    # failures with different next steps.
+    assert "cut off" in text and "lost" in text
+
+
+def test_the_page_key_is_the_identity_of_the_gap_not_its_size():
+    # The window slides every cycle, so a key built from the message text
+    # (which carries a count) would re-page him for the same hole. Same
+    # reasoning as `tools.alerts._page_key`.
+    rows = [{"number": 1897, "verdict": "lost", "recent": True}]
+    first = cycle_postmortem._page_key(rows)
+    second = cycle_postmortem._page_key(
+        rows + [{"number": 1200, "verdict": "lost", "recent": False}])
+    assert first == second
+
+
+def test_a_different_missing_cycle_gets_a_different_key():
+    assert cycle_postmortem._page_key(
+        [{"number": 1897, "verdict": "lost", "recent": True}]
+    ) != cycle_postmortem._page_key(
+        [{"number": 1898, "verdict": "lost", "recent": True}])
+
+
+def test_a_changed_verdict_on_the_same_cycle_gets_a_different_key():
+    # `cut off` becoming `lost` is a new fact about that run, not a repeat.
+    assert cycle_postmortem._page_key(
+        [{"number": 1897, "verdict": "cut off", "recent": True}]
+    ) != cycle_postmortem._page_key(
+        [{"number": 1897, "verdict": "lost", "recent": True}])
+
+
+def test_every_raising_verdict_is_worth_paging_him_about():
+    # The set of gaps worth a red status and the set worth a message are
+    # one judgement. If a fifth verdict is added to RAISING_VERDICTS and
+    # this drifts, that gap goes red in a sweep and silent on his phone.
+    for verdict in cycle_postmortem.RAISING_VERDICTS:
+        worth, _ = cycle_postmortem.paging(
+            [{"number": 1897, "verdict": verdict, "recent": True}])
+        assert worth, verdict
+
+
+def test_he_is_told_about_one_hole_once_a_day_not_once_a_cycle():
+    # The window is 48 cycle numbers, about fourteen hours at the current
+    # cadence, and a cycle runs every eighteen minutes. On the six-hour
+    # default the same two missing cycles would reach him two or three
+    # times on their way out of the window, for a thing he cannot act on.
+    assert cycle_postmortem.PAGE_DEDUPE_HOURS >= 24
