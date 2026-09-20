@@ -1235,3 +1235,68 @@ def test_options_a_persona_offered_reach_the_bubble_and_nothing_else_does():
     assert "options" not in rows["b"]
     assert "options" not in rows["c"]
     assert "options" not in rows["d"]
+
+
+# --- resend: ask again without a second copy of the question ----------------
+#
+# His capture 2026-09-20: "Ask again" posted the question a second time, and
+# because every turn resends the whole history to the model, that duplicate is
+# paid for on every later turn rather than once. What is pinned here is the
+# order and the failure direction: the new copy is in before the old one comes
+# out, and a delete that fails does not turn a running turn into an error.
+
+def test_resend_posts_the_question_then_removes_the_old_copy():
+    _get, internal, public, calls = _manage_fakes(body={"message": {"id": "m-9"}})
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.resend("c-1", "  try again  ", "m-7")
+    assert (ok, message) == (True, "m-9")
+    assert calls == [
+        ("INTERNAL", "POST", "/conversations/c-1/notify",
+         {"text": "try again", "sender": convs.OWNER_SENDER,
+          "system": False, "push": False}),
+        ("PUBLIC", "DELETE", "/conversations/c-1/messages/m-7", None),
+    ]
+
+
+def test_resend_without_a_message_id_deletes_nothing():
+    _get, internal, public, calls = _manage_fakes(body={"message": {"id": "m-9"}})
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.resend("c-1", "try again")
+    assert (ok, message) == (True, "m-9")
+    assert [c for c in calls if c[0] == "PUBLIC"] == []
+
+
+def test_resend_deletes_nothing_when_the_send_failed():
+    # The send is the thing he asked for; deleting his only copy of the text
+    # after failing to post a new one would lose it.
+    _get, internal, public, calls = _manage_fakes(status=500)
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.resend("c-1", "try again", "m-7")
+    assert ok is False
+    assert message == "could not post the message"
+    assert [c for c in calls if c[0] == "PUBLIC"] == []
+
+
+def test_resend_still_succeeds_when_the_old_copy_will_not_delete():
+    def fake_internal(method, path, payload=None):
+        return 200, {"message": {"id": "m-9"}}
+
+    def fake_public(method, path, payload=None):
+        return 500, {}
+
+    with patch.object(convs, "agora_internal", fake_internal), \
+         patch.object(convs, "agora_public", fake_public):
+        ok, message = convs.resend("c-1", "try again", "m-7")
+    # The turn is running either way; only the tidying was lost.
+    assert (ok, message) == (True, "m-9")
+
+
+def test_resend_refuses_an_empty_message_the_way_send_does():
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        assert convs.resend("c-1", "   ", "m-7") == (False, "a message needs some text")
+    assert calls == []

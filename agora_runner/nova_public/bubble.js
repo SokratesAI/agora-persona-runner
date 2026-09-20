@@ -89,7 +89,7 @@
       }
       if (!mine && !message.partial && conversationId && retry && retry.question) {
         actions.push(function () {
-          return askRetryButton(conversationId, retry.question, retry.afterSend);
+          return askRetryButton(conversationId, retry.question, retry.afterSend, retry.questionId);
         });
       }
       if (!message.partial && message.id && conversationId && window.novaDeleteButton) {
