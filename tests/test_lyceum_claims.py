@@ -182,3 +182,105 @@ def test_claim_ids_are_stable_across_runs():
 def test_distribution_counts_levels_not_percentages():
     docs = [{"grade": "high"}, {"grade": "high"}, {"grade": "ungrounded"}]
     assert lc.distribution(docs) == {"high": 2, "ungrounded": 1}
+
+
+# ---------------------------------------------------- an interrupted run keeps its work
+#
+# Cycle 1937 lost ten chapters of judged claims to a `timeout` because the
+# whole course was written in one call at the end. These check the two halves
+# of the fix: the write happens per chapter, and `--resume` can use it.
+
+
+def _course_of(*slugs):
+    """A fake `load_course` over N one-paragraph chapters, no CouchDB."""
+    chapters = [{"_id": f"chapter:analytics:{s}", "courseId": "course:analytics",
+                 "slug": s, "body": CHAPTER} for s in slugs]
+    return lambda _slug: ({"title": "Analytics"}, chapters, {})
+
+
+def _silent_ask(prompt, model):
+    return ""
+
+
+def test_each_chapter_is_written_as_it_finishes():
+    order = []
+
+    def out(line):
+        if ":" in line and "atoms" in line:
+            order.append(("judged", line.split(":")[0].strip()))
+
+    def write(docs):
+        order.append(("wrote", docs[0]["_id"].split(":")[2]))
+        return len(docs)
+
+    lc.run("analytics", ask=_silent_ask, out=out, write=write,
+           load=_course_of("one", "two", "three"))
+
+    assert order == [("judged", "one"), ("wrote", "one"),
+                     ("judged", "two"), ("wrote", "two"),
+                     ("judged", "three"), ("wrote", "three")]
+
+
+def test_an_interrupted_run_keeps_the_chapters_it_finished():
+    """The mutation control: kill it mid-course and the finished work is stored."""
+    written = []
+
+    def write(docs):
+        if docs[0]["_id"].split(":")[2] == "three":
+            raise KeyboardInterrupt("timeout killed the run")
+        written.append(docs[0]["_id"].split(":")[2])
+        return len(docs)
+
+    with pytest.raises(KeyboardInterrupt):
+        lc.run("analytics", ask=_silent_ask, out=lambda _: None, write=write,
+               load=_course_of("one", "two", "three", "four"))
+
+    assert written == ["one", "two"]
+
+
+def test_resume_skips_chapters_that_already_have_claims():
+    judged = []
+
+    def out(line):
+        if "atoms" in line:
+            judged.append(line.split(":")[0].strip())
+
+    lc.run("analytics", resume=True, ask=_silent_ask, out=out, write=lambda d: len(d),
+           load=_course_of("one", "two", "three"), done=lambda _: {"one", "two"})
+
+    assert judged == ["three"]
+
+
+def test_resume_is_off_by_default_so_a_changed_chapter_is_rejudged():
+    """The positive control for the test above -- skipping is opt-in, not the default."""
+    judged = []
+
+    def out(line):
+        if "atoms" in line:
+            judged.append(line.split(":")[0].strip())
+
+    lc.run("analytics", ask=_silent_ask, out=out, write=lambda d: len(d),
+           load=_course_of("one", "two"),
+           done=lambda _: pytest.fail("resume=False must not ask what is already stored"))
+
+    assert judged == ["one", "two"]
+
+
+def test_dry_run_still_writes_nothing():
+    lc.run("analytics", dry_run=True, ask=_silent_ask, out=lambda _: None,
+           load=_course_of("one", "two"),
+           write=lambda d: pytest.fail("a dry run must not write"))
+
+
+def test_chapters_with_claims_reads_slugs_off_the_ids():
+    asked = {}
+
+    def query(path):
+        asked["path"] = path
+        return {"rows": [{"id": "claim:analytics:cohorts:000"},
+                         {"id": "claim:analytics:cohorts:001"},
+                         {"id": "claim:analytics:funnels:000"},
+                         {"id": "course:analytics"}]}
+
+    assert lc.chapters_with_claims("analytics", query=query) == {"cohorts", "funnels"}
+    assert "include_docs" not in asked["path"], "the ids are enough; never pull bodies"
