@@ -11,6 +11,7 @@ from tools.deadman_check import (
     assess,
     assess_channel,
     assess_heartbeats,
+    degraded_alarm_body,
     heartbeat_alarm_body,
     parse_heartbeat_token,
 )
@@ -196,10 +197,54 @@ def test_the_retried_refusal_token_reaches_the_reader_whole():
     token = ("unknown:URLError-urlopen_error_[Errno_111]_Connection_refused"
              "-after-4-tries")
     verdict, reason = assess_heartbeats(token)
-    assert verdict == "UNKNOWN"
+    # This asserted UNKNOWN until issue #259. The slug still has to reach the
+    # reader whole -- that is what this test is for -- but an exhausted ladder
+    # is the finding, not the absence of one.
+    assert verdict == "DEGRADED"
     assert reason.endswith("-after-4-tries")
     assert "Connection_refused" in reason
     assert "unrecognised" not in reason
+
+
+def test_the_outage_of_2026_09_19_is_now_an_alarm():
+    # The exact token the ping wrote at 22:28 and 00:21 UTC, read off the two
+    # failed `nova-deadman (fast rung)` runs. Both printed HEARTBEATS UNKNOWN
+    # and exited 1, which opens no issue and notifies nobody, and the vault,
+    # the journal and the backups stayed down for eight hours.
+    token = "unknown:HTTPError-HTTP_Error_503:_Service_Unavailable-after-4-tries"
+    verdict, reason = assess_heartbeats(token)
+    assert verdict == "DEGRADED"
+    assert "503" in reason
+    assert "every one of 4 attempts" in reason
+
+
+def test_one_failed_attempt_is_not_degraded():
+    # The ladder exists for a real race: a Job pod can be REJECTed by a
+    # NetworkPolicy that permits it, because its IP reaches the controller's
+    # ipset on the controller's clock. A slug carrying a single attempt has not
+    # cleared that race, so it stays the verdict that alarms nobody.
+    verdict, reason = assess_heartbeats(
+        "unknown:URLError-Connection_refused-after-1-tries")
+    assert verdict == "UNKNOWN"
+    assert "could not read" in reason
+
+
+def test_a_failure_before_the_ladder_is_unknown_not_degraded():
+    # No `-after-n-tries` tail means the ping never got as far as asking --
+    # no python3 in the image, DNS gone. That is this watchdog's own problem
+    # and says nothing about the site, so it must not open the site's alarm.
+    verdict, _ = assess_heartbeats("unknown:NameError-python3_missing")
+    assert verdict == "UNKNOWN"
+
+
+def test_the_degraded_alarm_does_not_read_like_a_dead_box():
+    # He checks whatever the first line points at. This alarm fires while the
+    # box is demonstrably alive, so pointing him at the box wastes the call.
+    body = degraded_alarm_body("because")
+    assert body.startswith("@EdvardGB ")
+    assert "**up**" in body
+    assert "obsidian" in body
+    assert body != heartbeat_alarm_body("because")
 
 
 def test_a_bare_unknown_says_the_manifest_predates_the_reason():
@@ -225,3 +270,31 @@ def test_the_heartbeat_alarm_says_the_box_is_up():
     body = heartbeat_alarm_body("because")
     assert body.startswith("@EdvardGB ")
     assert "**up**" in body
+
+
+def test_main_opens_the_degraded_alarm_and_exits_2(monkeypatch):
+    # Through `main()`, not through `assess_heartbeats`. The pure verdict was
+    # already right in spirit before this change and still raised nothing: what
+    # was broken was the branch below it and the exit code, so a test that
+    # stops at the verdict would have passed on 2026-09-19 too.
+    from tools import deadman_check as dc
+
+    calls = []
+    monkeypatch.setattr(dc, "read_channel", lambda: (True, "issues enabled"))
+    monkeypatch.setattr(
+        dc, "read_ping",
+        lambda: (datetime.now(timezone.utc),
+                 "nova alive 2026-09-19T22:25:01Z "
+                 "hb=unknown:HTTPError-HTTP_Error_503:_Service_Unavailable-after-4-tries"))
+    monkeypatch.setattr(dc, "open_alarm_issue", lambda title=dc.TITLE: None)
+    monkeypatch.setattr(dc, "clear_alarm",
+                        lambda reason, *, title=dc.TITLE: calls.append(("clear", title)))
+    monkeypatch.setattr(dc, "_gh", lambda *args: calls.append(("gh", args)) or "{}")
+
+    assert dc.main() == 2
+    opened = [a for kind, a in calls if kind == "gh"]
+    assert opened, "main() raised no alarm at all"
+    titles = [f for call in opened for f in call if f.startswith("title=")]
+    assert [f"title={dc.DEGRADED_TITLE}"] == titles
+    # and it must not close the alarm in the same breath
+    assert ("clear", dc.DEGRADED_TITLE) not in calls

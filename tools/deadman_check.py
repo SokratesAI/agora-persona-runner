@@ -42,15 +42,18 @@ carries it out. The two findings stay two alarms with two issues: "the box is
 gone" and "the box is fine and a scheduled run stopped" need different work.
 
 Exit contract, the same one `security_alerts` and `heartbeat_health` use:
-2 means the ping has stopped or the box reported a heartbeat that is not
-firing, 1 means something could not be read -- the ref, the alarm channel, or
-the heartbeat verdict -- which never reads as clean, and 0 means the cluster
-pinged inside the grace and said every heartbeat is up.
+2 means the ping has stopped, or the box reported a heartbeat that is not
+firing, or the box pinged and could not answer `/api/health` on any attempt
+(`DEGRADED` -- see `assess_heartbeats`); 1 means something could not be read
+-- the ref, the alarm channel, or the heartbeat verdict -- which never reads
+as clean; and 0 means the cluster pinged inside the grace and said every
+heartbeat is up.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -72,6 +75,17 @@ TITLE = "nova-deadman: the cluster has stopped pinging"
 # which is the `agentic_health` streak-counter mistake with two causes behind one
 # number. Idea #117.
 HEARTBEAT_TITLE = "nova-deadman: a heartbeat has stopped firing"
+# The third finding, and the one the 2026-09-19 outage produced. "The box is
+# gone", "the box is fine and a heartbeat stopped" and "the box is up and
+# cannot answer for itself" are three different jobs, so they are three
+# issues. Idea #113 / issue #259.
+DEGRADED_TITLE = "nova-deadman: the box is up and cannot answer for itself"
+# `cronjobs/nova-alive-ping.yaml` retries `/api/health` on a (0, 2, 4, 8)
+# second ladder and appends `-after-<n>-tries` to its reason slug when it
+# never got an answer. Two failures separated by a wait are already past the
+# NetworkPolicy race that ladder exists for, so that is the floor here.
+EXHAUSTED = re.compile(r"-after-(\d+)-tries$")
+MIN_EXHAUSTED_TRIES = 2
 # Who the alarm is addressed to. An issue on this repo notifies nobody by
 # default: measured 2026-08-27, `subscribers_count` is **0**, so a plain
 # bot-authored issue lands in a repository no human is watching. An
@@ -155,15 +169,28 @@ def parse_heartbeat_token(message: str) -> str | None:
 def assess_heartbeats(token: str | None) -> tuple[str, str]:
     """Pure decision: (verdict, one-line reason).
 
-    Three outcomes, and only one of them is an alarm:
+    Four outcomes, and two of them are alarms:
 
     - OK -- every heartbeat on the box is firing on its own schedule.
     - BAD -- at least one is off, overdue or on a schedule the checker cannot
       parse. This is the finding, and it is the one that opens an issue.
-    - UNKNOWN -- the ping ran but could not read `/api/health`, or the ping is
-      too old to carry the token. This is never an alarm and never clean: the
-      cluster is demonstrably up (it pinged) and this watchdog simply cannot
-      say anything about the heartbeats on it.
+    - DEGRADED -- the box pinged and then could not answer `/api/health` on a
+      single attempt across the ping's whole retry ladder. The cluster is up
+      and something behind the site is gone; this is the 2026-09-19 outage and
+      it gets its own alarm, because "up and mute" needs different work from
+      both "gone" and "a heartbeat stopped".
+    - UNKNOWN -- the ping could not even ask (no python3, no DNS), or the ping
+      is too old to carry the token. Never an alarm and never clean: what is
+      broken is this watchdog's own second question, not the box.
+
+    The discriminator between the last two was already on the wire and nothing
+    read it. `cronjobs/nova-alive-ping.yaml` retries `/api/health` four times
+    over a ~14s ladder for a real NetworkPolicy race -- a Job pod can be
+    refused by a rule that permits it, because its IP reaches the controller's
+    ipset on the controller's clock -- and appends `-after-<n>-tries` so that
+    "raced once" and "refused throughout" can be told apart *without a cluster
+    round trip*. Its own comment says so. This function used to collapse both
+    into UNKNOWN, so the exhausted case exited 1 and raised nothing.
 
     An UNKNOWN carries *why* when the ping said why. `hb=unknown` on its own is
     all this ever got, and three of the fast rung's last four runs failed on it
@@ -181,6 +208,11 @@ def assess_heartbeats(token: str | None) -> tuple[str, str]:
                            "why: the cluster is running a manifest older than the reason slug")
     if token.startswith("unknown:"):
         slug = token[len("unknown:"):]
+        tries = EXHAUSTED.search(slug)
+        if tries and int(tries.group(1)) >= MIN_EXHAUSTED_TRIES:
+            return "DEGRADED", (
+                f"the box pinged but /api/health on nova-site failed every one of "
+                f"{tries.group(1)} attempts across the ping's retry window: {slug}")
         return "UNKNOWN", f"the ping could not read /api/health on nova-site: {slug}"
     if token.startswith("bad("):
         return "BAD", f"the cluster reported {token[4:].split(')', 1)[0]} heartbeat(s) not firing, first: {token.split(':', 1)[-1]}"
@@ -292,6 +324,39 @@ def heartbeat_alarm_body(reason: str) -> str:
     )
 
 
+def degraded_alarm_body(reason: str) -> str:
+    """The box is up, reachable, pushing — and cannot answer for itself.
+
+    This is the shape of the 2026-09-19 outage, and the reason this verdict
+    exists rather than the run simply exiting 1. server2 went NotReady with
+    CouchDB's local-path volume on it; `nova-site` rescheduled onto server1
+    and kept answering, so the ping kept pinging and the box looked alive.
+    `/api/health` answered **503 on all four attempts**, at 22:28 and again at
+    00:21 UTC, and both runs printed `HEARTBEATS UNKNOWN` and exited 1 --
+    which raises nothing and opens nothing, so eight hours passed with the
+    vault, the journal and the backups down and nobody told.
+
+    An exhausted ladder is not the transient it was being read as: the
+    CronJob's own retries are what the race needed, so a slug that survives
+    them is the site failing, not a policy ipset catching up.
+    """
+    return (
+        f"@{ASSIGNEE} {reason}\n\n"
+        "The cluster is **up** — it is still force-pushing `refs/nova/alive` "
+        "every 5 minutes, which is what carried this verdict out. What it "
+        "cannot do is answer `/api/health` on the Nova site, and it could not "
+        "on any attempt across the ping's whole retry window.\n\n"
+        "This is the 2026-09-19 shape: a node holding a local-path volume goes "
+        "away, the site reschedules and keeps serving, and everything behind "
+        "it is gone. Start with the database rather than the site — "
+        "`kubectl get pods -n obsidian` and `kubectl get nodes` — because a "
+        "site that answers 503 is usually a site whose dependency is missing, "
+        "not a broken site.\n\n"
+        "Closed automatically on the first ping that can read the endpoint "
+        "again."
+    )
+
+
 def raise_alarm(
     verdict: str,
     reason: str,
@@ -362,8 +427,19 @@ def main() -> int:
                             body=heartbeat_alarm_body(hb_reason), renotify=False)
             except Exception as exc:
                 print(f"COULD NOT FILE THE HEARTBEAT ALARM: {exc}", file=sys.stderr)
+        elif hb_verdict == "DEGRADED" and channel_ok:
+            # `renotify=True`, unlike the heartbeat alarm: a heartbeat can stay
+            # switched off for a week, and this is a live outage with the vault
+            # behind it. A comment every half hour is the right volume for
+            # something that should be fixed today.
+            try:
+                raise_alarm(hb_verdict, hb_reason, title=DEGRADED_TITLE,
+                            body=degraded_alarm_body(hb_reason))
+            except Exception as exc:
+                print(f"COULD NOT FILE THE DEGRADED ALARM: {exc}", file=sys.stderr)
         elif hb_verdict == "OK" and channel_ok:
             clear_alarm(hb_reason, title=HEARTBEAT_TITLE)
+            clear_alarm(hb_reason, title=DEGRADED_TITLE)
 
         if not channel_ok:
             # The cluster is fine and the alarm is not. Exit 1 rather than 0,
@@ -389,7 +465,7 @@ def main() -> int:
             print("NOT CLEAN: the ping is healthy but its heartbeat verdict is "
                   f"unreadable -- {hb_reason}", file=sys.stderr)
             return 1
-        return 2 if hb_verdict == "BAD" else 0
+        return 2 if hb_verdict in ("BAD", "DEGRADED") else 0
 
     try:
         raise_alarm(verdict, reason)
