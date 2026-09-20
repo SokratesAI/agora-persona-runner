@@ -1023,6 +1023,35 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .comment-send:hover:not(:disabled) { border-color: var(--accent); }
 .comment-send:disabled { color: var(--dim); cursor: default; }
 
+/* The mic in the two comment rows (ideas.md #221). It is the same control
+ * as the chat dock's Speak, so it is the same shape -- a round 44px tap
+ * target with the monochrome glyph treatment `.chat-glyph` gives, and the
+ * accent fill while it is listening, which is the only thing on screen
+ * that says the phone is hearing him. It is hidden until `dictate.js`
+ * finds a recogniser, so on a browser without one these rules draw
+ * nothing. */
+.nova-mic {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  background: none;
+  color: var(--dim);
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  font: inherit;
+  line-height: 1;
+  text-align: center;
+  cursor: pointer;
+}
+.nova-mic:hover:not(:disabled) { color: var(--text); }
+.nova-mic[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
+.nova-mic[aria-pressed="true"] .chat-glyph { filter: none; opacity: 1; }
+/* Both rows lay their children out in a flex line already; the mic only
+ * needs to sit immediately before Comment rather than stretch. */
+.comment-mic { margin: 0; }
+.item-comment-mic { margin: 0; }
+
 /* The pager under the feed. Full width rather than the pill the comment
  * box uses: it is the last thing on the page and the thumb should not have
  * to find it. */

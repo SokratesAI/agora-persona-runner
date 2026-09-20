@@ -386,6 +386,9 @@ STATIC_ROUTES = {
     "/vendor/preact-htm.js": os.path.join("vendor", "preact-htm.js"),
     "/thread.js": "thread.js",
     "/message.js": "message.js",
+    # Dictation, shared by the chat dock and the two comment boxes
+    # (ideas.md #221). Loads before all three.
+    "/dictate.js": "dictate.js",
     # Diagrams, lifted out of `app.js` whole (issue #233): the code that
     # reads a ```mermaid block and draws it, and nothing else.
     "/mermaid.js": "mermaid.js",
@@ -438,6 +441,7 @@ SW_BUILD_INPUTS = (
     "project.js",
     "thread.js",
     "message.js",
+    "dictate.js",
     "mermaid.js",
     "attach.js",
     "style.css",
