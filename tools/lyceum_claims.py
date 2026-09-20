@@ -11,6 +11,7 @@ course before doing all six."*
     python3 -m tools.lyceum_claims analytics --dry-run
     python3 -m tools.lyceum_claims analytics --chapters 2   # a slice, for a live check
     python3 -m tools.lyceum_claims analytics               # write claim documents
+    python3 -m tools.lyceum_claims running-a-business --resume   # continue a killed run
 
 Runs from the bridge pod: CouchDB through `CDB_BASE`/`CDB_USER`/`CDB_PASS`
 and the model through the `claude` CLI, which is the flat subscription and
@@ -53,6 +54,18 @@ which the migration would otherwise have to add later.
 capability: a model call per (chapter, source) pair is real work against
 the subscription, and the spec asks for a prototype on one course before
 all six, so a slice is how the first live run is checked at all.
+
+**Each chapter is written as it finishes, and `--resume` skips the ones
+already stored.** The first version of this tool wrote once, at the end of
+the whole course. Cycle 1937 ran `running-a-business` under a 13-minute
+`timeout`, it reached chapter 10 of 13, and every one of those ten chapters
+was thrown away because nothing had been written yet -- about eleven minutes
+of model calls for no stored result. The work a run did is now kept whatever
+kills it; `--resume` is what makes keeping it pay, since without it the next
+run re-judges the same chapters and overwrites them with identical documents.
+Resume reads chapter slugs out of the claim `_id`s, so it costs one range
+read and never a model call. It is off by default: a chapter whose wiki page
+changed needs re-judging, and silently skipping it would be the wrong answer.
 """
 
 from __future__ import annotations
@@ -66,6 +79,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 DB = "lyceum"
@@ -338,23 +352,51 @@ def distribution(docs):
     return counts
 
 
-def run(course_slug, model=DEFAULT_MODEL, limit=None, dry_run=False, ask=None, out=print):
-    course, chapters, sources = load_course(course_slug)
+def chapters_with_claims(course_slug, query=None):
+    """Chapter slugs that already carry at least one claim document.
+
+    Read off the `_id`s alone -- `claim:<course>:<chapter>:<n>` -- so asking
+    costs one `_all_docs` range read and never downloads a body.
+    """
+    query = query or _couch
+    prefix = f"claim:{course_slug}:"
+    start = urllib.parse.quote(json.dumps(prefix))
+    end = urllib.parse.quote(json.dumps(prefix + "\ufff0"))
+    rows = query(f"{DB}/_all_docs?startkey={start}&endkey={end}")["rows"]
+    return {row["id"].split(":")[2] for row in rows if row["id"].count(":") >= 3}
+
+
+def run(course_slug, model=DEFAULT_MODEL, limit=None, dry_run=False, resume=False,
+        ask=None, out=print, write=None, load=None, done=None):
+    write = write or write_docs
+    course, chapters, sources = (load or load_course)(course_slug)
     out(f"{course['title']} -- {len(chapters)} chapter(s), {len(sources)} source(s)")
     if limit:
         chapters = chapters[:limit]
         out(f"  prototype slice: first {len(chapters)} chapter(s)")
+    if resume:
+        already = (done or chapters_with_claims)(course_slug)
+        keep = [c for c in chapters if c["slug"] not in already]
+        if len(keep) != len(chapters):
+            out(f"  resuming: {len(chapters) - len(keep)} chapter(s) already judged, {len(keep)} to go")
+        chapters = keep
 
     docs = []
+    written = 0
     for chapter in chapters:
-        docs.extend(claims_for_chapter(chapter, sources, model, ask=ask, out=out))
+        chapter_docs = claims_for_chapter(chapter, sources, model, ask=ask, out=out)
+        docs.extend(chapter_docs)
+        # Written here rather than once at the end: a course is ~13 model-call
+        # rounds and a run that dies at chapter 10 used to throw all ten away.
+        if not dry_run:
+            written += write(chapter_docs)
 
     counts = distribution(docs)
     out(f"{len(docs)} claim(s): " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     if dry_run:
         out("dry run -- nothing written")
         return docs
-    out(f"wrote {write_docs(docs)} claim document(s)")
+    out(f"wrote {written} claim document(s)")
     return docs
 
 
@@ -365,9 +407,12 @@ def main(argv=None):
                         help="stop after this many chapters (a prototype slice)")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--resume", action="store_true",
+                        help="skip chapters that already have claims (continue a killed run)")
     args = parser.parse_args(argv)
     try:
-        run(args.course, model=args.model, limit=args.chapters, dry_run=args.dry_run)
+        run(args.course, model=args.model, limit=args.chapters, dry_run=args.dry_run,
+            resume=args.resume)
     except LyceumClaimsError as error:
         print(f"FAILED -- {error}", file=sys.stderr)
         return 1
