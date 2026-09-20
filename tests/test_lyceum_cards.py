@@ -199,3 +199,111 @@ def test_parse_rows_ignores_commentary_and_broken_lines():
             "That's all.\n")
     rows = lcards.parse_rows(text)
     assert sorted(rows) == [0, 1]
+
+
+# --------------------------------- keeping the work when a run is killed
+
+
+def batch_of(n, status="grounded", grade="high"):
+    return [claim(status=status, grade=grade, index=i) for i in range(n)]
+
+
+def answering_ask(calls=None):
+    """A fake model that returns one good row per numbered claim in a batch."""
+    def ask(prompt, model):
+        if calls is not None:
+            calls.append(prompt)
+        rows = []
+        for line in prompt.splitlines():
+            if not line.strip() or not line.strip()[0].isdigit():
+                continue
+            n = int(line.split(".", 1)[0].strip())
+            rows.append(json.dumps(dict(fact_row(), n=n)))
+        return "\n".join(rows)
+    return ask
+
+
+def test_each_batch_is_written_as_it_finishes_not_once_at_the_end():
+    # Three batches' worth of claims. A run killed after the first two must
+    # already have stored them, which only holds if write is called per batch.
+    claims = batch_of(lcards.BATCH * 3)
+    writes = []
+
+    def write(docs):
+        writes.append(len(docs))
+        return len(docs)
+
+    lcards.run("analytics", ask=answering_ask(), out=lambda *_: None,
+               write=write, load=lambda _slug: claims)
+    assert len(writes) == 3, writes
+    assert sum(writes) == lcards.BATCH * 3
+
+
+def test_the_written_count_is_what_was_actually_stored():
+    claims = batch_of(lcards.BATCH * 2)
+    said = []
+    lcards.run("analytics", ask=answering_ask(), out=said.append,
+               write=lambda docs: len(docs), load=lambda _slug: claims)
+    assert f"wrote {lcards.BATCH * 2} card document(s)" in said
+
+
+def test_a_dry_run_still_writes_nothing():
+    claims = batch_of(lcards.BATCH)
+
+    def write(_docs):
+        raise AssertionError("a dry run must not write")
+
+    said = []
+    lcards.run("analytics", dry_run=True, ask=answering_ask(), out=said.append,
+               write=write, load=lambda _slug: claims)
+    assert "dry run -- nothing written" in said
+
+
+def test_resume_skips_claims_that_already_have_a_card():
+    claims = batch_of(lcards.BATCH * 2)
+    done = {lcards.card_id(c["_id"]) for c in claims[:lcards.BATCH]}
+    asked = []
+    written = []
+    lcards.run("analytics", resume=True, ask=answering_ask(asked),
+               out=lambda *_: None, write=lambda d: written.extend(d) or len(d),
+               done=lambda _slug: done, load=lambda _slug: claims)
+    assert len(written) == lcards.BATCH
+    assert {c["claimId"] for c in written} == {c["_id"] for c in claims[lcards.BATCH:]}
+    assert len(asked) == 1, "the carded batch cost a model call"
+
+
+def test_resume_is_off_by_default_so_a_rejudged_claim_is_recarded():
+    claims = batch_of(lcards.BATCH)
+    written = []
+    lcards.run("analytics", ask=answering_ask(), out=lambda *_: None,
+               write=lambda d: written.extend(d) or len(d),
+               done=lambda _slug: {lcards.card_id(c["_id"]) for c in claims},
+               load=lambda _slug: claims)
+    assert len(written) == lcards.BATCH
+
+
+def test_resume_retries_a_claim_whose_card_was_refused():
+    # A refusal stores no card, so its id is absent from the ledger of done
+    # work and the claim comes back round -- a bad model answer is not a
+    # verdict on the claim.
+    claims = batch_of(2)
+    done = {lcards.card_id(claims[0]["_id"])}
+    written = []
+    lcards.run("analytics", resume=True, ask=answering_ask(), out=lambda *_: None,
+               write=lambda d: written.extend(d) or len(d),
+               done=lambda _slug: done, load=lambda _slug: claims)
+    assert [c["claimId"] for c in written] == [claims[1]["_id"]]
+
+
+def test_claims_with_cards_reads_ids_only():
+    asked = []
+
+    def query(path):
+        asked.append(path)
+        return {"rows": [{"id": "card:analytics:cohorts:000"},
+                         {"id": "card:analytics:cohorts:001"}]}
+
+    got = lcards.claims_with_cards("analytics", query=query)
+    assert got == {"card:analytics:cohorts:000", "card:analytics:cohorts:001"}
+    assert "include_docs" not in asked[0]
+    assert asked[0].startswith("lyceum/_all_docs?startkey=")

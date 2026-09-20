@@ -8,6 +8,7 @@ Four types: multiple choice, true/false, cloze, written answer."*
     python3 -m tools.lyceum_cards analytics --dry-run
     python3 -m tools.lyceum_cards analytics --claims 40   # a slice, for a live check
     python3 -m tools.lyceum_cards analytics               # write card documents
+    python3 -m tools.lyceum_cards analytics --resume      # continue a killed run
 
 Runs from the bridge pod, same as `lyceum_claims`: CouchDB through
 `CDB_BASE`/`CDB_USER`/`CDB_PASS` and the model through the `claude` CLI,
@@ -42,6 +43,20 @@ a card that fails any of them is refused, not repaired.
 `--claims N` stops after N claims. A model call per batch is real work
 against the subscription, and the spec asks for a prototype on one course
 before all six.
+
+**Each batch is written as it finishes, and `--resume` skips claims that
+already carry a card.** The first version wrote once, at the very end of
+the whole course, which is the same defect `lyceum_claims` carried until
+agora-persona-runner#1308: a run killed part-way threw away every model
+call it had already paid for. A course here is 60+ batched calls, so that
+is minutes of subscription work for no stored result. Resume reads card
+`_id`s alone -- `card:<course>:<chapter>:<n>`, one per claim -- so asking
+costs one range read and never a model call. It is off by default, same
+reason as in `lyceum_claims`: a claim whose text was re-judged needs a new
+card, and silently skipping it would be the wrong answer. Note what resume
+deliberately does *not* skip: a claim the checks **refused** stored no
+card, so a resumed run asks for it again, which is the right behaviour --
+a refusal is a bad model answer, not a verdict on the claim.
 """
 
 from __future__ import annotations
@@ -326,18 +341,29 @@ def cards_for_batch(claims, model, design, ask=None):
     return cards, refused
 
 
-def generate(claims, model, design, ask=None, out=print):
+def generate(claims, model, design, ask=None, out=print, write=None):
+    """(cards, refusals, written) for one kind, writing each batch as it lands.
+
+    `write` is called per completed batch rather than once at the end, so a
+    run killed part-way keeps what it already paid for. Pass `write=None`
+    for a dry run: nothing is stored and `written` is 0.
+    """
     batches = [claims[i:i + BATCH] for i in range(0, len(claims), BATCH)]
     if not batches:
-        return [], []
-    from concurrent.futures import ThreadPoolExecutor
+        return [], [], 0
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    cards, refused, written = [], [], 0
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        results = list(pool.map(lambda b: cards_for_batch(b, model, design, ask=ask), batches))
-    cards = [c for group, _ in results for c in group]
-    refused = [r for _, group in results for r in group]
+        futures = [pool.submit(cards_for_batch, b, model, design, ask=ask) for b in batches]
+        for future in as_completed(futures):
+            got, no = future.result()
+            cards.extend(got)
+            refused.extend(no)
+            if write is not None:
+                written += write(got)
     kind = "design" if design else "fact"
     out(f"  {kind}: {len(cards)} card(s) from {len(claims)} claim(s), {len(refused)} refused")
-    return cards, refused
+    return cards, refused, written
 
 
 def write_docs(docs):
@@ -362,19 +388,46 @@ def distribution(cards):
     return counts
 
 
-def run(course_slug, model=DEFAULT_MODEL, limit=None, dry_run=False, ask=None, out=print):
-    claims = load_claims(course_slug)
+def claims_with_cards(course_slug, query=None):
+    """Card `_id`s that already exist for a course.
+
+    Read off the `_id`s alone -- one card per claim, `card:<course>:...` --
+    so asking costs one `_all_docs` range read and never downloads a body.
+    """
+    query = query or _couch
+    start = urllib.parse.quote(json.dumps(f"card:{course_slug}:"))
+    end = urllib.parse.quote(json.dumps(f"card:{course_slug};"))
+    rows = query(f"{DB}/_all_docs?startkey={start}&endkey={end}")["rows"]
+    return {row["id"] for row in rows}
+
+
+def run(course_slug, model=DEFAULT_MODEL, limit=None, dry_run=False, resume=False,
+        ask=None, out=print, write=None, done=None, load=None):
+    write = write or write_docs
+    claims = (load or load_claims)(course_slug)
     if limit:
         claims = claims[:limit]
     fact, design, skipped = partition(claims)
     out(f"{course_slug} -- {len(claims)} claim(s): {len(fact)} gradeable, "
         f"{len(design)} ungrounded, {len(skipped)} not practisable")
+    if resume:
+        already = (done or claims_with_cards)(course_slug)
+        kept = len(fact) + len(design)
+        fact = [c for c in fact if card_id(c["_id"]) not in already]
+        design = [c for c in design if card_id(c["_id"]) not in already]
+        if len(fact) + len(design) != kept:
+            out(f"  resuming: {kept - len(fact) - len(design)} claim(s) already carded, "
+                f"{len(fact) + len(design)} to go")
 
-    cards, refused = [], []
+    cards, refused, written = [], [], 0
     for group, is_design in ((fact, False), (design, True)):
-        got, no = generate(group, model, is_design, ask=ask, out=out)
+        # Written per batch rather than once at the end: a course is 60+
+        # batched model calls and a run that dies at call 50 used to keep none.
+        got, no, wrote = generate(group, model, is_design, ask=ask, out=out,
+                                  write=None if dry_run else write)
         cards.extend(got)
         refused.extend(no)
+        written += wrote
 
     counts = distribution(cards)
     out(f"{len(cards)} card(s): " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
@@ -383,7 +436,7 @@ def run(course_slug, model=DEFAULT_MODEL, limit=None, dry_run=False, ask=None, o
     if dry_run:
         out("dry run -- nothing written")
         return cards
-    out(f"wrote {write_docs(cards)} card document(s)")
+    out(f"wrote {written} card document(s)")
     return cards
 
 
@@ -394,9 +447,12 @@ def main(argv=None):
                         help="stop after this many claims (a prototype slice)")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--resume", action="store_true",
+                        help="skip claims that already have a card (continue a killed run)")
     args = parser.parse_args(argv)
     try:
-        run(args.course, model=args.model, limit=args.claims, dry_run=args.dry_run)
+        run(args.course, model=args.model, limit=args.claims, dry_run=args.dry_run,
+            resume=args.resume)
     except LyceumCardsError as error:
         print(f"FAILED -- {error}", file=sys.stderr)
         return 1
