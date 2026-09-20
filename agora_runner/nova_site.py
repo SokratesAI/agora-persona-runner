@@ -189,6 +189,11 @@ from agora_runner.nova_boards import (
     # `nova_boards` owns that answer, and a second copy would disagree with
     # it the first time a status is added.
     _CLOSED_STATUS_KEYS,
+    # Same reason as the line above: `nova_boards` owns the spelling of
+    # the blocked-on-owner status label, and a second copy here would
+    # drift off it.
+    BLOCKED_STATUS,
+    status_key,
     rank_projects,
     STATUS_LABELS,
     board_projects,
@@ -1318,6 +1323,11 @@ def _project_summary(items):
     }
 
 
+#: The blocked-on-owner status, as a status key. Computed once, off
+#: `nova_boards`'s own label, so the spelling has one owner.
+_BLOCKED_KEY = status_key(BLOCKED_STATUS)
+
+
 def _project_shares(boards, meta):
     """Share of cycles owed vs taken, per project -- issue #214's last half.
 
@@ -1365,6 +1375,15 @@ def _project_shares(boards, meta):
     # only place the mapping exists: a claim records the slug and the
     # cycle and nothing about which project the row was filed under.
     project_of = {}
+    # And, on the same walk, how many rows a cycle could actually take per
+    # project. Without it the deficit is unreadable: measured on his live
+    # boards 2026-09-20, ten projects owed 92% of the loop between them had
+    # not one open row -- Marcus 47 rows, every one Done or Outdated -- and
+    # three cycles running read "Marcus owed 35%, took 0%" as starvation and
+    # handed it to the next cycle as unfinished business. No cycle closes
+    # that by working harder; he closes it by filing a row or moving the
+    # share, which is why it belongs on the page he reads.
+    open_rows = {}
     for board in ("issues", "ideas"):
         single = "issue" if board == "issues" else "idea"
         for item in (boards.get(board) or {}).get("items") or []:
@@ -1372,11 +1391,21 @@ def _project_shares(boards, meta):
             if not key or item.get("number") is None:
                 continue
             project_of[slug_for_row(single, item["number"])] = key
+            status = (item.get("statusKey") or "")
+            if item.get("done") or status in _CLOSED_STATUS_KEYS:
+                continue
+            if status == _BLOCKED_KEY:
+                continue
+            open_rows[key] = open_rows.get(key, 0) + 1
 
     counts, counted = cycle_attribution(claims, project_of)
     worked = last_worked(claims, project_of)
     horizon = ledger_horizon(claims)
-    hungry = set(starved(shares, worked, horizon=horizon))
+    # A project with nothing to take is never rescued by the 14-day floor:
+    # the floor exists to stop a small share waiting forever for its turn,
+    # and there is no turn to give a project with no row on it.
+    hungry = set(starved(shares, worked, horizon=horizon,
+                         with_work={name for name, n in open_rows.items() if n}))
     deficits = share_deficits(shares, counts, counted)
     return {
         # `counted` is cycles this could attribute, not cycles that
@@ -1397,6 +1426,9 @@ def _project_shares(boards, meta):
                 "deficit": round(deficit, 1),
                 "cycles": counts.get(name, 0),
                 "starved": name in hungry,
+                # 0 means "nothing a cycle can take", which is a different
+                # fact from a deficit and the one that explains it.
+                "openRows": open_rows.get(name, 0),
             }
             for name, (share, actual, deficit) in deficits.items()
         },

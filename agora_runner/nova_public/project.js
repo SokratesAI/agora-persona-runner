@@ -536,7 +536,18 @@
       var line = "Share of cycles: owed " + fmtShare(mine.share) + "%, took "
         + fmtShare(mine.actual) + "% (" + mine.cycles + " of the last "
         + shares.counted + ")";
-      if (mine.starved) {
+      /* A deficit against an empty backlog is not starvation, and without
+       * this clause it reads as one. Measured on the live boards
+       * 2026-09-20: ten projects owed 92% of the loop between them had no
+       * open row -- Marcus 47 rows, every one Done or Outdated -- and three
+       * cycles running handed "Marcus owed 35%, took 0%" to the next cycle
+       * as unfinished business. No cycle closes that by working harder; it
+       * closes when a row is filed or the share moves, and both are his.
+       * Checked for 0 specifically rather than falsiness, so a payload
+       * without the field says nothing instead of saying zero. */
+      if (mine.openRows === 0) {
+        line += " — nothing open to take: this is not the picker skipping it";
+      } else if (mine.starved) {
         line += " — " + shares.floorDays + "-day floor: next, whatever the arithmetic says";
       }
       return line;

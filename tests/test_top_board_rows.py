@@ -2003,3 +2003,78 @@ def test_fetch_claim_history_is_empty_rather_than_loud_when_it_cannot_read(
                  '{"rows": 3}', '{"no rows": []}'):
         monkeypatch.setattr(top_board_rows, "_fetch", lambda path, t=text: t)
         assert top_board_rows.fetch_claim_history() == []
+
+
+# --- A deficit against an empty backlog is not starvation (cycle 1923) ----
+
+
+def _shares_projects():
+    return ("| Project | Priority | Updated | Order | TRL | Satisfaction | "
+            "Lifecycle | Proposed |\n|---|---|---|---|---|---|---|---|\n"
+            "| Nova | 🟠 High | 09-01 | 1 |  |  | Active |  |\n"
+            "| Marcus | 🟠 High | 09-01 | 2 |  |  | Active |  |\n")
+
+
+def _shares_row(number, project, status="🟡 In progress", status_key=1):
+    return {"board": "issue", "number": number, "title": f"a {project} row",
+            "priority": "", "priorityKey": 9, "status": status,
+            "statusKey": status_key, "updated": "09-01", "project": project,
+            "milestone": "", "slug": f"issue-{number}"}
+
+
+def test_the_share_table_says_which_projects_have_no_row_to_take():
+    """Marcus is owed the larger share and has nothing open, and the table has
+    to say so on the line rather than leave the deficit to be misread.
+
+    Three cycles running (1919, 1920, 1921) handed "Marcus owed 35% took 0%"
+    to the next one as unfinished business. The control is the Nova line: a
+    project that *does* have a row gets its count, so a change that printed
+    the note on every line would fail here.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    rows = [_shares_row(1, "Nova"),
+            _shares_row(2, "Marcus", "⏸ Blocked on Edvard", "blocked-on-edvard")]
+    claims = [{"item": "issue-1", "cycle": n,
+               "at": (now - timedelta(hours=n)).isoformat()}
+              for n in range(1, 6)]
+    out = top_board_rows.render(rows, projects_markdown=_shares_projects(),
+                                claims=claims)
+    marcus = [line for line in out.split("\n") if line.startswith("  Marcus:")][0]
+    nova = [line for line in out.split("\n") if line.startswith("  Nova:")][0]
+    assert "no row a cycle can take" in marcus
+    assert "no row a cycle can take" not in nova
+    assert "(1 open row(s))" in nova
+    assert "are owed" in out and "have no row a cycle can take: Marcus" in out
+
+
+def test_a_blocked_row_does_not_count_as_a_row_a_cycle_can_take():
+    """The same board with Marcus's row unblocked must print the count, so
+    the assertion above is about the status and not about the project."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    rows = [_shares_row(1, "Nova"), _shares_row(2, "Marcus")]
+    claims = [{"item": "issue-1", "cycle": n,
+               "at": (now - timedelta(hours=n)).isoformat()}
+              for n in range(1, 6)]
+    out = top_board_rows.render(rows, projects_markdown=_shares_projects(),
+                                claims=claims)
+    marcus = [line for line in out.split("\n") if line.startswith("  Marcus:")][0]
+    assert "(1 open row(s))" in marcus
+    assert "no row a cycle can take" not in out
+
+
+def test_open_row_counts_are_keyed_the_way_the_shares_are():
+    """Lowercased, and a row with no project is counted against nothing."""
+    counts = top_board_rows._open_row_counts([
+        _shares_row(1, "Nova the app"),
+        _shares_row(2, "Nova the app"),
+        _shares_row(3, ""),
+        _shares_row(4, "Marcus", "⏸ Blocked on Edvard", "blocked-on-edvard"),
+    ])
+    assert counts == {"nova the app": 2}
+
+
+def test_an_absent_row_list_is_not_a_board_with_no_rows():
+    assert top_board_rows._with_work(None) is None
+    assert top_board_rows._with_work({"nova": 0, "marcus": 3}) == {"marcus"}

@@ -284,3 +284,82 @@ def test_the_history_widens_the_window_the_ledger_cannot_fill():
     _, both = cycle_attribution(attribution_rows(history, ledger), project_of)
     assert ledger_only == 9
     assert both == 30
+
+
+# --- A deficit against an empty backlog is not starvation -----------------
+#
+# Cycles 1919, 1920 and 1921 each handed the next one the same line as
+# unfinished business -- "Marcus owed 35% took 0%" -- and 1921 wrote that the
+# fix "is a row, not another cycle noticing". Measured on his live boards
+# 2026-09-20: Marcus holds 47 rows and not one of them is open. Ten projects
+# are in that state and they are owed 92% of the loop between them.
+
+
+def test_the_floor_skips_a_project_with_no_row_a_cycle_can_take():
+    """Agora is the only starved project and the floor still leaves it alone,
+    because there is nothing on it to take.
+
+    The positive control is the assertion above it: with the same shares,
+    the same clock and the same ledger, dropping `with_work` starves Agora.
+    Without that line, deleting the `with_work` condition from `starved`
+    leaves this test green -- it would only be asserting that a list is
+    empty, which it also is when the floor never fires at all.
+    """
+    shares = {"nova": 50.0, "agora": 50.0}
+    worked = {"nova": _now(), "agora": _now() - timedelta(days=20)}
+    horizon = _now() - timedelta(days=30)
+    assert starved(shares, worked, now=_now(), horizon=horizon) == ["agora"]
+    assert starved(shares, worked, now=_now(), horizon=horizon,
+                   with_work={"nova"}) == []
+
+
+def test_a_project_with_work_is_still_rescued_by_the_floor():
+    shares = {"nova": 50.0, "agora": 50.0}
+    worked = {"nova": _now(), "agora": _now() - timedelta(days=20)}
+    assert starved(shares, worked, now=_now(),
+                   horizon=_now() - timedelta(days=30),
+                   with_work={"nova", "agora"}) == ["agora"]
+
+
+def test_an_unknown_row_count_does_not_read_as_zero_rows():
+    """`with_work=None` is "I could not count", not "nothing has rows".
+
+    An empty set and `None` have to mean opposite things here: a caller with
+    no board in hand must not silently switch the floor off for the whole
+    board.
+    """
+    shares = {"nova": 50.0, "agora": 50.0}
+    worked = {"nova": _now(), "agora": _now() - timedelta(days=20)}
+    horizon = _now() - timedelta(days=30)
+    assert starved(shares, worked, now=_now(), horizon=horizon,
+                   with_work=None) == ["agora"]
+    assert starved(shares, worked, now=_now(), horizon=horizon,
+                   with_work=set()) == []
+
+
+def test_the_ranking_does_not_put_an_empty_project_first_on_the_floor():
+    """`share_ranks` forwards `with_work`, not just `starved` directly.
+
+    The numbers are the shape of `test_the_14_day_floor_beats_the_arithmetic`
+    on purpose: Nova is 60 points further behind than Agora, so the only
+    thing that can put Agora first is the floor band. That is what makes the
+    second assertion mean something -- if `share_ranks` dropped the argument
+    on the floor, Agora would stay at rank 1 and this would fail.
+
+    Note what this does *not* claim. A project with no open row contributes
+    no row to the ranking either way, so no row that a cycle could have
+    taken moves. What moves is the ⬅ floor mark on the printed table, which
+    would otherwise read "never mind the arithmetic, take Marcus" over an
+    empty backlog from the day the claim history reaches fourteen days.
+    """
+    shares = {"nova": 70.0, "agora": 10.0, "marcus": 20.0}
+    counts, counted = {"marcus": 10}, 10
+    worked = {"nova": _now(), "agora": _now() - timedelta(days=20),
+              "marcus": _now()}
+    horizon = _now() - timedelta(days=30)
+    assert share_ranks(shares, counts, counted, worked, now=_now(),
+                       horizon=horizon)["agora"] == 1
+    ranks = share_ranks(shares, counts, counted, worked, now=_now(),
+                        horizon=horizon, with_work={"nova", "marcus"})
+    assert ranks["nova"] == 1
+    assert ranks["agora"] == 2
