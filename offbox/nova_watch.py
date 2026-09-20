@@ -13,8 +13,11 @@ somewhere else (his NAS, in Docker) and to hold everything it needs to reach
 his phone without asking anything of the box it is watching. The NAS can reach
 the cluster as of 2026-09-02; the README says what was wrong and what is left.
 
-**Two verdicts, kept apart on purpose.**
+**Three verdicts, kept apart on purpose.**
 
+- ``DEGRADED`` -- the site answers and its database does not. The box is up
+  and the loop cannot write; see the paragraph below, which is the outage
+  that put this here.
 - ``UNREACHABLE`` -- the cluster does not answer. Node down, network down,
   Tailscale down.
 - ``SILENT`` -- the cluster answers and the loop is not writing.
@@ -41,13 +44,18 @@ writes -- the same event that ends the stall. ``UNREACHABLE`` has no such
 stamp to read, so it keys on the first failure of the current outage, which
 gives the same one-message-per-outage shape.
 
-**One hole, named rather than papered over.** `nova-site` forces `stalled` to
-false whenever `recordStale` is set, because a failed vault rebuild looks
-identical to a dead loop from inside the process. So a site that is up while
-CouchDB is unreachable answers "not stalled" and this watcher stays quiet. It
-is inherited from `stall_notice` and the same trade -- a third verdict for it
-would need its own grace and its own dedupe, and I would rather write the gap
-down than guess at a shape for it from outside the box.
+**The hole this file used to name is closed, and it cost eight hours first.**
+`nova-site` forces `stalled` to false whenever `recordStale` is set, because
+a failed vault rebuild looks identical to a dead loop from inside the process.
+So a site that is up while CouchDB is unreachable answered "not stalled" and
+this watcher stayed quiet -- which is exactly what happened on 2026-09-19,
+and it is the owner's issue #259: *"I was never notified by the cluster
+downage."* The earlier version of this paragraph said a third verdict would
+need its own grace and its own dedupe and declined to guess at the shape from
+outside the box. It needs **no** grace (the box answered, so it is not a home
+blip) and its dedupe is the same first-observation key ``UNREACHABLE``
+already uses. ``DEGRADED`` is that verdict, and `recordStale` was in the
+payload this program already polled the whole time.
 
 Everything that decides is a pure function of an observation and the state
 carried between polls. The network and the phone are injected, so the whole
@@ -166,6 +174,37 @@ def silent_text(status):
     )
 
 
+def degraded_text(status):
+    """What he reads when the site is up and its database is not.
+
+    This is the verdict that was missing on 2026-09-19, and the outage is the
+    reason it exists. server2 went NotReady, CouchDB's PV is local-path and
+    pinned to that node's disk, so the database went with it -- while
+    `nova-site` simply rescheduled onto server1 and kept answering. From out
+    here that box looked completely healthy: the poll returned 200, and
+    `stalled` was **false**, because the site forces it false whenever
+    `recordStale` is set (a failed vault rebuild is indistinguishable from a
+    dead loop from inside the process). So `UNREACHABLE` could not fire and
+    `SILENT` was actively suppressed, and his phone stayed quiet for eight
+    hours -- his issue #259, "I was never notified by the cluster downage."
+
+    The site was already publishing the answer. `recordStale` is in the same
+    `status` object this program has polled all along; nothing read it.
+    """
+    cycle = status.get("cycle")
+    who = f"Cycle {cycle}" if cycle is not None else "the last cycle"
+    return (
+        "Nova's site is answering but its database is not. The newest record "
+        f"it can serve is {who}'s, and it is serving a stale copy rather than "
+        "reading CouchDB.\n\n"
+        "This is DEGRADED, not UNREACHABLE and not SILENT: the web server is "
+        "up, so a check that only asks whether the box answers sees nothing "
+        "wrong. CouchDB runs on server2 and its disk does not move, so the "
+        "usual cause is that node -- check whether it is NotReady.\n\n"
+        "No more of these until the database comes back."
+    )
+
+
 class Watch:
     """Polls, decides, and sends at most one message per outage per verdict.
 
@@ -184,6 +223,8 @@ class Watch:
         self._down_since = None
         self._notified_unreachable = None
         self._notified_silent = None
+        self._degraded_since = None
+        self._notified_degraded = None
 
     def poll(self, now=None):
         """One check. Returns the verdict sent (`str`) or `None`.
@@ -199,7 +240,7 @@ class Watch:
             return self._on_unreachable(str(error), now)
         except Exception as error:  # noqa: BLE001 -- see docstring
             return self._on_unreachable(f"{type(error).__name__}: {error}", now)
-        return self._on_answer(status)
+        return self._on_answer(status, now)
 
     def _on_unreachable(self, detail, now):
         self._failures += 1
@@ -219,7 +260,7 @@ class Watch:
             return "UNREACHABLE"
         return None
 
-    def _on_answer(self, status):
+    def _on_answer(self, status, now):
         # The box answered, so any UNREACHABLE run is over. Clearing
         # `_down_since` is what re-arms the alarm: the next outage stamps a
         # new first-failure time, which is a key the dedupe has not seen.
@@ -229,6 +270,12 @@ class Watch:
         # that is not there.
         self._failures = 0
         self._down_since = None
+        # Ordered before `stalled` on purpose: the site sets `stalled` false
+        # whenever `recordStale` is true, so reading them the other way round
+        # would let the suppressed verdict hide the real one.
+        degraded = self._on_record_stale(status, now)
+        if degraded:
+            return degraded
         if not status.get("stalled"):
             return None
         key = status.get("lastWrittenAt") or ""
@@ -242,6 +289,30 @@ class Watch:
         if self._deliver("SILENT", lambda: silent_text(status)):
             self._notified_silent = key
             return "SILENT"
+        return None
+
+    def _on_record_stale(self, status, now):
+        """`DEGRADED` once per outage, or `None`.
+
+        Keyed on the first poll of the current stale run rather than on a
+        stamp out of the payload, because there is no stamp that moves for
+        this one: a site serving a cached record republishes the same
+        `lastWrittenAt` for as long as the database is gone, so it would
+        dedupe correctly by accident and re-arm by nothing. Clearing
+        `_degraded_since` when the flag drops is what re-arms it, the same
+        way `_down_since` re-arms `UNREACHABLE`.
+        """
+        if not status.get("recordStale"):
+            self._degraded_since = None
+            return None
+        if self._degraded_since is None:
+            self._degraded_since = now
+        key = self._degraded_since
+        if key == self._notified_degraded:
+            return None
+        if self._deliver("DEGRADED", lambda: degraded_text(status)):
+            self._notified_degraded = key
+            return "DEGRADED"
         return None
 
     def _deliver(self, verdict, build_text):
@@ -311,6 +382,49 @@ def web_push_sender(subscription, private_key, subject):
     return send
 
 
+def telegram_sender(token, chat_id, post=None):
+    """A `send(verdict, text)` that goes straight to Telegram's own servers.
+
+    His issue #259, in his words: *"We should set up some telegram
+    notification on the nas that notifies me. I remember we build some github
+    action solution, but that is the wrong solution."*
+
+    **This deliberately does not use `tools.telegram`.** That tool posts to a
+    bridge service in the cluster's `infra` namespace, which is on the box
+    this program exists to survive -- routing an off-box alarm back through
+    Hetzner would put the alarm in the same failure domain as its subject,
+    which is the one mistake this whole module was written to avoid. So the
+    request goes to `api.telegram.org` directly, and the only thing it needs
+    from us is the bot token.
+
+    It is also the cheaper half of the handover. Web Push needs the VAPID
+    private key **and** a subscription record copied off the cluster; this
+    needs one token he already owns, which is why `sender_from_env` prefers
+    it when both are configured.
+    """
+    poster = post or urllib.request.urlopen
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    def send(verdict, text):
+        body = json.dumps({
+            "chat_id": chat_id,
+            "text": f"Nova: {verdict}\n\n{text}",
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            url, data=body, headers={"Content-Type": "application/json"})
+        with poster(request, timeout=SEND_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        # Telegram answers 200 with `{"ok": false, "description": ...}` for a
+        # bad chat id or a bot the owner has never messaged. `_deliver` only
+        # records a send that did not raise, so swallowing this would mark the
+        # outage announced and go quiet for the rest of it.
+        if not payload.get("ok"):
+            raise RuntimeError(
+                f"telegram refused: {payload.get('description') or payload}")
+
+    return send
+
+
 def sender_from_env(env=None):
     """Build the production sender from the environment, or explain what is missing.
 
@@ -318,12 +432,22 @@ def sender_from_env(env=None):
     return value a test can read, rather than a process that exits.
     """
     env = os.environ if env is None else env
+    # Telegram first: it is the channel he asked for in issue #259 and it
+    # needs one value instead of two. Web Push stays as the fallback rather
+    # than being replaced -- it is proven, and a watcher with two independent
+    # ways to reach a phone is the point of a watcher.
+    if env.get("TELEGRAM_BOT_TOKEN") and env.get("TELEGRAM_CHAT_ID"):
+        return telegram_sender(env["TELEGRAM_BOT_TOKEN"],
+                               env["TELEGRAM_CHAT_ID"]), None
     missing = [
         name for name in ("NOVA_WATCH_SUBSCRIPTION", "VAPID_PRIVATE_KEY")
         if not env.get(name)
     ]
     if missing:
-        return None, f"not configured: {', '.join(missing)} is unset"
+        return None, (
+            "not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, or "
+            f"{' and '.join(missing)} for web push"
+        )
     try:
         subscription = json.loads(env["NOVA_WATCH_SUBSCRIPTION"])
     except ValueError as error:
