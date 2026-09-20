@@ -17,6 +17,33 @@ import pytest
 
 from tools import host_memory_trend as hmt
 
+@pytest.fixture(autouse=True)
+def _no_live_swap_holder_sweep(monkeypatch):
+    """`main` reads the hostPID sweep, and that is two real kubectl calls.
+
+    Nine `main` tests here stubbed every other reader and left this one, so
+    on the bridge pod each run did a real `kubectl get pods -n infra` and a
+    real `kubectl logs` against whatever sweep Pod happened to exist. On CI
+    both error identically, so the difference never showed.
+
+    Only the no-argument call is intercepted, which is the one `main` makes.
+    A test that passes its own `runner=` is exercising the reader itself and
+    is handed straight through to the real function, captured here before
+    the replacement goes in. The intercepted answer is "unreadable" rather
+    than a fabricated sweep: `main` prints CANNOT NAME for it, which is what
+    those nine tests were already asserting around.
+    """
+    from tools import host_memory_trend as _hmt
+    real = _hmt.read_swap_holders
+
+    def only_when_nobody_supplied_a_runner(*args, **kwargs):
+        if args or "runner" in kwargs:
+            return real(*args, **kwargs)
+        return None, "no hostPID sweep is readable in this test"
+
+    monkeypatch.setattr(_hmt, "read_swap_holders", only_when_nobody_supplied_a_runner)
+
+
 
 @pytest.fixture(autouse=True)
 def _never_touch_the_real_cpu_ledger(tmp_path_factory, monkeypatch):

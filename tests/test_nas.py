@@ -19,7 +19,37 @@ import types
 
 import pytest
 
+from conftest import _pass_through_unless_default_runner
+
 from tools import nas
+
+@pytest.fixture(autouse=True)
+def _no_live_nas_ssh(monkeypatch):
+    """No test opens a real ssh connection to the NAS to find a base path.
+
+    `nas.config` calls `discover_base`, which probes a loopback port on the
+    NAS over ssh. Five tests across this file, `test_nas_health.py` and
+    `test_nas_watch.py` reached `main`/`config` without stubbing it, so on
+    the bridge pod -- which mounts the NAS key at `/etc/nas-ssh` -- every
+    unit run dialled the real NAS. On CI there is no key and no route, so
+    it failed the same way whether the stub was there or not.
+
+    The discriminator is the runner itself: `config` passes its own `run=`
+    straight down, so "nobody stubbed this" means the runner still *is*
+    `subprocess.run`. A test that supplied a fake gets the real probe,
+    captured before the replacement. Empty is
+    the honest default: it is what `discover_base` returns for a service
+    with no base path, which is the common case.
+    """
+    import subprocess as _subprocess
+
+    for name, hermetic in (("discover_base", ""),
+                           ("discover_key", None)):
+        monkeypatch.setattr(
+            nas, name,
+            _pass_through_unless_default_runner(
+                getattr(nas, name), _subprocess.run, hermetic, "run"))
+
 
 SSH_STUB = {"host": "nas.example", "user": "nova", "key": "/etc/nas-ssh/id_ed25519"}
 

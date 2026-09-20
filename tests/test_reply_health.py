@@ -4,7 +4,31 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from conftest import _pass_through_unless_default_runner
+
 from tools import reply_health
+
+@pytest.fixture(autouse=True)
+def _no_live_bridge_kill_lookup(monkeypatch):
+    """No test reads the live bridge Pods to find out what killed a cycle.
+
+    `sweep` calls `bridge_kills`, whose `run=` default is `_kubectl` bound
+    at import, so patching `subprocess.run` afterwards never reached it.
+    Two tests here drove `sweep` without stubbing it and ran a real
+    `kubectl get pods -n agents` and `kubectl get rs` every unit run.
+
+    The discriminator is the runner itself: `sweep` passes its own `run=`
+    down, so "nobody stubbed this" means the runner still *is* `_kubectl`.
+    A test that supplied a fake gets the real reader. The default is the
+    empty history with no note: no kill was recorded,
+    which is what both of those tests already assume.
+    """
+    for name in ("bridge_kills", "bridge_rollouts"):
+        monkeypatch.setattr(
+            reply_health, name,
+            _pass_through_unless_default_runner(
+                getattr(reply_health, name), reply_health._kubectl, ([], ""), "run"))
+
 
 NOW = datetime(2026, 8, 31, 16, 30, tzinfo=timezone.utc)
 

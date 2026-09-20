@@ -22,8 +22,11 @@ Installed via pytest_configure (not an autouse fixture) so it also
 covers anything that would reach the network at import/collection time,
 before the first test runs.
 """
+import os
 import pytest
+import re
 import socket
+import subprocess
 import sys
 import threading
 
@@ -59,12 +62,14 @@ def pytest_configure(config):
     socket.getaddrinfo = _blocked_getaddrinfo
     socket.socket.connect = _blocked_connect
     socket.socket.connect_ex = _blocked_connect_ex
+    subprocess.Popen = _NoRealRemoteProcess
 
 
 def pytest_unconfigure(config):
     socket.getaddrinfo = _real_getaddrinfo
     socket.socket.connect = _real_connect
     socket.socket.connect_ex = _real_connect_ex
+    subprocess.Popen = _real_popen
 
 
 LEAKED_MESSAGE = (
@@ -281,3 +286,104 @@ def _metered_day_in_memory(monkeypatch):
     monkeypatch.setattr(metered_day, "_local", {})
     monkeypatch.setattr(metered_day, "_local_usd", {})
     return store
+
+
+SUBPROCESS_BLOCKED_MESSAGE = (
+    "this test spawned a real {binary!r} process: {argv}. The network block "
+    "at the top of this file patches sockets *in this interpreter*, and a "
+    "subprocess has its own -- so a missing stub on a tool that shells out "
+    "walks straight past it and talks to the real NAS or the real cluster "
+    "during a unit run. Stub whatever the module under test calls (usually "
+    "its own `_run`/`run_kubectl` helper), or give the file an autouse "
+    "fixture that makes the default hermetic."
+)
+
+#: Binaries that leave this box. `git` is not here on purpose -- the suite
+#: spawns it 2,641 times against temporary local repositories, which is the
+#: thing under test rather than a leak. Measured 2026-09-20 over a full run.
+BLOCKED_BINARIES = frozenset({"ssh", "scp", "sftp", "rsync", "kubectl"})
+
+_real_popen = subprocess.Popen
+
+
+def _blocked_binary_in(argv):
+    """The blocked binary this argv would run, or None.
+
+    Reads the argv the way the kernel does -- `argv[0]`'s basename is the
+    program -- and then, only for a shell invoked with `-c`, scans the
+    command string as well, because `bash -lc "kubectl get pods"` runs
+    kubectl with `bash` in `argv[0]`.
+    """
+    if not argv:
+        return None
+    words = []
+    for item in argv:
+        words.append(os.fsdecode(item) if isinstance(item, bytes) else str(item))
+    program = os.path.basename(words[0])
+    if program in BLOCKED_BINARIES:
+        return program
+    if program in ("sh", "bash", "zsh") and any(w.startswith("-") and "c" in w.lstrip("-") for w in words[1:]):
+        for blocked in sorted(BLOCKED_BINARIES):
+            if re.search(rf"\b{blocked}\b", " ".join(words[1:])):
+                return blocked
+    return None
+
+
+class _NoRealRemoteProcess(_real_popen):
+    """`subprocess.Popen` that refuses to launch ssh, kubectl or a copy of them.
+
+    Why this exists (2026-09-20): `tests/test_backup_health.py` had three
+    `main` tests with no stub on either half, and on the bridge pod they
+    opened a real ssh connection and ran a real `kubectl get pvc -A` every
+    run. One of them then failed -- asserting exit 1 and getting 2 --
+    because the live sweep had found a genuinely stale backup. The test
+    failed because the tool it guards was right, and it was invisible on
+    CI, where there is no NAS and no cluster to reach so both halves error
+    identically. Measured before writing this: a full run spawned 50 real
+    ssh/kubectl processes across 17 tests in 6 files.
+
+    Subclassing `Popen` rather than wrapping `subprocess.run` catches every
+    caller, including a module that did `from subprocess import run` before
+    the patch went in -- `run`, `check_output`, `call` and `check_call` all
+    build their process through the module-global `Popen`.
+    """
+
+    def __init__(self, args, *a, **kw):
+        argv = [args] if isinstance(args, (str, bytes)) else list(args)
+        if kw.get("shell") and argv:
+            first = argv[0]
+            argv = ["sh", "-c", os.fsdecode(first) if isinstance(first, bytes) else str(first)]
+        blocked = _blocked_binary_in(argv)
+        if blocked is not None:
+            printable = " ".join(
+                os.fsdecode(x) if isinstance(x, bytes) else str(x) for x in argv
+            )
+            raise NetworkBlockedInTests(
+                SUBPROCESS_BLOCKED_MESSAGE.format(binary=blocked, argv=printable[:300])
+            )
+        super().__init__(args, *a, **kw)
+
+
+def _pass_through_unless_default_runner(real, default_runner, hermetic, keyword):
+    """A stand-in that is hermetic for production callers and real for tests.
+
+    Several tools take their subprocess runner as a default argument bound at
+    import (`run=subprocess.run`, `run=_kubectl`) and hand it straight down,
+    so patching `subprocess.run` afterwards never reaches them. That makes
+    "did anybody stub this?" answerable in one way only: look at the runner
+    that arrived. If it is still the module's own default, nobody did, and
+    `hermetic` is returned instead of launching a real process. If it is
+    anything else, a test built it and gets the real function.
+
+    `real` is captured by the caller before the replacement goes in, so the
+    pass-through path is the genuine reader and not this wrapper again.
+    """
+    def stand_in(*args, **kwargs):
+        runner = kwargs.get(keyword, default_runner)
+        if runner is not default_runner:
+            return real(*args, **kwargs)
+        for arg in args:
+            if callable(arg) and arg is not default_runner:
+                return real(*args, **kwargs)
+        return hermetic
+    return stand_in
