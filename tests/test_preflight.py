@@ -1225,3 +1225,54 @@ def test_the_stale_warning_survives_a_sweep_where_it_is_the_only_finding():
     code, text = render([("source_revision", 2, "UNREADABLE -- on x at y.\n", 0.4)])
     assert code == 2
     assert "UNREADABLE -- on x at y." in text.rstrip().splitlines()[-2]
+
+
+def test_red_check_prints_the_question_its_own_source_asks():
+    # Against the live module rather than a fixture on purpose: a fixture would
+    # pass whether or not `check_rationale` can find a real check.
+    doc = preflight.check_rationale("disk_health")
+    assert doc and doc.startswith("How much disk is left on each node")
+    _, text = render([("disk_health", 1, "Some node is full.\nRead 2 node(s)\n", 3.0)])
+    assert "disk_health asks: " + " ".join(doc.split()) in text
+
+
+def test_rationale_is_the_opening_paragraph_not_the_whole_docstring():
+    # The cost argument, asserted rather than only written down: the full
+    # docstrings are 300 KB across the 71 and a sweep prints ~10 red checks in
+    # full, so printing all of each would add ~50 KB to an 87 KB report.
+    longest = max(len(preflight.check_rationale(n)) for n in preflight.CHECKS)
+    assert longest <= 200, f"an opening paragraph grew to {longest} bytes"
+    assert "\n\n" not in preflight.check_rationale("disk_health")
+
+
+def test_clean_check_does_not_print_its_docstring():
+    # The whole cost argument: 71 docstrings is 300 KB, and a cycle carries this
+    # report for the rest of its session. A green row pays nothing. This one
+    # holds for two reasons at once -- a clean check is not in the noisy block
+    # at all -- so the load-bearing version of it is the `--verbose` test
+    # below, which is where a clean check DOES reach the block.
+    _, text = render([("disk_health", 0, "All clear. Read 2 node(s)\n", 3.0)])
+    assert "disk_health asks:" not in text
+
+
+def test_verbose_does_not_print_docstrings_for_clean_checks():
+    # `--verbose` puts every check in the noisy block, which is exactly the run
+    # where printing all 71 would be worst.
+    out = io.StringIO()
+    preflight.render([("disk_health", 0, "All clear. Read 2 node(s)\n", 3.0)],
+                     stream=out, verbose=True)
+    text = out.getvalue()
+    assert "full output" in text          # verbose did reproduce it
+    assert "disk_health asks:" not in text
+
+
+def test_rationale_of_a_module_that_is_not_there_is_none():
+    assert preflight.check_rationale("no_such_check_module") is None
+
+
+def test_every_check_has_a_rationale_to_print():
+    # The claim the feature rests on: all 71 already carry the reasoning, and
+    # nothing was printing it. If someone adds a check with no docstring, a red
+    # row for it silently goes back to being a bare name.
+    missing = [n for n in preflight.CHECKS if not preflight.check_rationale(n)]
+    assert not missing, f"checks with no module docstring: {missing}"

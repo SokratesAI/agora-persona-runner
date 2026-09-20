@@ -102,6 +102,7 @@ exception is `SOLO`, which is the roster of checks whose subject this sweep
 is itself load on -- they run after the pool drains, alone.
 """
 import argparse
+import ast
 import concurrent.futures
 import datetime as dt
 import hashlib
@@ -695,6 +696,46 @@ def run_check(name):
     return name, code, output, time.monotonic() - started
 
 
+def check_rationale(name):
+    """The opening paragraph of `tools/<name>.py`'s docstring, or None.
+
+    All 71 checks carry a module docstring and nothing has ever printed any of
+    it. `prompt.md` step 1a has an entry for 17 of them and promises "each
+    check keeps its own entry below", so for the other 54 a red row was a bare
+    name, a verdict, and no way to tell what the check is even for.
+
+    **The opening paragraph and not the whole docstring, and that is the
+    design rather than a caution.** Measured over all 71: the full docstrings
+    total 300 KB, median 4.1 KB, max 8.5 KB, and a normal sweep prints about
+    ten red checks in full -- so printing all of each one adds ~50 KB to an
+    87 KB report a cycle then carries for its whole session. The opening
+    paragraph is 38 to 90 bytes, median 71, and every one of the 71 is a
+    single question: *"How much disk is left on each node, and is any
+    PersistentVolumeClaim actually capped?"*, *"How many scheduled heartbeat
+    firings never produced a run?"*. That question is the thing a red row was
+    missing; the other 4 KB is reasoning a cycle can go and read once it knows
+    it cares. So this costs ~1.5 KB a sweep instead of ~50 KB and answers the
+    same question.
+
+    Read with `ast` rather than by importing the module. `run_check` runs each
+    check as a *subprocess*, so nothing here has the module object already --
+    and importing 71 tools into this process to read a string would execute
+    their module level for whatever side effects it happens to have. Parsing
+    the file has none: a missing file, a syntax error or an absent docstring
+    all come back as None and the caller prints nothing extra.
+    """
+    path = os.path.join(tools_dir(), name + ".py")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+    except (OSError, SyntaxError, ValueError):
+        return None
+    doc = ast.get_docstring(tree)
+    if not doc or not doc.strip():
+        return None
+    return doc.strip().split("\n\n")[0].strip()
+
+
 def summary_line(output):
     """A pointer at what the check measured. **The verdict is the exit code.**
 
@@ -1171,10 +1212,20 @@ def render(results, stream=None, verbose=False, state=None, now=None,
         if code != 0 or verbose:
             noisy.append((name, code, output))
 
+    explained = []
     for name, code, output in noisy:
         print(file=stream)
         print(f"===== {name}: exit {code} -- full output =====", file=stream)
         print(output.rstrip(), file=stream)
+        # Only for a check that did NOT come back clean. `--verbose` puts every
+        # check in `noisy`, and 71 docstrings is 300 KB -- the whole point is
+        # that this is paid on the handful of rows a cycle actually has to
+        # judge, not on every row it skims.
+        if code != 0:
+            why = check_rationale(name)
+            if why:
+                explained.append(name)
+                print(f"----- {name} asks: {' '.join(why.split())}", file=stream)
 
     print(file=stream)
     print(f"Ran {len(results)} check(s): {', '.join(n for n, _, _, _ in results)}.", file=stream)
@@ -1208,6 +1259,15 @@ def render(results, stream=None, verbose=False, state=None, now=None,
         print(f"{caveated} check(s) exited 0 over a scope they could not fully judge; "
               f"their caveats are the indented lines above. Exit 0 is the right "
               f"status for those and it is not a claim about what they skipped.",
+              file=stream)
+    if explained:
+        print(f"The `----- <check> asks:` line under each red check is the opening "
+              f"paragraph of that check's own module docstring, read straight out of "
+              f"`tools/<name>.py`: {', '.join(explained)}. It says what the check is "
+              f"for, not what this run found. The rest of that docstring -- a few KB "
+              f"of why the red case matters -- is deliberately not printed here; read "
+              f"the file when a row turns out to matter. `prompt.md` step 1a explains "
+              f"a minority of these checks and never named the rest at all.",
               file=stream)
     for line in stale_checkout_lines(results):
         print(line, file=stream)
