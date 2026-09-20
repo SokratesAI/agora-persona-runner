@@ -111,6 +111,12 @@
      * few seconds can run its full 45 minutes and never trip this. */
     var LOST_TURN_AFTER_SECONDS = 600;
 
+    /* Raising this above `ask.js`'s `PENDING_SEND_EXPIRES_MS` puts the two
+     * bounds back in the order that lost his question: a send the server
+     * never stored is dropped out of the thread before this ever calls the
+     * turn lost, so the card never draws and the text vanishes instead. The
+     * drop must stay the later of the two. */
+
     // The newest thing he said in the thread being painted; see `askPaintThread`.
     var lastAskedQuestion = "";
     var lastAskedQuestionId = "";
