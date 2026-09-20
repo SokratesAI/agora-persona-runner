@@ -60,6 +60,31 @@ this was written, because two of the three would have been guesses:
     see agora-claude-bridge/bridge/cli.py, which builds that file with
     json.dump and drops the flag entirely if it cannot.
 
+## A dropped connection costs one call, not the turn (v2.1.272, 2026-09-20)
+
+Idea #161 asked whether the tools come back after a connection is dropped
+mid-cycle, or go quietly dead for the rest of the hour. Measured rather than
+reasoned about, against a throwaway MCP server in the bridge pod that answers
+the handshake and then kills the TCP connection with an RST on the first
+`tools/call` and answers every later one: a headless `claude -p` session on
+2.1.272 reported two attempts, the first failing with a socket error and the
+second returning the real result. They come back.
+
+Our end is the reason that works, and it is an accident of `invoke_server`
+using `BaseHTTPRequestHandler`: /mcp answers HTTP/1.0 with no `Mcp-Session-Id`,
+so every tool call is already its own TCP connection and there is no session
+for a drop to lose. `tests/test_mcp_survives_a_dropped_connection.py` pins it,
+because nothing else states it -- the grant lives in this process's memory
+and moving the handshake in beside it would turn a recoverable drop into a
+dead hour without anyone noticing.
+
+The case that does NOT recover, and cannot: the runner pod being REPLACED
+mid-turn. The bridge writes this pod's IP into --mcp-config, and the grant
+exists only here, so a replacement pod is a different server that has never
+heard of the token. Pointing the config at the `agora-persona-runner` Service
+instead would not help for the same reason -- it would just find the wrong pod
+faster. That is a property of per-turn in-memory grants, not of the transport.
+
 ## Errors are results, not faults
 
 A tool that fails returns `isError: true` with the failure as text,
