@@ -82,8 +82,28 @@ def test_novas_message_with_the_same_text_does_not_settle_his_send():
     assert r["unconfirmed"] is True
 
 
-def test_a_send_the_server_never_shows_expires_after_ten_minutes():
-    r = merge([NOVA], [{"text": "hello", "sentAt": SENT_AT}], SENT_AT + 600_001)
+def test_a_send_the_server_never_shows_survives_the_bound_that_calls_the_turn_lost():
+    """Ten minutes was this bound until issue #200, and ten minutes is also
+    `askthread.js`'s `LOST_TURN_AFTER_SECONDS` -- the silence after which the
+    thread draws the card saying the turn was lost and offers "Ask again".
+    `lostTurn` measures that silence from the newest message in the thread,
+    which for a send the server never stored is the bubble this merge
+    synthesises. So the drop landed on top of the card rather than after it,
+    and the card was unreachable for this case: any repaint late enough to
+    draw it was late enough to have thrown the send away first. What he saw
+    instead was his own question gone out of the thread with nothing said.
+
+    The drop must stay the LATER of the two. At eleven minutes -- past the
+    card, well inside the hour -- his question is still here."""
+    r = merge([NOVA], [{"text": "hello", "sentAt": SENT_AT}], SENT_AT + 660_000)
+    assert r["unconfirmed"] is True
+    assert [m["text"] for m in r["messages"]] == ["Earlier answer", "hello"]
+
+
+def test_a_send_the_server_never_shows_is_still_dropped_eventually():
+    """The other half, so the bound above is a bound and not a removal: a
+    tab left open all day does not keep the morning's ghost."""
+    r = merge([NOVA], [{"text": "hello", "sentAt": SENT_AT}], SENT_AT + 3_600_001)
     assert r["unconfirmed"] is False
     assert r["pending"] == []
     assert [m["text"] for m in r["messages"]] == ["Earlier answer"]
