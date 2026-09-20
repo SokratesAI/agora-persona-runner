@@ -839,7 +839,7 @@ def _with_work(open_counts):
     return {name for name, count in open_counts.items() if count}
 
 
-def _open_row_counts(rows, project_of=None):
+def _open_row_counts(rows):
     """`{lowercased project: rows a cycle could take}` off the ranked rows.
 
     "Could take" means present in the ranking and not blocked on the owner
