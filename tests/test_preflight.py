@@ -1276,3 +1276,28 @@ def test_every_check_has_a_rationale_to_print():
     # row for it silently goes back to being a bare name.
     missing = [n for n in preflight.CHECKS if not preflight.check_rationale(n)]
     assert not missing, f"checks with no module docstring: {missing}"
+
+
+def test_the_postmortem_window_covers_the_interval_it_runs_on():
+    """A scheduled check must see everything since its own last run.
+
+    `cycle_postmortem` judges the newest N *cycle numbers* and preflight
+    runs it every M *hours*; those are different units, so nothing makes
+    them agree. At 18 minutes a cycle, the module's own 48 is ~14h against
+    a 24h interval -- a hole that opens just after a sweep is gone from the
+    window before the next sweep looks. Cycles 1895 and 1897, the two that
+    motivated `--notify`, are exactly that case.
+    """
+    args = preflight.CHECK_ARGS["cycle_postmortem"]
+    assert "--window" in args, (
+        "cycle_postmortem must be given an explicit window here; its default "
+        "does not cover this check's interval")
+    window = int(args[args.index("--window") + 1])
+    interval_hours = preflight.CADENCE_HOURS["cycle_postmortem"]
+    # The fastest cadence this loop has run at, so the check stays honest if
+    # the heartbeat speeds up again -- it has three times already.
+    fastest_minutes = 15
+    assert window * fastest_minutes / 60 >= interval_hours, (
+        f"window of {window} cycles is {window * fastest_minutes / 60:.1f}h at "
+        f"{fastest_minutes}-minute cadence, short of the {interval_hours}h "
+        "interval this check runs on")

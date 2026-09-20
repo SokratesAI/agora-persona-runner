@@ -672,7 +672,14 @@ CHECK_ARGS = {
     # and neither covers a cycle that ran, worked, and filed no journal
     # entry. That verdict has always been in this sweep and has never left
     # it; `--notify` is what carries it out.
-    "cycle_postmortem": ["--notify"],
+    # `--window 96` and not the module's own 48, because this check runs on
+    # a 24-hour interval below and 48 cycle numbers is only ~14h at the
+    # current cadence. A hole that opens just after a sweep ages out of the
+    # window before the next sweep looks, so the two cycles that motivated
+    # `--notify` -- 1895 and 1897 -- would have gone unreported by the very
+    # thing built to report them. A scheduled check must be able to see
+    # everything that happened since it last ran; 96 covers 24h with room.
+    "cycle_postmortem": ["--notify", "--window", "96"],
     # The fifth, idea #308: the pin gap was only ever read inside my own
     # turn. Publishing it puts it on the landing page's health line.
     "cli_pin": ["--publish"],
