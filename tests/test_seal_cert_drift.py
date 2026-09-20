@@ -54,8 +54,13 @@ def test_rotated_key_raises(certs):
     assert status == 2
     assert any("SEAL CERT DRIFT" in line for line in lines)
     # The remedy has to be in the output: a check that names a problem and no
-    # command does not get acted on.
-    assert any(scd.CONTROLLER in line for line in lines)
+    # command does not get acted on. It has to be a command that works from
+    # here, too -- this used to assert `scd.CONTROLLER`, the direct URL, which
+    # is the one hop `agents` cannot make into `kube-system`, so the fix line
+    # failed at exactly the moment somebody ran it.
+    fix = [line for line in lines if line.strip().startswith(("curl", "kubectl"))]
+    assert fix and fix[0].strip().startswith("kubectl get --raw")
+    assert scd.PROXY_PATH in fix[0] and scd.CERT_PATH in fix[0]
 
 
 def test_a_reissue_around_the_same_key_is_not_drift(certs):
@@ -128,19 +133,13 @@ def test_a_200_that_is_not_json_is_an_error():
     assert "could not decode" in err
 
 
-def test_controller_failure_is_reported_with_its_url():
-    def boom(url, timeout=None):
-        raise OSError("connection refused")
-
-    pem, err = scd.fetch_live("http://example/cert.pem", open_url=boom)
-    assert pem is None
-    assert "http://example/cert.pem" in err and "connection refused" in err
+CERT = "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"
 
 
-def test_live_cert_is_returned_verbatim():
+def _response(body):
     class Response:
         def read(self):
-            return b"-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"
+            return body.encode()
 
         def __enter__(self):
             return self
@@ -148,9 +147,66 @@ def test_live_cert_is_returned_verbatim():
         def __exit__(self, *exc):
             return False
 
-    pem, err = scd.fetch_live("http://example/cert.pem", open_url=lambda u, timeout=None: Response())
+    return lambda url, timeout=None: Response()
+
+
+def _proxy_fails(args):
+    return 1, "", "Error from server (Forbidden): services/proxy is forbidden"
+
+
+def test_controller_failure_is_reported_with_its_url():
+    def boom(url, timeout=None):
+        raise OSError("connection refused")
+
+    pem, err = scd.fetch_live_via_http("http://example/cert.pem", open_url=boom)
+    assert pem is None
+    assert "http://example/cert.pem" in err and "connection refused" in err
+
+
+def test_live_cert_is_returned_verbatim():
+    pem, err = scd.fetch_live_via_http("http://example/cert.pem", open_url=_response(CERT))
     assert err is None
-    assert pem == "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"
+    assert pem == CERT
+
+
+def test_the_proxy_is_tried_first_and_http_is_never_called():
+    called = []
+
+    def never(url, timeout=None):
+        called.append(url)
+        raise AssertionError("the direct URL must not be reached when the proxy answers")
+
+    pem, err = scd.fetch_live(open_url=never, run=lambda args: (0, CERT, ""))
+    assert (pem, err, called) == (CERT, None, [])
+
+
+def test_the_proxy_path_names_the_port_by_name_not_by_number():
+    # `services/sealed-secrets:8080/proxy` is a different RBAC resource name and
+    # is Forbidden to this ServiceAccount; the named form is the one that works.
+    seen = []
+    scd.fetch_live(open_url=_response(CERT), run=lambda args: seen.append(args) or (1, "", "no"))
+    assert seen == [["get", "--raw", scd.PROXY_PATH]]
+    assert "http:sealed-secrets:http" in scd.PROXY_PATH and "8080" not in scd.PROXY_PATH
+
+
+def test_http_is_the_fallback_when_the_proxy_is_forbidden():
+    pem, err = scd.fetch_live(open_url=_response(CERT), run=_proxy_fails)
+    assert (pem, err) == (CERT, None)
+
+
+def test_a_200_from_the_proxy_without_a_certificate_is_not_a_cert():
+    pem, err = scd.fetch_live_via_proxy(run=lambda args: (0, '{"kind":"Status"}', ""))
+    assert pem is None
+    assert "no certificate in the body" in err
+
+
+def test_both_transports_failing_reports_both_reasons():
+    def boom(url, timeout=None):
+        raise OSError("connection refused")
+
+    pem, err = scd.fetch_live(url="http://example/cert.pem", open_url=boom, run=_proxy_fails)
+    assert pem is None
+    assert "Forbidden" in err and "connection refused" in err and "http://example/cert.pem" in err
 
 
 def test_describe_is_empty_when_openssl_refuses():

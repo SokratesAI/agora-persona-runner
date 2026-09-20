@@ -43,12 +43,35 @@ import urllib.error
 import urllib.request
 
 CONTROLLER = "http://sealed-secrets.kube-system.svc.cluster.local:8080/v1/cert.pem"
+# The same route `kubeseal --fetch-cert` takes: the API server proxies to the
+# Service on our behalf, so this needs no pod-to-pod route into `kube-system`.
+# `http:sealed-secrets:http` is scheme:service:PORT NAME, and the port name is
+# load-bearing -- the numeric form `sealed-secrets:8080` is a different RBAC
+# resource name and is Forbidden to the bridge's ServiceAccount.
+PROXY_PATH = (
+    "/api/v1/namespaces/kube-system/services/http:sealed-secrets:http/proxy/v1/cert.pem"
+)
 REPO = "SokratesAI/platform-config"
 CERT_PATH = "secrets/sealed-secrets-pub.pem"
 TIMEOUT = 20
 
 
-def fetch_live(url=CONTROLLER, open_url=None):
+def fetch_live_via_proxy(proxy_path=PROXY_PATH, run=None):
+    """`(pem, None)` through the API server's service proxy, or `(None, why)`."""
+    code, out, err = (run or _kubectl)(["get", "--raw", proxy_path])
+    if code == 0 and "BEGIN CERTIFICATE" in out:
+        return out, None
+    if code == 0:
+        # A 200 carrying something that is not a certificate -- a `Status`
+        # object, an error page from a proxy in front. Reporting the body as
+        # the reason would read like a transport failure it is not.
+        said = "no certificate in the body: " + ((out or "").strip()[:120] or "empty")
+    else:
+        said = (err or "").strip() or (out or "").strip() or f"exit {code}"
+    return None, f"the API server's service proxy at {proxy_path} said: {said}"
+
+
+def fetch_live_via_http(url=CONTROLLER, open_url=None):
     """`(pem, None)` from the controller's own cert endpoint, or `(None, why)`."""
     opener = open_url or urllib.request.urlopen
     try:
@@ -56,6 +79,36 @@ def fetch_live(url=CONTROLLER, open_url=None):
             return response.read().decode("utf-8"), None
     except Exception as exc:                        # noqa: BLE001 - any failure is "unreadable"
         return None, f"could not read the controller's cert at {url}: {exc}"
+
+
+def fetch_live(url=CONTROLLER, open_url=None, run=None, proxy_path=PROXY_PATH):
+    """`(pem, None)` for the live cert, proxy first and direct HTTP second.
+
+    The proxy goes first because it is the one that works from here. This check
+    read `UNREADABLE` for at least thirteen hours against the direct URL, which
+    fails with `Connection refused` from the bridge pod -- `agents` has no
+    pod-to-pod route into `kube-system` -- while `kubeseal --fetch-cert`
+    succeeded from that same pod at that same minute. A check that cannot reach
+    its subject reports nothing about drift, so the transport was the whole
+    finding. The direct URL is kept as the fallback rather than deleted: it is
+    the cheaper hop if that route is ever opened, and keeping it means a future
+    RBAC change to `services/proxy` does not blind this check again.
+    """
+    pem, proxy_why = fetch_live_via_proxy(proxy_path, run)
+    if pem is not None:
+        return pem, None
+    pem, http_why = fetch_live_via_http(url, open_url)
+    if pem is not None:
+        return pem, None
+    return None, f"could not read the controller's cert two ways. {proxy_why}; and {http_why}"
+
+
+def _kubectl(args):
+    """Run `kubectl` and return `(exit_code, stdout, stderr)`."""
+    proc = subprocess.run(
+        ["kubectl"] + args, capture_output=True, text=True, timeout=TIMEOUT + 10
+    )
+    return proc.returncode, proc.stdout, proc.stderr
 
 
 def fetch_committed(repo=REPO, path=CERT_PATH, run=None):
@@ -152,7 +205,10 @@ def report(live, committed, run=None):
         "SealedSecrets still unseal. It breaks the moment that retention ends."
     )
     lines.append("The fix, in one command from the bridge pod, then a PR to " + REPO + ":")
-    lines.append(f"  curl -s {CONTROLLER} > {CERT_PATH}")
+    # Not `curl {CONTROLLER}` -- that is the hop this check itself cannot make
+    # from `agents`, so a fix line quoting it hands the reader a command that
+    # fails at exactly the moment they need it.
+    lines.append(f"  kubectl get --raw '{PROXY_PATH}' > {CERT_PATH}")
     return 2, lines
 
 
