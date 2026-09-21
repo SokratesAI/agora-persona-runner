@@ -1,14 +1,14 @@
 """Post a note, or a comment on one, as Sokrates or Nova, straight into the notes store.
 
 The writer half of `notes-records.md` for the two senders who are not
-Edvard. Measured Cycle 1997 and written into the spec: Sokrates does not
+the owner. Measured Cycle 1997 and written into the spec: Sokrates does not
 reach the Nova site at all. He runs on the host, with the CouchDB admin
 credential over the NodePort, and has always written by putting text into
 vault files. A per-sender token on the site's port would guard a door he
 never uses, so he gets this instead -- the same store call the site's
 routes will make, with the sender named on the command line.
 
-`--as edvard` is refused on purpose. Edvard's notes come only from his own
+The owner's sender name is refused on purpose. His notes come only from his own
 route, where his login is read off the Tailscale proxy; a command anyone on
 the box can type is not that.
 
@@ -22,6 +22,11 @@ Prints the stored record's id. Exit 1 when the store refused the write,
 
 import argparse
 import sys
+
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import nova_notes_store as store
 

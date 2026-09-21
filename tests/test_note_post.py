@@ -37,7 +37,7 @@ def test_on_posts_a_comment_on_that_note(couch, capsys):
     assert comment["author"] == "nova" and comment["text"] == "answer"
 
 
-def test_edvard_cannot_be_named_from_the_command_line(couch):
+def test_the_owner_cannot_be_named_from_the_command_line(couch):
     with pytest.raises(SystemExit):
         note_post.main(["--as", "edvard", "--text", "x"])
     with pytest.raises(ValueError):
