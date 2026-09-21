@@ -6,9 +6,9 @@ the Beats pages. What these tests pin is the wiring, because that is what a
 move can silently break: the file has to be served, loaded before `app.js`,
 precached so `/notes` still opens offline, and inside the update stamp so a
 deploy that changes only this file still offers him a reload. What the page
-draws is unchanged.
+draws changed with idea #333 (note records); the wiring did not.
 
-The seam is asserted by name rather than by count: `notes.js` takes twenty
+The seam is asserted by name rather than by count: `notes.js` takes fourteen
 names from `app.js` and hands one back. A name dropped from the argument is a
 `ReferenceError` the first time he opens `/notes`, and a name dropped from the
 return is a router that navigates to a blank page.
@@ -23,21 +23,17 @@ PUBLIC = os.path.join(os.path.dirname(nova_site.__file__), "nova_public")
 
 #: Every name `notes.js` reads off its one argument. Kept here rather than
 #: derived from the file, so that deleting a line from the module is a test
-#: failure instead of a shorter list that still agrees with itself. `json` is
-#: on it although no line calls `json(` -- the page hands it over as a value,
-#: `.then(json)`, which is how the previous split lost it.
+#: failure instead of a shorter list that still agrees with itself.
 SHARED = (
-    "OWNER_LABEL", "bindHoldMenu", "buildCaptureEditor", "captureHome",
-    "closeActionSheet", "convertButtons", "el", "feed", "fetchPage", "json",
-    "load", "loadWhenScrolledTo", "markNav", "openActionSheet", "renderBlocks",
-    "route", "savedCopyLine", "statusEl", "stopPolling", "wordmark",
+    "bindHoldMenu", "buildCaptureEditor", "captureHome", "closeActionSheet",
+    "el", "feed", "fetchPage", "markNav", "openActionSheet", "route",
+    "savedCopyLine", "statusEl", "stopPolling", "wordmark",
 )
 
-MOVED = ("function renderNoteMessage(", "function noteActions(",
-         "function moveCaptureInto(", "function renderNotes(",
-         "function scrollNotesToLatest(", "function showOlderNotes(",
-         "function watchForOlderNotes(", "function loadNotes(",
-         "var NOTES_PAGE = 12;")
+MOVED = ("function renderNoteCard(", "function renderComment(",
+         "function noteCommentBox(", "function swipeToArchive(",
+         "function noteComposer(", "function renderNotes(",
+         "function loadNotes(", "function noteWrite(")
 
 
 def read(name):

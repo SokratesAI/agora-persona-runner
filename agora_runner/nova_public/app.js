@@ -5079,21 +5079,15 @@
   var loadNotes;
   if (window.novaNotes) {
     var notesPage = window.novaNotes({
-      OWNER_LABEL: OWNER_LABEL,
       bindHoldMenu: bindHoldMenu,
       buildCaptureEditor: buildCaptureEditor,
       captureHome: captureHome,
       closeActionSheet: closeActionSheet,
-      convertButtons: convertButtons,
       el: el,
       feed: feed,
       fetchPage: fetchPage,
-      json: json,
-      load: load,
-      loadWhenScrolledTo: loadWhenScrolledTo,
       markNav: markNav,
       openActionSheet: openActionSheet,
-      renderBlocks: renderBlocks,
       route: route,
       savedCopyLine: savedCopyLine,
       statusEl: statusEl,

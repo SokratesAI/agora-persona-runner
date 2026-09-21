@@ -5869,3 +5869,17 @@ X that summarizes the last 12
 .md-rule { border: 0; border-top: 1px solid var(--line); margin: 0.8rem 0; }
 
 .md-link { color: var(--accent); }
+
+/* The Notes page on note records (idea #333): Journal cards, one per note,
+ * with the sender's name on the note and on each comment under it. */
+.note-card { touch-action: pan-y; }
+.note-card--armed { opacity: 0.6; }
+.note-card .note-text p { margin: 0.4rem 0; white-space: pre-wrap; }
+.note-sender { font-size: 1rem; margin: 0; }
+.note-comments { margin-top: 0.6rem; }
+.note-comment { border-top: 1px solid var(--line); padding-top: 0.5rem; margin-top: 0.5rem; }
+.note-comment-head { display: flex; gap: 0.5rem; align-items: baseline; }
+.note-comment-form { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+.note-comment-form .capture-input { flex: 1; }
+.note-compose { cursor: auto; }
+.note-archive-toggle { display: block; margin-left: auto; }
