@@ -11,12 +11,16 @@ from datetime import datetime, timedelta
 
 import pytest
 
+import tools.doc_owners as doc_owners
 from tools.doc_owners import (
     OSLO,
+    PROMPTS,
+    RECENT_HOURS,
     age_days,
     check_registry,
     claim_age,
     declared_date,
+    listing_truncated,
     longest_gap_days,
     owners,
     parse_recent,
@@ -177,6 +181,45 @@ class TestParseRecent:
         assert parse_recent("not-a-date  projects/a/roadmap.md") == {}
 
 
+# The header `vault_tool.py recent` printed on 2026-09-21 when a 90-day
+# listing hit the vault's 2,000-document cap (issue #40), verbatim.
+INCOMPLETE = (
+    "[INCOMPLETE: the last 2160h hit the 2000-doc cap, so these 2396 are an "
+    "arbitrary subset, NOT the newest. Use a shorter window.]\n"
+    "2026-08-19 06:53  projects/sokrates/projects/agora/journal-digest.md\n"
+)
+
+
+class TestTruncatedListing:
+    def test_the_cap_header_is_recognised(self):
+        assert listing_truncated(INCOMPLETE)
+
+    def test_an_ordinary_header_is_not(self):
+        assert not listing_truncated(
+            "[939 file(s) modified in the last 336h]\n"
+            "2026-09-21 06:53  projects/a/journal-digest.md\n"
+        )
+
+    def test_the_window_still_outlasts_every_prompt(self):
+        # A document with no write inside the window reads as stale, which
+        # is only true while the window is longer than every owner's.
+        longest = max(window_days(days) for _, _, days in PROMPTS)
+        assert RECENT_HOURS / 24 > longest
+
+    def test_a_truncated_listing_is_unreadable_not_old(self, monkeypatch):
+        def fake_vault(*args):
+            if args[0] == "recent":
+                return INCOMPLETE
+            if args[0] == "ls":
+                return DOCS[1][1] + "\n"
+            return "prompt text naming journal-digest.md"
+
+        monkeypatch.setattr(doc_owners, "_vault", fake_vault)
+        _, written, _, unreadable, _ = doc_owners._read_state(DOCS[1:])
+        assert written == {}
+        assert any("document cap" in u for u in unreadable)
+
+
 class TestRegistry:
     def test_the_shipped_registry_has_distinct_basenames(self):
         check_registry()
@@ -306,7 +349,7 @@ class TestRender:
     def test_a_missing_write_time_is_not_rendered_as_zero_days(self):
         text = render([self._row(verdict="stale", age=None)], [])
         assert "0.0d" not in text
-        assert "not written in 90d" in text
+        assert f"not written in {RECENT_HOURS // 24}d" in text
 
 
 ROADMAP = DOCS[0][1]
