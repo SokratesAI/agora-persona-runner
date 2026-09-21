@@ -1084,7 +1084,7 @@ def test_a_convert_drops_both_pages_it_touched_even_when_it_half_failed():
     assert "board:ideas" not in nova_site._cache
 
 
-@pytest.mark.parametrize("path", ["/api/capture", "/api/capture/edit", "/api/capture/delete"])
+@pytest.mark.parametrize("path", ["/api/capture/edit", "/api/capture/delete"])
 def test_writing_a_note_drops_the_notes_page_not_a_board_that_never_existed(path):
     """`board:notes` has never existed -- notes are not a board -- and for
     every write but the first this endpoint only ever popped that key. A
@@ -1104,7 +1104,9 @@ def test_writing_a_note_drops_the_notes_page_not_a_board_that_never_existed(path
 # `["issues", "ideas"]` and its name said "both", so adding `notes` as a
 # third target left a test that still passed, still read as complete, and
 # covered two thirds of the endpoint. Derived, it cannot go stale again.
-@pytest.mark.parametrize("target", sorted(nova_capture.CAPTURE_TARGETS))
+# `notes` is the exception since idea #333: a new note is a record in the
+# notes store, not a line appended by `capture` -- tests/test_nova_notes_routes.py.
+@pytest.mark.parametrize("target", sorted(set(nova_capture.CAPTURE_TARGETS) - {"notes"}))
 def test_every_target_is_accepted(target):
     with patch.object(nova_site, "capture", return_value=(True, "ok")) as cap:
         status, _, _ = _post("/api/capture", {"target": target, "text": "x"})
@@ -5044,20 +5046,6 @@ def test_the_notes_page_and_its_endpoint_both_answer():
         empty_status, _, empty = _get("/api/notes")
     assert empty_status == 200
     assert json.loads(empty)["notes"] == []
-
-
-def test_capturing_a_note_clears_the_notes_page_cache():
-    """The failure the old comment beside `invalidate` predicted.
-
-    It said `board:notes` never exists because notes had no page. Now
-    they have one, cached under its own name -- so without the second
-    invalidate, tapping Note and landing on `/notes` shows the file as
-    it was *before* the note the app just told him it saved.
-    """
-    with patch.object(nova_site, "capture", return_value=(True, "ok")), \
-            patch.object(nova_site, "invalidate") as inv:
-        _post("/api/capture", {"target": "notes", "text": "a new note"})
-    assert [call.args[0] for call in inv.call_args_list] == ["board:notes", "notes"]
 
 
 def test_service_worker_precaches_the_chart_library():
