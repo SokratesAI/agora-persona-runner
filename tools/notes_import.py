@@ -15,7 +15,7 @@ comment from Nova on it.
 **Nothing here is a real date.** `notes.md` never recorded when a note was
 written, so `created` is the time of the import and the file's own order is
 kept in `imported.position` (0 = top of the file = newest). The author is
-`sokrates` for a note that opens "Sokrates here" or names Edvard in the third
+`sokrates` for a note that opens "Sokrates here" or names the owner in the third
 person, and `edvard` for the rest (`author_of` says why).
 
     python3 -m tools.notes_import            # dry run: what would be written
@@ -43,8 +43,8 @@ def author_of(text):
     """`edvard` only for a note he could have typed himself.
 
     A note that opens "Sokrates here" is Sokrates' signature. A note that
-    names Edvard in the third person ("Standing instruction from Edvard,
-    ...") was written *about* him, not by him, and the only other writer of
+    names the owner in the third person ("Standing instruction from <his
+    name>, ...") was written *about* him, not by him, and the only other writer of
     this file is Sokrates -- so it is his too. Signing it `edvard` would put
     words under his name he did not type.
     """
@@ -67,7 +67,7 @@ def plan(markdown):
 
     **One blank-line block is one note.** Sokrates' outage report is six
     bullets with no blank line between them; read bullet by bullet it became
-    six notes and five of them were signed `edvard`, because only the first
+    six notes and five of them were signed as the owner, because only the first
     says "Sokrates here". A block's bullets are kept as a markdown list, one
     per line, and the block takes the author of its first line.
     """
