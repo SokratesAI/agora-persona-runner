@@ -11399,6 +11399,47 @@ describe("mermaid diagrams in the chat", () => {
     assert.deepEqual(paras, ["here is the shape:", "make sense?"]);
   });
 
+  test("a label with a line break is drawn, although mermaid's svg is not XML", async () => {
+    // What mermaid 11 really returns for `A["one\ntwo"]`: an HTML `<br>`
+    // inside a foreignObject. An XML parse rejects it and the diagram
+    // stayed its code block (issues.md 2026-09-21).
+    const window = await loadAskDock({
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```"),
+      install(window) {
+        window.mermaid = {
+          initialize() {},
+          render() {
+            return Promise.resolve({
+              svg: '<svg xmlns="http://www.w3.org/2000/svg" width="400"><g><foreignObject>'
+                + '<div xmlns="http://www.w3.org/1999/xhtml"><p>one<br>two&nbsp;</p></div>'
+                + '</foreignObject></g></svg>',
+            });
+          },
+        };
+      },
+    });
+    const svg = await settle(window, "#chat-thread .mermaid-drawn svg");
+    assert.ok(svg, "a diagram with a two-line label stayed its code block");
+    assert.equal(svg.querySelector("p").textContent, "onetwo ");
+    assert.equal(window.document.querySelector("#chat-thread .mermaid-source"), null);
+  });
+
+  test("a render that is not a lone svg leaves the code block, not the markup", async () => {
+    const window = await loadAskDock({
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```"),
+      install(window) {
+        window.mermaid = {
+          initialize() {},
+          render() { return Promise.resolve({ svg: "<svg></svg><p>not a diagram</p>" }); },
+        };
+      },
+    });
+    await settle(window, "#chat-thread .mermaid-drawn");
+    assert.equal(window.document.querySelector("#chat-thread .mermaid-drawn"), null);
+    assert.ok(window.document.querySelector("#chat-thread .mermaid-source"));
+    assert.equal(window.document.querySelector("#chat-thread .mermaid-figure p"), null);
+  });
+
   test("it is initialised so it cannot sweep the page or trust a label", async () => {
     const window = await loadAskDock({
       ask: threadWith("```mermaid\n" + DIAGRAM + "\n```"),
