@@ -12,6 +12,7 @@ from agora_runner.audit import audit
 from agora_runner import pending_options
 from agora_runner.vault import (
     vault_read_path, vault_read_path_rev, vault_write_path, vault_append_path,
+    vault_move_path, vault_delete_path,
     vault_list_prefix, vault_search,
     VaultIncompleteDocument,
     VaultUnreadableDocument,
@@ -320,6 +321,20 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             before = _before_snapshot(path)
             result = vault_append_path(path, content, after_marker)
             _audit_vault_write(persona_name, conversation_id, "vault_append", path, result, before, content)
+            return result
+        if name == "vault_move":
+            src = str(args.get("source", ""))
+            dst = str(args.get("destination", ""))
+            before = _before_snapshot(src)
+            result = vault_move_path(src, dst)
+            _audit_vault_write(persona_name, conversation_id, "vault_move",
+                               f"{src} -> {dst}", result, before, "")
+            return result
+        if name == "vault_delete":
+            path = str(args.get("path", ""))
+            before = _before_snapshot(path)
+            result = vault_delete_path(path)
+            _audit_vault_write(persona_name, conversation_id, "vault_delete", path, result, before, "")
             return result
         if name == "vault_search":
             query = str(args.get("query", ""))
