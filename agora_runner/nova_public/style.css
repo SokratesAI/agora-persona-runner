@@ -5333,9 +5333,13 @@ X that summarizes the last 12
   list-style: disc;
 }
 
+/* `anywhere` because a bare URL keeps its own text as its label and has no
+ * space to break at; without it a PR link ran off the side of his phone
+ * (capture 2026-09-21, with a screenshot). */
 .recap-item {
   margin: 0 0 0.4rem;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .recap-item:last-child { margin-bottom: 0; }
