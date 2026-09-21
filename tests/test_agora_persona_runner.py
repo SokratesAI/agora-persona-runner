@@ -1787,7 +1787,7 @@ def test_merge_history_system_message_does_not_break_role_merging(runner):
 
 def test_context_message_is_user_input_never_edvard(runner):
     """issue #286: an app's context message reaches the model as user input,
-    labelled with the app, and starts a turn -- without sender Edvard."""
+    labelled with the app, and starts a turn -- without the owner as its sender."""
     thread = [
         {"sender": "Edvard", "text": "which bike computer?"},
         {"sender": "Aristoteles", "text": "<recall>bike</recall>"},
