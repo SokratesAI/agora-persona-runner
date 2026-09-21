@@ -267,6 +267,8 @@ from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
 from agora_runner.vault import (vault_bulk_fetch, vault_doc_rev, vault_read_path, vault_read_path_rev,
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
+from agora_runner import nova_notes_store
+from agora_runner.nova_notes_view import notes_page, shape_comment, shape_note
 from agora_runner.nova_stop_timings import record as record_stop_timing
 from agora_runner import nova_app_opens
 from agora_runner import nova_chat_ratings
@@ -4290,6 +4292,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # a window.
                 self._send_cached_json("notes", notes_payload)
                 return
+            if path == "/api/notes/records":
+                # Not cached: a note is written through this same process
+                # and the page re-reads right after, so a cache would show
+                # the note he just typed as missing.
+                archived = (query.get("archived") or [""])[0] == "1"
+                self._send_json(200, notes_page(nova_notes_store, archived=archived))
+                return
             if path == "/api/recap":
                 # Cached like the catalog and for the same reason: it is a
                 # single small vault document that changes when a cycle
@@ -6380,6 +6389,59 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "is not a row" in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
+    def _post_note(self, action, payload):
+        """`/api/notes/<action>` -- write a note record (idea #333).
+
+        `author` is never read from the body. `resolve_caller` decides it
+        from the port the request arrived on, and anything it cannot vouch
+        for is refused rather than written under a name it picked. Only his
+        own login gets through today: Nova and Sokrates write the store
+        directly with `tools.note_post` and never come here.
+
+        Edit, archive and delete must send the `rev` the page read, so a
+        tab left open cannot overwrite a newer change: a stale one is a 409
+        and the page re-reads.
+        """
+        author = resolve_caller(self)
+        if author is None:
+            self._send_json(403, {"error": "only the owner's own login, through the Tailscale proxy, can write a note"})
+            return
+        store = nova_notes_store
+        text = payload.get("text")
+        try:
+            if action == "create":
+                doc = store.create_note(author, text)
+                self._send_json(200, {"note": shape_note(doc)})
+                return
+            note_id = payload.get("id")
+            if action == "comment":
+                if store.read_note(note_id) is None:
+                    self._send_json(404, {"error": f"{note_id} does not exist"})
+                    return
+                comment = store.add_comment(note_id, author, text)
+                self._send_json(200, {"comment": shape_comment(comment)})
+                return
+            doc = store.read_note(note_id)
+            if doc is None:
+                self._send_json(404, {"error": f"{note_id} does not exist"})
+                return
+            doc = dict(doc, _rev=payload.get("rev") or "")
+            if action == "edit":
+                doc = store.edit_note(doc, text)
+            elif action == "archive":
+                doc = store.set_archived(doc, bool(payload.get("archived", True)))
+            else:
+                store.delete_note(doc)
+                self._send_json(200, {"deleted": note_id})
+                return
+            self._send_json(200, {"note": shape_note(doc, store.read_comments(note_id))})
+        except nova_notes_store.NoteConflict as e:
+            self._send_json(409, {"error": str(e)})
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+        except nova_notes_store.StoreError as e:
+            self._send_json(502, {"error": str(e)})
+
     def _post_board_archive(self, payload):
         """`/api/board/archive` -- his capture of 2026-09-03.
 
@@ -6689,6 +6751,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/pool/decide", "/api/pool/comment", "/api/pool/generate",
             "/api/goal/status", "/api/push/subscribe",
             "/api/project/comment", "/api/app/opened", "/api/chat/rate",
+            "/api/notes/create", "/api/notes/edit", "/api/notes/archive",
+            "/api/notes/delete", "/api/notes/comment",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -6843,6 +6907,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/comment":
             self._post_board_comment(payload)
+            return
+        if path in ("/api/notes/create", "/api/notes/edit", "/api/notes/archive",
+                    "/api/notes/delete", "/api/notes/comment"):
+            self._post_note(path.rsplit("/", 1)[1], payload)
             return
         if path == "/api/board/redraw":
             self._post_board_redraw(payload)
