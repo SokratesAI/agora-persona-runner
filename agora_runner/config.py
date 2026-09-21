@@ -101,6 +101,15 @@ RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
 # /tool-activity -- must stay cluster-internal. The split is what lets the
 # Service, Ingress and NetworkPolicy each name one port and mean it.
 NOVA_PORT = int(os.environ.get("NOVA_PORT", "8083"))
+# The same site on a second port, and the only one where his
+# `Tailscale-User-Login` header means anything (idea #333). NetworkPolicy
+# opens it to the `tailscale` namespace alone, so the header can only have
+# been set by the operator's proxy; on NOVA_PORT any pod in `agents` can
+# type it, which is why `resolve_caller` ignores it there.
+NOVA_OWNER_PORT = int(os.environ.get("NOVA_OWNER_PORT", "8084"))
+# His tailnet login. No default: unset means nobody is the owner, so a
+# missing env var refuses his writes rather than trusting whoever arrives.
+NOVA_OWNER_LOGIN = os.environ.get("NOVA_OWNER_LOGIN", "").strip()
 # The model that answers a comment on a journal card (nova_replies.py).
 # Sonnet rather than whatever a cycle runs on: the turn is one short,
 # tool-less reply written from an entry it is handed, and it draws on the

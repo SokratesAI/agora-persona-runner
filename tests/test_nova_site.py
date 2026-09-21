@@ -1226,6 +1226,47 @@ def test_start_nova_site_binds_and_serves_the_real_handler():
         server.server_close()
 
 
+def test_owner_port_serves_the_same_site_under_the_owner_handler():
+    with patch.object(nova_site, "NOVA_OWNER_PORT", 0):
+        server = nova_site.start_owner_site()
+    try:
+        assert server.RequestHandlerClass is nova_site.OwnerSiteHandler
+        assert issubclass(nova_site.OwnerSiteHandler, nova_site.NovaSiteHandler)
+        assert server.server_address[1] != 0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+class _FakeHandler:
+    def __init__(self, login, owner_port):
+        self.headers = {"Tailscale-User-Login": login} if login is not None else {}
+        if owner_port:
+            self.owner_port = True
+
+
+@pytest.mark.parametrize("login, owner_port, owner, expected", [
+    ("him@example.com", True, "him@example.com", "edvard"),
+    ("HIM@example.com ", True, "him@example.com", "edvard"),
+    # On 8083 any pod in agents can type his login, so it is ignored there.
+    ("him@example.com", False, "him@example.com", None),
+    ("someone@example.com", True, "him@example.com", None),
+    (None, True, "him@example.com", None),
+    ("", True, "", None),
+    # Unset owner means nobody is the owner, never "anyone with a header".
+    ("him@example.com", True, "", None),
+])
+def test_resolve_caller_trusts_his_login_only_on_the_owner_port(login, owner_port, owner, expected):
+    with patch.object(nova_site.config, "NOVA_OWNER_LOGIN", owner):
+        assert nova_site.resolve_caller(_FakeHandler(login, owner_port)) == expected
+
+
+def test_resolve_caller_on_the_real_handlers():
+    """The flag the check reads lives on the class that serves each port."""
+    assert getattr(nova_site.NovaSiteHandler, "owner_port", False) is False
+    assert nova_site.OwnerSiteHandler.owner_port is True
+
+
 @pytest.fixture
 def site_main():
     """`agora_runner.nova_site_main`, with its module flag and this
@@ -1238,7 +1279,9 @@ def site_main():
     previous_int = signal.getsignal(signal.SIGINT)
     module._shutdown_requested = False
     try:
-        yield module
+        # main() also binds the owner port; 0 keeps it off a real 8084.
+        with patch.object(nova_site, "NOVA_OWNER_PORT", 0):
+            yield module
     finally:
         module._shutdown_requested = previous_flag
         signal.signal(signal.SIGTERM, previous_term)
@@ -1271,7 +1314,15 @@ def test_site_main_serves_until_sigterm_then_releases_the_port(site_main):
     def sleep_then_sigterm(_seconds):
         os.kill(os.getpid(), signal.SIGTERM)  # ArgoCD rolls the nova-site pod
 
+    owners = []
+
+    def capture_owner():
+        server = nova_site.start_owner_site()
+        owners.append(server)
+        return server
+
     with patch.object(site_main, "start_nova_site", side_effect=capture_server), \
+            patch.object(site_main, "start_owner_site", side_effect=capture_owner), \
             patch.object(site_main, "time") as clock, \
             patch.object(site_main, "log", lambda *a, **k: None):
         clock.sleep.side_effect = sleep_then_sigterm
@@ -1280,6 +1331,7 @@ def test_site_main_serves_until_sigterm_then_releases_the_port(site_main):
     assert site_main.shutdown_requested() is True
     assert clock.sleep.call_count == 1, "main slept again after SIGTERM"
     assert served[0].socket.fileno() == -1, "the listening socket was left open"
+    assert owners[0].socket.fileno() == -1, "the owner port was left open"
 
 
 def test_site_main_closes_the_port_even_if_the_loop_raises(site_main):
