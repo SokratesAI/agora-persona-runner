@@ -31,7 +31,7 @@ import signal
 import time
 
 from agora_runner.log import log
-from agora_runner.nova_site import start_nova_site
+from agora_runner.nova_site import start_nova_site, start_owner_site
 from agora_runner.otel import init_tracing
 from agora_runner.reply_notice import ReplyWatch
 from agora_runner.stall_notice import StallWatch
@@ -68,6 +68,7 @@ def main():
     # exporter for spans it does not emit.
     init_tracing("nova-site")
     server = start_nova_site()
+    owner = start_owner_site()
     # The stall notice rides this loop rather than getting a thread of its
     # own: it does nothing 99% of the time, it must not run while the
     # process is shutting down, and a check that costs a dict lookup does
@@ -90,8 +91,9 @@ def main():
         # documented way round. server_close() releases the listening
         # socket -- without it the port stays bound for the rest of the
         # process's life, which matters in tests far more than in the pod.
-        server.shutdown()
-        server.server_close()
+        for s in (server, owner):
+            s.shutdown()
+            s.server_close()
     log("nova-site stopped")
 
 

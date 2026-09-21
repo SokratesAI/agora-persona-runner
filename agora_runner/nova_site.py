@@ -114,7 +114,8 @@ from math import ceil
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
-from agora_runner.config import NOVA_CYCLE_HEARTBEAT_ID, NOVA_PORT, OSLO
+from agora_runner import config
+from agora_runner.config import NOVA_CYCLE_HEARTBEAT_ID, NOVA_OWNER_PORT, NOVA_PORT, OSLO
 from agora_runner.log import log
 from agora_runner.otel import request_span
 from agora_runner.nova_uploads import (
@@ -6923,6 +6924,47 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             is_error=not ok,
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
+
+class OwnerSiteHandler(NovaSiteHandler):
+    """The same site, served on NOVA_OWNER_PORT (idea #333).
+
+    Nothing about a route changes here. The only difference is this flag,
+    which `resolve_caller` reads: a request that arrived on this port came
+    through the Tailscale operator's proxy, because NetworkPolicy lets
+    nothing else reach it, so its `Tailscale-User-Login` was set by the
+    proxy and not by the caller.
+    """
+
+    owner_port = True
+
+
+def resolve_caller(handler):
+    """Who is writing: "edvard", or None when nobody can be vouched for.
+
+    His login counts only on the owner port. On NOVA_PORT the header is
+    ignored outright, because any pod in `agents` can reach that port and
+    type it (measured Cycle 1964). Nova and Sokrates never arrive here --
+    they write the store directly (`tools.note_post`) -- so there is no
+    third answer. Read from `config` at call time so a test can set it.
+    """
+    if not getattr(handler, "owner_port", False):
+        return None
+    login = (handler.headers.get("Tailscale-User-Login") or "").strip()
+    owner = config.NOVA_OWNER_LOGIN
+    if owner and login.lower() == owner.lower():
+        return "edvard"
+    return None
+
+
+def start_owner_site():
+    """Bind the owner port. Separate from `start_nova_site` on purpose:
+    the cache warm, reply recovery and board publisher are per process,
+    and starting them twice would run each twice."""
+    server = ThreadingHTTPServer(("0.0.0.0", NOVA_OWNER_PORT), OwnerSiteHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    log(f"nova site (owner port) listening on :{NOVA_OWNER_PORT}")
+    return server
 
 
 def start_nova_site():
