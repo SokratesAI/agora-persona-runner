@@ -466,6 +466,37 @@ def test_the_port_is_registered_before_the_dev_server_is_spawned(tmp_path):
         demo_cli.signal.SIGTERM)
 
 
+def test_starting_a_running_slug_again_spawns_nothing(tmp_path, capsys):
+    """A repeated `start` is refused before a process exists (idea #307).
+
+    Claude Code before 2.1.271 could re-run a still-running background
+    command after compaction. For a demo that re-run is this exact call, and
+    a second dev server on a new port would leave the first one orphaned.
+    """
+    from tools import demo as demo_cli
+
+    running = {"slug": "alpha", "host": "10.42.0.84", "port": 5174,
+               "dir": str(tmp_path), "pid": 4242}
+    state = {"registry": {"demos": [dict(running)]}}
+    spawned = []
+
+    def _read():
+        return json.loads(json.dumps(state["registry"])), "/tmp/fake.rev"
+
+    def _write(registry, rev):
+        state["registry"] = json.loads(json.dumps(registry))
+
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.84"), \
+         patch.object(demo_cli.subprocess, "Popen",
+                      lambda *a, **kw: spawned.append(a)):
+        assert demo_cli.main(["start", "alpha", str(tmp_path)]) == 2
+    assert spawned == []
+    assert state["registry"]["demos"] == [running]
+    assert "already registered" in capsys.readouterr().err
+
+
 # --- a demo does not survive the pod it runs in (idea #136) ------------
 
 def test_a_row_from_another_pod_is_never_judged_running():
