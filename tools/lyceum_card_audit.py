@@ -45,13 +45,12 @@ does not. Exit 1 means something was unreadable, which never reads as clean.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import urllib.parse
 from collections import Counter
 
 from tools.lyceum_cards import DB, LyceumCardsError, _couch, load_claims
-
-import json
-import urllib.parse
 
 
 def norm(text):
