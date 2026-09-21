@@ -61,6 +61,7 @@ caller has a decision to make -- see `cycle_already_filed`.
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -342,6 +343,50 @@ def release_seq(vault, workdir, seq, cycle, attempts=DEFAULT_ATTEMPTS):
     return LOST
 
 
+def own_cycle_number():
+    """`(number, source)` for the conversation this cycle runs in, from Agora.
+
+    The seam the tests stub. `source` is `cycle_number`'s own vocabulary --
+    only `"conversation"` is a number worth refusing on -- plus `"no-id"`
+    when `AGORA_CONVERSATION_ID` is not in the environment at all.
+    """
+    conversation_id = os.environ.get("AGORA_CONVERSATION_ID", "").strip()
+    if not conversation_id:
+        return None, "no-id"
+    try:
+        from agora_runner.config import NOVA_CYCLE_HEARTBEAT_ID
+        from agora_runner.cycle_number import current_number_with_source
+        return current_number_with_source(NOVA_CYCLE_HEARTBEAT_ID, conversation_id)
+    except Exception:  # an import or a network fault is "could not check"
+        return None, "unreachable"
+
+
+def wrong_cycle_number(claimed, actual, source):
+    """The refusal text when `--cycle` is not this conversation's number, else None.
+
+    Measured 2026-09-21: cycles 1946, 1947, 1948 and 1949 each passed
+    `--cycle` as the newest journal filename plus one instead of asking
+    `agora_runner.cycle_number`, and cycle 1945 had been killed at the turn
+    cap without an entry -- so all four filed one number down, and 1945
+    reads as present while 1949 reads as lost. The number was on hand the
+    whole time: the bridge exports the conversation id to every cycle.
+
+    Only a number read off *this* conversation can refuse. Agora being
+    unreachable, or no id to ask with, is not evidence the number is wrong,
+    and an entry must not die because the checker could not run -- those
+    print a warning and the write goes ahead.
+    """
+    if source != "conversation" or actual is None or int(actual) == int(claimed):
+        return None
+    return (
+        f"put_entry: --cycle {claimed} is not this cycle -- Agora names the "
+        f"conversation in $AGORA_CONVERSATION_ID as Cycle {actual}. Nothing "
+        f"was written. Re-run with --cycle {actual} and fix the entry's "
+        "`### Cycle` heading to match. The newest journal filename plus one "
+        "is not your number: it runs short by every cycle that wrote nothing."
+    )
+
+
 def lint(draft, name, repo_root):
     done = _run([sys.executable, "-m", "tools.lint_entry", draft, "--name", name],
                 cwd=repo_root)
@@ -375,6 +420,14 @@ def main(argv=None):
         print(f"put_entry: {exc}", file=sys.stderr)
         return 1
     if not args.weekly:
+        actual, source = own_cycle_number()
+        refusal = wrong_cycle_number(args.cycle, actual, source)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
+        if source not in ("conversation", "no-id"):
+            print(f"put_entry: could not check --cycle {args.cycle} against "
+                  f"Agora ({source}) -- writing it as given", file=sys.stderr)
         clash = cycle_already_filed(existing, args.cycle)
         if clash:
             print(

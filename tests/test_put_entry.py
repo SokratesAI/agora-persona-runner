@@ -360,3 +360,65 @@ def test_main_lets_a_weekly_run_through_the_same_clash(monkeypatch, tmp_path):
         put_entry.main([str(draft), "--cycle", "649",
                         "--weekly", "architecture-critique",
                         "--workdir", str(tmp_path)])
+
+
+def test_main_refuses_a_cycle_number_agora_does_not_give_this_conversation(
+        monkeypatch, tmp_path, capsys):
+    """The 2026-09-21 shape: cycle 1946 filed itself as 1945 off the folder.
+
+    Refused before any number is claimed -- `_ListOnlyVault` raises on the
+    first call after `ls`, so a refusal that fired late would fail here.
+    """
+    import tools.put_entry as put_entry
+
+    draft = tmp_path / "entry.md"
+    draft.write_text("### Cycle 1945 — 2026-09-21 02:58 — x\n\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(put_entry, "Vault", lambda *a, **k: _ListOnlyVault(REAL_649))
+    monkeypatch.setattr(put_entry, "own_cycle_number", lambda: (1946, "conversation"))
+
+    code = put_entry.main([str(draft), "--cycle", "1945", "--workdir", str(tmp_path)])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "--cycle 1945 is not this cycle" in err and "--cycle 1946" in err
+
+
+@pytest.mark.parametrize("answer", [
+    (1946, "conversation"),          # the right number
+    (None, "unreachable"),           # Agora down: cannot check, so write
+    (None, "no-id"),                 # no id exported: the old behaviour
+    (2000, "unknown-conversation"),  # a highest-number fallback is not evidence
+    (2000, "highest"),
+])
+def test_main_writes_when_the_number_matches_or_cannot_be_checked(
+        monkeypatch, tmp_path, answer):
+    """The positive control: reaching `_ListOnlyVault`'s raise is the pass."""
+    import tools.put_entry as put_entry
+
+    draft = tmp_path / "entry.md"
+    draft.write_text("### Cycle 1946 — 2026-09-21 02:58 — x\n\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(put_entry, "Vault", lambda *a, **k: _ListOnlyVault(REAL_649))
+    monkeypatch.setattr(put_entry, "own_cycle_number", lambda: answer)
+
+    with pytest.raises(AssertionError, match="claimed a number before it refused"):
+        put_entry.main([str(draft), "--cycle", "1946", "--workdir", str(tmp_path)])
+
+
+def test_a_weekly_run_is_not_checked_against_the_hourly_number(monkeypatch, tmp_path):
+    """A weekly heartbeat has its own counter; its --cycle is not the hourly one."""
+    import tools.put_entry as put_entry
+
+    draft = tmp_path / "entry.md"
+    draft.write_text("### body\n", encoding="utf-8")
+    monkeypatch.setattr(put_entry, "Vault", lambda *a, **k: _ListOnlyVault([]))
+    monkeypatch.setattr(put_entry, "own_cycle_number", lambda: (1946, "conversation"))
+
+    with pytest.raises(AssertionError, match="claimed a number before it refused"):
+        put_entry.main([str(draft), "--cycle", "6", "--weekly", "monday-research",
+                        "--workdir", str(tmp_path)])
+
+
+def test_own_cycle_number_says_no_id_without_asking_agora(monkeypatch):
+    import tools.put_entry as put_entry
+
+    monkeypatch.delenv("AGORA_CONVERSATION_ID", raising=False)
+    assert put_entry.own_cycle_number() == (None, "no-id")
