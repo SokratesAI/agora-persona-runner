@@ -14134,6 +14134,72 @@ describe("holding a conversation in the switcher opens edit options", () => {
       [{ name: "New chat - 2" }]);
   });
 
+  /* Issue capture 2026-09-21: *"The chat does not change the title. It just
+   * says 'new chat - 5'."* The server's autotitle worked; the page never
+   * asked it, because the only thing that told the send handler a thread was
+   * untitled was a flag no entry point set. Each entry point is its own test
+   * here, because each one built its source separately. */
+  async function sendIn(window, text) {
+    window.document.getElementById("chat-box").value = text;
+    window.document.getElementById("chat-form")
+      .dispatchEvent(new window.Event("submit"));
+    await tick();
+    await tick();
+    await tick();
+  }
+
+  test("a chat started with + titles itself from his first message", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    window.postReply = { ok: true, result: "c-9", name: "New chat" };
+    window.document.querySelector("#chat-list .chat-list-fab")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    window.posted.length = 0;
+    await sendIn(window, "quote for the roof");
+    assert.deepEqual(window.posted.map((p) => p.url),
+      ["/api/conversations/send", "/api/conversations/autotitle"]);
+    assert.deepEqual(
+      (({ id, name, text }) => ({ id, name, text }))(window.posted[1].body),
+      { id: "c-9", name: "New chat", text: "quote for the roof" });
+  });
+
+  test("an untitled chat opened from the list titles itself too", async () => {
+    const window = await openSwitcher({
+      convList: () => ({
+        conversations: [{ id: "c-5", name: "New chat - 5", tags: [], updatedAt: "" }],
+        folders: [], models: [],
+      }),
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    const rows = [...window.document.querySelectorAll("#chat-list .chat-list-row")];
+    assert.equal(rows.length, 1, "the switcher did not render the untitled row");
+    rows[0].dispatchEvent(new window.Event("click"));
+    await tick();
+    window.postReply = { ok: true, result: "Roof quote" };
+    await sendIn(window, "quote for the roof");
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body.id || p.body.conversationId]),
+      [["/api/conversations/send", "c-5"], ["/api/conversations/autotitle", "c-5"]]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Roof quote",
+      "the header kept the placeholder after the title came back");
+    // Set once: the next message in the same thread does not ask again.
+    window.posted.length = 0;
+    await sendIn(window, "and the gutters");
+    assert.deepEqual(window.posted.map((p) => p.url), ["/api/conversations/send"]);
+  });
+
+  test("a chat he named is never sent for a title", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][0]
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    await sendIn(window, "when can you start?");
+    assert.deepEqual(window.posted.map((p) => p.url), ["/api/conversations/send"]);
+  });
+
   /* The other half of issue #141's cache: a change he just made must never
    * be repainted in its old form. `loadList(true)` drops the cache, so the
    * frame after a rename is the honest empty one and not yesterday's row.

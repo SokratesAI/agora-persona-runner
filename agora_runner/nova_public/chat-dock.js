@@ -169,8 +169,7 @@
         // `conv` without one is corrupt and reads as never-stored rather
         // than as a thread that 404s on every open.
         if (!parsed || parsed.kind !== "conv" || !parsed.id) return;
-        source = { kind: "conv", id: parsed.id, name: parsed.name || "Conversation",
-                   untitled: parsed.untitled === true };
+        source = { kind: "conv", id: parsed.id, name: parsed.name || "Conversation" };
       } catch (err) { /* unreadable: stay on the ask thread */ }
     }
 
@@ -539,7 +538,6 @@
           // He may have switched threads while Haiku thought about it.
           if (!source || source.id !== id) return;
           source.name = named;
-          source.untitled = false;
           titleEl.textContent = named;
           rememberSource();
           if (dock.classList.contains("list-open")) loadList(true);
@@ -1769,6 +1767,20 @@
      * spelling. Best-effort: with no listing cached it sends the default. */
     var UNTITLED_LABEL = "New chat";
 
+    /* The server's `is_untitled`, read off the name. This was a
+     * `source.untitled` flag until issue capture 2026-09-21 (*"It just says
+     * 'new chat - 5'"*): only the old start-a-chat form ever set it, and the
+     * `+` button that replaced that form on 09-07 did not, so no thread was
+     * ever titled. The name is on every source however it was opened -- `+`,
+     * a switcher row, a notification tap, a reload -- so there is nothing
+     * left for an entry point to forget. The server still refuses a name he
+     * typed; this only decides whether to ask. */
+    var UNTITLED_RE = /^New chat(?: - \d+)?$/;
+
+    function isUntitledName(name) {
+      return UNTITLED_RE.test((name || "").trim());
+    }
+
     function nextUntitledName() {
       var rows = (listCache && listCache.conversations) || [];
       var taken = {};
@@ -2209,7 +2221,7 @@
        * server could re-title a thread it thought had drifted; that is what
        * renamed his threads to his latest line. Drift is now his button, in
        * Settings. */
-      var titleFor = conv && source.untitled
+      var titleFor = conv && isUntitledName(source.name)
         ? { id: source.id, name: source.name, text: text,
             // Every message of his in the thread, oldest first, not this
             // one. The server reads two different things out of it: which
@@ -2275,7 +2287,6 @@
               // The thread was named; only the screen still on it moves.
               if (token !== sourceToken || source.id !== titleFor.id) return;
               source.name = named;
-              source.untitled = false;
               titleEl.textContent = named;
               rememberSource();
               if (dock.classList.contains("list-open")) loadList(true);
