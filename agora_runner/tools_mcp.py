@@ -140,7 +140,9 @@ assumed.
    TAMPER-EVIDENCE NOT.** Measured 2026-08-31 by walking every `if name ==`
    branch in `tools_dispatch.execute_tool`: 32 tools, and all 32 audit --
    29 call `audit()` directly and `vault_write`, `vault_append` and
-   `scoped_write` go through `_audit_vault_write`. There is no hash chain:
+   `scoped_write` go through `_audit_vault_write`. (2026-09-21:
+   `vault_move` and `vault_delete` were added after that count, and both
+   go through `_audit_vault_write` too.) There is no hash chain:
    entries are rows in Agora, and anything that can write them can rewrite
    them. Chaining is a real piece of work and is not scoped here.
 

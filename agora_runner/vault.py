@@ -1700,7 +1700,11 @@ BACKUP_ROOT = "agora/backups/"
 
 
 def _backup_path(path, now=None):
-    stamp = time.strftime("%Y-%m-%d %H%M%S", time.localtime(now or time.time()))
+    # Oslo, not the pod's UTC clock: the owner reads this folder name.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    stamp = datetime.fromtimestamp(now or time.time(), ZoneInfo("Europe/Oslo")).strftime(
+        "%Y-%m-%d %H%M%S")
     return f"{BACKUP_ROOT}{stamp}/{path.lower()}"
 
 
