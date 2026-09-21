@@ -6751,7 +6751,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/pool/decide", "/api/pool/comment", "/api/pool/generate",
             "/api/goal/status", "/api/push/subscribe",
             "/api/project/comment", "/api/app/opened", "/api/chat/rate",
-            *NOTE_WRITE_PATHS,
+            "/api/notes/create", "/api/notes/edit", "/api/notes/archive",
+            "/api/notes/delete", "/api/notes/comment",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -6907,7 +6908,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path == "/api/board/comment":
             self._post_board_comment(payload)
             return
-        if path in NOTE_WRITE_PATHS:
+        if path in ("/api/notes/create", "/api/notes/edit", "/api/notes/archive",
+                    "/api/notes/delete", "/api/notes/comment"):
             self._post_note(path.rsplit("/", 1)[1], payload)
             return
         if path == "/api/board/redraw":
@@ -6990,9 +6992,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             is_error=not ok,
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
-
-
-NOTE_WRITE_PATHS = tuple(f"/api/notes/{a}" for a in ("create", "edit", "archive", "delete", "comment"))
 
 
 class OwnerSiteHandler(NovaSiteHandler):
