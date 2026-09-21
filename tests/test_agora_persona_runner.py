@@ -1785,6 +1785,27 @@ def test_merge_history_system_message_does_not_break_role_merging(runner):
     assert merged[0]["content"] == "first\n\nsecond"
 
 
+def test_context_message_is_user_input_never_edvard(runner):
+    """issue #286: an app's context message reaches the model as user input,
+    labelled with the app, and starts a turn -- without sender Edvard."""
+    thread = [
+        {"sender": "Edvard", "text": "which bike computer?"},
+        {"sender": "Aristoteles", "text": "<recall>bike</recall>"},
+        {"sender": "Lyceum", "text": "rides a Garmin Edge 530", "context": True},
+    ]
+    merged = runner.merge_history(thread, "Aristoteles", False)
+    assert merged[-1] == {
+        "role": "user",
+        "content": "[context from Lyceum, not from Edvard]: rides a Garmin Edge 530",
+        "attachments": [],
+    }
+    personas = [{"name": "Aristoteles", "role": "curator"}]
+    assert runner.decide_turn(thread, personas) == ["Aristoteles"]
+    # The same text without the flag is another sender and starts nothing.
+    thread[-1] = {"sender": "Lyceum", "text": "rides a Garmin Edge 530"}
+    assert runner.decide_turn(thread, personas) == []
+
+
 def test_back_off_notifies_with_system_true(runner):
     captured = {}
 
