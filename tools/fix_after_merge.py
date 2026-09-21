@@ -43,9 +43,12 @@ import sys
 
 ORG = "SokratesAI"
 
+#: "fixed" and "restore point" are left out on purpose: measured on the first
+#: 30-day run, "instead of a fixed table" made 5 of 6 sampled marcus pairs and
+#: "after a data-level restore point" named a planned upgrade as a repair.
 REPAIR_WORDS = re.compile(
-    r"\b(fix(e[sd])?|revert(s|ed)?|restore[sd]?|repair(s|ed)?|undo(es)?|"
-    r"hotfix|regress(ion|ed)?|broke|broken)\b",
+    r"\b(fix(es)?|revert(s|ed)?|restore[sd]?(?! point)|repair(s|ed)?|"
+    r"undo(es)?|hotfix|regress(ion|ed)?|broke|broken)\b",
     re.IGNORECASE,
 )
 

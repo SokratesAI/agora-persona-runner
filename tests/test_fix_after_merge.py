@@ -105,3 +105,12 @@ def test_zero_prs_exits_1(capsys):
     empty = {"data": {"repository": {"pullRequests": {
         "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}
     assert fam.main([], runner=_runner([empty]), now=T0) == 1
+
+
+def test_adjective_fixed_and_restore_point_are_not_repairs():
+    prs = [pr(1, "Add", 0, ["a.py"]),
+           pr(2, "Shape phases instead of a fixed table", 1, ["a.py"]),
+           pr(3, "Upgrade after a restore point", 2, ["a.py"])]
+    assert fam.pair_up(prs, 48)[("r", 1)]["ceiling"] is None
+    assert fam.REPAIR_WORDS.search("fix: the ranking") and \
+        fam.REPAIR_WORDS.search("restore AUTH_DIR")
