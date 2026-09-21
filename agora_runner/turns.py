@@ -44,7 +44,12 @@ def decide_turn(thread, personas):
     visible = [m for m in thread if not m.get("forgotten") and not m.get("activity") and not m.get("thinking")]
     if not visible:
         return []
-    if visible[-1].get("sender") != "Edvard":
+    # A `context` message (agora#102, issue #286) is an app handing the
+    # persona something on the owner's behalf -- a memory it asked for, a
+    # briefing -- under the app's own sender, so it starts a turn as his
+    # message would without ever being attributed to him.
+    last = visible[-1]
+    if last.get("sender") != "Edvard" and not last.get("context"):
         return []
     if not personas:
         return []
@@ -306,6 +311,8 @@ def merge_history(thread, self_name, multi):
         attachments = message.get("attachments") or []
         if sender == "Edvard":
             role, content = "user", text
+        elif message.get("context"):
+            role, content = "user", f"[context from {sender}, not from Edvard]: {text}"
         else:
             role = "assistant"
             content = f"[{sender}]: {text}" if (multi and sender != self_name) else text
