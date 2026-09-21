@@ -288,5 +288,14 @@ def _prune_old_cycles(existing_before_this_one, retention):
     the new one totals `retention` active conversations."""
     keep = max(0, retention - 1)
     by_age = sorted(existing_before_this_one, key=lambda c: c.get("createdAt", ""), reverse=True)
+    # Skip what is already archived. `existing` is every conversation ever
+    # tagged for this heartbeat, archived or not, so without this each
+    # rotation re-archived the whole history one PATCH at a time -- 1,924
+    # of them by cycle 1955, which held every cycle's start for 11 to 13
+    # minutes between its conversation being created and its first message.
+    # That is also the window in which an Agora restart kills a cycle with
+    # no trace (1832, 1837, 1875).
     for stale in by_age[keep:]:
+        if stale.get("archived"):
+            continue
         agora_internal("PATCH", f"/conversations/{stale['id']}", {"archived": True})
