@@ -227,3 +227,94 @@ def test_lookahead_matches_the_preflight_cadence():
     from tools import preflight
     assert mih.LOOKAHEAD_DAYS == (
         preflight.CADENCE_HOURS["memory_index_health"] / 24.0)
+
+
+def _numbered_store(tmp_path, n, memories=27, oldest_days=1.0):
+    """An index of `n` distinct lines under the archive pointer."""
+    store = _store(tmp_path, 0, memories=memories, oldest_days=oldest_days)
+    pointer = "- [Older memories](MEMORY-archive.md) — the overflow"
+    body = [f"- [Memory {i:03d}](m{i}.md) — hook {i}" for i in range(n)]
+    with open(os.path.join(store, "MEMORY.md"), "w") as fh:
+        fh.write("\n".join([pointer] + body) + "\n")
+    with open(os.path.join(store, "MEMORY-archive.md"), "w") as fh:
+        fh.write("# Older memory index\n\n- [Ancient](z.md) — first\n")
+    return store, pointer, body
+
+
+def _roll(store, cli, **kw):
+    out = io.StringIO()
+    return mih.roll(store=store, cli_path=cli, out=out, **kw), out.getvalue()
+
+
+def test_roll_is_lossless_and_moves_the_oldest_lines(tmp_path):
+    store, pointer, body = _numbered_store(tmp_path, 190)
+    cli = _cli(tmp_path)
+    code, text = _roll(store, cli)
+    assert code == 0, text
+    index = open(os.path.join(store, "MEMORY.md")).read().strip().split("\n")
+    archive = open(os.path.join(store, "MEMORY-archive.md")).read()
+    assert index[0] == pointer
+    moved = body[:len(body) - (len(index) - 1)]
+    assert moved and index[1:] == body[len(moved):]
+    # appended after what the archive already held, oldest first
+    assert archive.startswith("# Older memory index\n\n- [Ancient](z.md)")
+    assert archive.strip().split("\n")[-len(moved):] == moved
+    assert sorted(index[1:] + moved) == sorted(body)
+
+
+def test_roll_leaves_the_check_green_for_more_than_a_day(tmp_path):
+    store, _, _ = _numbered_store(tmp_path, 190)
+    cli = _cli(tmp_path)
+    assert _run(store, cli)[0] == 2
+    assert _roll(store, cli)[0] == 0
+    code, text = _run(store, cli)
+    assert code == 0, text
+
+
+def test_roll_sizes_by_characters_when_they_bind(tmp_path):
+    store, _, _ = _numbered_store(tmp_path, 60)
+    cli = _cli(tmp_path, chars=2500)
+    assert _roll(store, cli)[0] == 0
+    code, text = _run(store, cli)
+    assert code == 0, text
+
+
+def test_roll_with_room_to_spare_writes_nothing(tmp_path):
+    store, _, _ = _numbered_store(tmp_path, 20)
+    before = open(os.path.join(store, "MEMORY.md")).read()
+    code, text = _roll(store, _cli(tmp_path))
+    assert code == 0 and "nothing to roll" in text
+    assert open(os.path.join(store, "MEMORY.md")).read() == before
+
+
+def test_roll_refuses_when_the_index_moves_underneath_it(tmp_path, monkeypatch):
+    store, _, _ = _numbered_store(tmp_path, 190)
+    path = os.path.join(store, "MEMORY.md")
+    archive = os.path.join(store, "MEMORY-archive.md")
+    arch_before = open(archive).read()
+    real_open = open
+    reads = {"n": 0}
+
+    def appending_open(p, *a, **k):
+        if p == path and (not a or a[0] == "r"):
+            reads["n"] += 1
+            if reads["n"] == 2:
+                with real_open(p, "a") as fh:
+                    fh.write("- [New](new.md) — landed mid-roll\n")
+        return real_open(p, *a, **k)
+
+    monkeypatch.setattr("builtins.open", appending_open)
+    code, text = _roll(store, _cli(tmp_path))
+    monkeypatch.undo()
+    assert code == 1 and "changed while" in text
+    assert "landed mid-roll" in open(path).read()
+    assert open(archive).read() == arch_before
+
+
+def test_roll_without_a_growth_rate_is_not_rolled(tmp_path):
+    store, _, _ = _numbered_store(tmp_path, 190, memories=0)
+    for name in os.listdir(store):
+        if name.startswith("m") and name.endswith(".md"):
+            os.remove(os.path.join(store, name))
+    code, text = _roll(store, _cli(tmp_path))
+    assert code == 1 and "NOT ROLLED" in text
