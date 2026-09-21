@@ -59,9 +59,9 @@ The fix on exit 2 is never to delete a memory file. Move the oldest index
 lines into `MEMORY-archive.md` and keep the archive linked from the first
 line of the index, so a memory that falls out of the loaded window is
 *named* rather than gone. That is cycle 1477's call and it stands, and
-since cycle 1990 `--roll` does it: every red until then was fixed by
-hand, about once a day, which is a cycle's opening minutes spent on the
-same chore.
+since cycle 1990 `--roll` does it. Until then each red was fixed by
+hand, and at ~27 memories a day the one-day line comes round every few
+days, so it was a recurring chore.
 """
 import argparse
 import os
