@@ -611,6 +611,32 @@ def test_exchange_names_the_reason_not_just_the_status():
     assert "Invalid 'code' in request." in text
 
 
+def test_a_429_names_the_user_agent_it_was_sent_with():
+    """A bare `rate_limit_error` reads as account throttling. Measured twice,
+    it was the User-Agent both times, so the refusal has to say which one
+    went out -- and a 400 must not carry that hint."""
+    session = {"code_verifier": "v", "state": "s", "client_id": "c",
+               "token_url": "u", "redirect_uri": "r",
+               "user_agent": "Mozilla/5.0 Chrome/140.0.0.0"}
+    limited = {"type": "rate_limit_error", "message": "Rate limited. Please try again later."}
+    with pytest.raises(login.CannotSee) as refusal:
+        login.exchange(session, "c", post=lambda url, body, user_agent=None: (429, limited))
+    text = str(refusal.value)
+    assert "429" in text
+    assert "rate_limit_error" in text or "Rate limited" in text
+    assert "User-Agent Mozilla/5.0 Chrome/140.0.0.0" in text
+
+    del session["user_agent"]
+    with pytest.raises(login.CannotSee) as refusal:
+        login.exchange(session, "c", post=lambda url, body, user_agent=None: (429, limited))
+    assert "(urllib default)" in str(refusal.value)
+
+    with pytest.raises(login.CannotSee) as refusal:
+        login.exchange(session, "c", post=lambda url, body, user_agent=None: (
+            400, {"error": "invalid_grant", "error_description": "Invalid 'code' in request."}))
+    assert "User-Agent" not in str(refusal.value)
+
+
 def test_the_code_is_matched_on_this_sessions_state_not_on_arrival_order():
     """A stale reply to an invalidated link arrives newest-first too. Picking
     by arrival would hand `finish` a code whose state does not match, and the

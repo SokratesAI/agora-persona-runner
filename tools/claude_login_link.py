@@ -483,7 +483,22 @@ def exchange(session: dict, code: str, post=None):
         "code_verifier": session["code_verifier"],
         "state": session["state"],
     }
-    status, payload = post(session["token_url"], body, user_agent=session.get("user_agent"))
+    user_agent = session.get("user_agent")
+    status, payload = post(session["token_url"], body, user_agent=user_agent)
+    if status == 429:
+        # `rate_limit_error` reads as the account being throttled, and that is
+        # the diagnosis issue #206 carried for twelve days. Every time it has
+        # been measured it was the User-Agent: on 2026-09-09 and again at
+        # 2026-09-21 04:38 Oslo, a Chrome UA got 429 while the CLI's own
+        # axios UA, sent seconds before and after it, got a normal 400. So the
+        # refusal names what was sent, and what to check first.
+        raise CannotSee(
+            f"token exchange failed (429): {describe_refusal(payload)} -- sent "
+            f"User-Agent {user_agent or '(urllib default)'}; every 429 measured "
+            "here was the User-Agent rather than the account (the CLI's own "
+            "axios/<version> reached the backend in the same minute), so check "
+            "that before waiting out a rate limit"
+        )
     if status != 200:
         raise CannotSee(f"token exchange failed ({status}): {describe_refusal(payload)}")
     return payload
