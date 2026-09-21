@@ -739,6 +739,8 @@ def test_main_pages_only_with_the_flag(monkeypatch):
     assert len(calls) == 1 and calls[0][0][0][1] == "c1"
 
 
-def test_preflight_runs_it_with_notify():
+def test_preflight_does_not_page_on_a_waiting_ask():
+    # A waiting ask is not the loop standing still, so preflight does not page
+    # him about it (his Telegram reply, 2026-09-21).
     from tools import preflight
-    assert preflight.CHECK_ARGS["ask_watch"] == ["--notify"]
+    assert "--notify" not in preflight.CHECK_ARGS.get("ask_watch", [])

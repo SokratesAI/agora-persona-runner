@@ -663,9 +663,17 @@ CHECK_ARGS = {
     "credential_recovery": ["--notify"],
     # The third, 2026-09-18, on his cycle 1811 card: *"if the whole system
     # stands still and just waiting for me, that is critical and worth a
-    # telegram message!"* An ask of mine waiting 4h+ on him pages him once a
-    # day; the Agora push it opened with is not enough on its own.
-    "ask_watch": ["--notify"],
+    # telegram message!"* An ask of mine waiting 4h+ on him paged him once
+    # per ask. The flag is gone again, on his Telegram reply of 2026-09-21
+    # 16:11 to that page: *"you said it yourself that you are working on
+    # other things meanwhile, so you are not completely stuck, which makes
+    # this alert not an alert I agreed to. Only when you are completely stuck
+    # and simply cannot do any form of work other than wait, you should ping
+    # me."* A waiting ask never stops the loop on its own, so it no longer
+    # pages; `ask_watch --notify` stays for a check that can measure the
+    # whole loop standing still. The ask still reaches him as its own Agora
+    # thread with a push.
+    "ask_watch": [],
     # Issue #105 asked for a Telegram message when a cycle goes missing and
     # `--notify` was here for one day. The first one it sent, 2026-09-20
     # 19:01 Oslo, named cycles 1895 and 1897; he answered at 19:08: *"That
