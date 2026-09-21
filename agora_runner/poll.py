@@ -1,15 +1,77 @@
 """poll_once -- one tick of the conversation loop: every active conversation."""
 
+import threading
+
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.agora_api import clear_persona_cache
-from agora_runner.conversations import poll_conversation, prune_message_window_cache
+from agora_runner.conversations import prepare_turn, prune_message_window_cache
 from agora_runner.deferred import acknowledge_deferred, mark_answered_live
 from agora_runner.heartbeats import (
     workflow_bound_conversation_ids,
     cycle_bound_conversation_ids,
     in_flight_cycle_conversation_ids,
 )
+
+
+# Replies run on their own thread, one per conversation, so a minutes-long
+# claude-cli reply in one conversation never makes another wait. The owner's
+# capture of 2026-09-21: Aristoteles sat two minutes behind a Nova reply in
+# a different chat, starting 47 ms after it finished.
+#
+# Conversation id -> the thread writing its reply. A conversation in here is
+# skipped by the tick outright -- not fetched, not decided -- because until
+# the reply posts, the owner's message is still the last one in the thread
+# and deciding again would start a second reply beside the first (two
+# `--resume` calls against one CLI session). Only this module's main-thread
+# code adds to it; each turn removes itself when done.
+_turns = {}
+_turns_lock = threading.Lock()
+
+# At most this many replies generating at once. Not a comfort number: the
+# failure `conversations.back_off` records is two conversations retrying at
+# once and cascading the whole fallback chain until every model's quota was
+# gone, and an unbounded fan-out lets every failing conversation do that in
+# the same second. A conversation over the cap is left untouched this tick
+# (nothing fetched, nothing cached) and is picked up by a later one.
+MAX_PARALLEL_TURNS = 4
+
+
+def _run_turn(summary, turn, live):
+    try:
+        spoke = turn()
+        # Only for the live cycle conversation, and only when a reply
+        # actually went out. The chip is what stops the next scheduled
+        # run carrying this message in its trigger and answering it a
+        # second time -- see heartbeats._unread_from_edvard.
+        if spoke and live:
+            try:
+                mark_answered_live(summary)
+            except Exception as e:
+                log(f"[{summary.get('name', summary.get('id'))}] answered-live chip failed: {e}")
+    except Exception as e:
+        log(f"[{summary.get('name', summary.get('id'))}] poll failed: {e}")
+    finally:
+        with _turns_lock:
+            _turns.pop(summary.get("id"), None)
+
+
+def running_turn_ids():
+    with _turns_lock:
+        return set(_turns)
+
+
+def join_running_turns():
+    """Block until every reply in flight has posted. The drain calls this
+    beside `join_running_heartbeats`, and for the same reason: when a reply
+    ran inline the drain waited for it by construction, and on its own
+    thread it would otherwise die with the process. No timeout, as there."""
+    with _turns_lock:
+        threads = list(_turns.values())
+    for thread in threads:
+        if thread.is_alive():
+            log(f"draining: waiting for a chat reply ({thread.name}) to finish")
+            thread.join()
 
 
 def poll_once():
@@ -104,17 +166,25 @@ def poll_once():
                 except Exception as e:
                     log(f"[{summary.get('name', summary.get('id'))}] deferred ack failed: {e}")
             continue
+        with _turns_lock:
+            if summary.get("id") in _turns:
+                debug_log(f"[{summary.get('name', summary.get('id'))}] skipped: a reply is still being written")
+                continue
+            if len(_turns) >= MAX_PARALLEL_TURNS:
+                debug_log(f"[{summary.get('name', summary.get('id'))}] skipped: "
+                          f"{MAX_PARALLEL_TURNS} replies already in flight")
+                continue
         try:
-            spoke = poll_conversation(summary)
+            turn = prepare_turn(summary)
         except Exception as e:
             log(f"[{summary.get('name', summary.get('id'))}] poll failed: {e}")
             continue
-        # Only for the live cycle conversation, and only when a reply
-        # actually went out. The chip is what stops the next scheduled
-        # run carrying this message in its trigger and answering it a
-        # second time -- see heartbeats._unread_from_edvard.
-        if spoke and summary.get("id") in live_ids:
-            try:
-                mark_answered_live(summary)
-            except Exception as e:
-                log(f"[{summary.get('name', summary.get('id'))}] answered-live chip failed: {e}")
+        if turn is None:
+            continue
+        thread = threading.Thread(
+            target=_run_turn, args=(summary, turn, summary.get("id") in live_ids),
+            name=f"turn-{summary.get('id')}", daemon=True,
+        )
+        with _turns_lock:
+            _turns[summary.get("id")] = thread
+        thread.start()

@@ -1626,7 +1626,7 @@ def test_speak_reads_sticky_fallback_from_conversation_detail(runner):
         captured["sticky"] = sticky
         return "reply text"
 
-    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+    with patch.object(runner.conversations, "fetch_persona_uncached", return_value=persona), \
          patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.conversations, "notify", return_value=200):
         runner.speak(conversation, detail, [], "Test")
@@ -1645,7 +1645,7 @@ def test_speak_defaults_sticky_false_when_conversation_field_unset(runner):
         captured["sticky"] = sticky
         return "reply text"
 
-    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+    with patch.object(runner.conversations, "fetch_persona_uncached", return_value=persona), \
          patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.conversations, "notify", return_value=200):
         runner.speak(conversation, detail, [], "Test")
@@ -2732,7 +2732,7 @@ def test_speak_streams_each_chunk_with_push_only_on_the_final_one(runner):
         notify_calls.append((text, push))
         return 200, f"mid-{len(notify_calls)}"
 
-    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+    with patch.object(runner.conversations, "fetch_persona_uncached", return_value=persona), \
          patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.conversations, "notify", side_effect=fake_notify):
         reply = runner.speak(conversation, detail, [], "Test")
@@ -2751,7 +2751,7 @@ def _speak_capturing_model(runner, detail, persona, model_override=None):
         seen["model_override"] = model_override
         return "ok"
 
-    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+    with patch.object(runner.conversations, "fetch_persona_uncached", return_value=persona), \
          patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.conversations, "notify", return_value=(200, "mid-1")):
         runner.speak({"id": "conv-1"}, detail, [], "Test", model_override)
@@ -2809,7 +2809,7 @@ def test_speak_streams_thinking_chunks_with_thinking_true_and_push_false(runner)
         notify_calls.append((text, push, thinking))
         return 200, f"mid-{len(notify_calls)}"
 
-    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+    with patch.object(runner.conversations, "fetch_persona_uncached", return_value=persona), \
          patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.conversations, "notify", side_effect=fake_notify):
         reply = runner.speak(conversation, detail, [], "Test")
@@ -2847,7 +2847,7 @@ def test_speak_rolls_back_thinking_chunks_too_when_a_later_round_fails(runner):
             deleted.append(path)
         return 200, {}
 
-    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+    with patch.object(runner.conversations, "fetch_persona_uncached", return_value=persona), \
          patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.conversations, "notify", side_effect=fake_notify), \
          patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal):
@@ -2878,7 +2878,7 @@ def test_speak_rolls_back_posted_chunks_when_a_later_round_fails(runner):
             deleted.append(path)
         return 200, {}
 
-    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+    with patch.object(runner.conversations, "fetch_persona_uncached", return_value=persona), \
          patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.conversations, "notify", return_value=(200, "mid-1")), \
          patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal):
@@ -2906,7 +2906,7 @@ def test_speak_rollback_is_best_effort_and_still_raises_the_original_error(runne
             raise RuntimeError("delete also failed")
         return 200, {}
 
-    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+    with patch.object(runner.conversations, "fetch_persona_uncached", return_value=persona), \
          patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.conversations, "notify", return_value=(200, "mid-1")), \
          patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal):
@@ -4465,9 +4465,10 @@ def test_poll_once_skips_workflow_bound_conversations_but_still_runs_heartbeats(
     polled = []
     with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
-         patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "prepare_turn", side_effect=lambda s: polled.append(s["id"])), \
          patch.object(runner.poll, "acknowledge_deferred"):
         runner.poll_once()
+        runner.poll.join_running_turns()
 
     assert polled == ["c2"]  # c1 skipped (workflow-bound), c2 gets ordinary turn-taking
 
@@ -4520,9 +4521,10 @@ def test_poll_once_answers_live_cycle_conversation_and_a_plain_heartbeats(runner
     polled = []
     with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
-         patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "prepare_turn", side_effect=lambda s: polled.append(s["id"])), \
          patch.object(runner.poll, "acknowledge_deferred"):
         runner.poll_once()
+        runner.poll.join_running_turns()
 
     assert polled == ["cycle9", "sentinel", "chat"]
 
@@ -4599,9 +4601,10 @@ def test_poll_once_answers_a_retired_cycle_conversation_too(runner):
     polled = []
     with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
-         patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "prepare_turn", side_effect=lambda s: polled.append(s["id"])), \
          patch.object(runner.poll, "acknowledge_deferred"):
         runner.poll_once()
+        runner.poll.join_running_turns()
 
     assert polled == ["cycle9", "cycle8", "cycle3", "chat"]
 
@@ -4638,9 +4641,10 @@ def test_message_in_an_in_flight_cycle_conversation_still_reaches_the_next_trigg
                       side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
-         patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "prepare_turn", side_effect=lambda s: polled.append(s["id"])), \
          patch.object(runner.poll, "acknowledge_deferred"):
         runner.poll_once()
+        runner.poll.join_running_turns()
 
     # The transcript its own cycle is writing into is left alone; the
     # retired one gets an ordinary answer.
@@ -4680,13 +4684,14 @@ def test_every_cycle_conversation_answers_edvard_on_the_spot(runner):
                       side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
-         patch.object(runner.poll, "poll_conversation",
-                      side_effect=lambda s: polled.append(s["id"]) or True), \
+         patch.object(runner.poll, "prepare_turn",
+                      side_effect=lambda s: polled.append(s["id"]) or (lambda: True)), \
          patch.object(runner.poll, "acknowledge_deferred",
                       side_effect=lambda s: acked.append(s["id"])), \
          patch.object(runner.poll, "mark_answered_live",
                       side_effect=lambda s: chipped.append(s["id"])):
         runner.poll_once()
+        runner.poll.join_running_turns()
 
     assert polled == ["c-live", "c-old"]   # the workflow one stays skipped
     assert acked == []                     # nothing is deferred, so no chip
@@ -4710,11 +4715,12 @@ def test_no_answered_live_chip_when_the_turn_did_not_speak(runner):
                       side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
-         patch.object(runner.poll, "poll_conversation", return_value=None), \
+         patch.object(runner.poll, "prepare_turn", return_value=lambda: None), \
          patch.object(runner.poll, "acknowledge_deferred"), \
          patch.object(runner.poll, "mark_answered_live",
                       side_effect=lambda s: chipped.append(s["id"])):
         runner.poll_once()
+        runner.poll.join_running_turns()
 
     assert chipped == []
 
@@ -7828,10 +7834,11 @@ def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
                       side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
-         patch.object(runner.poll, "poll_conversation"), \
+         patch.object(runner.poll, "prepare_turn", return_value=None), \
          patch.object(runner.poll, "acknowledge_deferred",
                       side_effect=lambda s: acked.append(s["id"])):
         runner.poll_once()
+        runner.poll.join_running_turns()
 
     assert acked == ["cycle10"]
 
@@ -7849,10 +7856,11 @@ def test_an_archived_cycle_thread_is_not_acknowledged(runner):
                       side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
-         patch.object(runner.poll, "poll_conversation"), \
+         patch.object(runner.poll, "prepare_turn", return_value=None), \
          patch.object(runner.poll, "acknowledge_deferred",
                       side_effect=lambda s: acked.append(s["id"])):
         runner.poll_once()
+        runner.poll.join_running_turns()
 
     assert acked == []
 
@@ -9015,7 +9023,7 @@ def test_speak_declares_itself_attended(runner):
         captured["unattended"] = unattended
         return "reply text"
 
-    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+    with patch.object(runner.conversations, "fetch_persona_uncached", return_value=persona), \
          patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.conversations, "notify", return_value=200):
         runner.speak(conversation, detail, [], "Test")
@@ -9296,12 +9304,13 @@ def test_a_running_cycle_keeps_its_own_conversation_out_of_the_live_set(runner):
                           side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
              patch.object(runner.poll, "agora_internal",
                           side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
-             patch.object(runner.poll, "poll_conversation",
-                          side_effect=lambda s: polled_into.append(s["id"]) or True), \
+             patch.object(runner.poll, "prepare_turn",
+                          side_effect=lambda s: polled_into.append(s["id"]) or (lambda: True)), \
              patch.object(runner.poll, "acknowledge_deferred",
                           side_effect=lambda s: acked_into.append(s["id"])), \
              patch.object(runner.poll, "mark_answered_live"):
             runner.poll_once()
+            runner.poll.join_running_turns()
 
     runner.heartbeats._heartbeat_threads["hb1"] = [_StillRunning()]
     try:
@@ -10137,3 +10146,92 @@ def test_metered_day_unreadable_vault_falls_back_to_the_pods_own_count(runner, m
     assert metered_day.spent_today() == 4242
     metered_day.add(8)  # swallowed, and still counted locally
     assert metered_day.spent_today() == 4250
+
+
+def test_a_slow_reply_does_not_hold_up_another_conversation(runner):
+    """The owner's capture, 2026-09-21: Aristoteles started 47 ms after a Nova
+    reply in another conversation finished, two minutes after he said hello.
+    Two conversations whose replies each take 0.5 s must both finish in
+    about 0.5 s, not 1 s -- and a tick that runs while a reply is still
+    being written must not start a second reply in that conversation."""
+    import threading
+    import time as _time
+
+    conversations_body = {"conversations": [
+        {"id": "nova-chat", "name": "Nova chat"},
+        {"id": "lyceum-chat", "name": "Lyceum — Axiology"},
+    ]}
+    started, lock = [], threading.Lock()
+    running = {}
+    overlap = []
+
+    def prepare(summary):
+        def turn():
+            with lock:
+                if running.get(summary["id"]):
+                    overlap.append(summary["id"])
+                running[summary["id"]] = True
+                started.append(summary["id"])
+            _time.sleep(0.5)
+            with lock:
+                running[summary["id"]] = False
+            return True
+        return turn
+
+    with patch.object(runner.poll, "agora_get",
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
+         patch.object(runner.poll, "agora_internal",
+                      side_effect=lambda m, p, payload=None: (200, {"heartbeats": []})), \
+         patch.object(runner.poll, "prepare_turn", side_effect=prepare), \
+         patch.object(runner.poll, "mark_answered_live"):
+        began = _time.monotonic()
+        runner.poll_once()
+        tick_took = _time.monotonic() - began
+        # A second tick while both replies are still generating.
+        runner.poll_once()
+        runner.poll.join_running_turns()
+        total = _time.monotonic() - began
+
+    assert tick_took < 0.25, "the tick waited for a reply"
+    assert sorted(started) == ["lyceum-chat", "nova-chat"], "a reply was started twice or not at all"
+    assert overlap == []
+    assert total < 0.9, f"replies ran one after another ({total:.2f}s)"
+    assert runner.poll.running_turn_ids() == set()
+
+
+def test_replies_over_the_cap_wait_for_a_later_tick_untouched(runner):
+    """Over MAX_PARALLEL_TURNS a conversation is not even prepared, so its
+    window is not cached and the next tick still sees the owner's message."""
+    import threading
+
+    conversations_body = {"conversations": [{"id": f"c{i}", "name": f"c{i}"} for i in range(6)]}
+    release = threading.Event()
+    prepared = []
+
+    answered = set()
+
+    def prepare(summary):
+        prepared.append(summary["id"])
+        if summary["id"] in answered:
+            return None
+
+        def turn():
+            release.wait(5)
+            answered.add(summary["id"])
+            return True
+        return turn
+
+    with patch.object(runner.poll, "agora_get",
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
+         patch.object(runner.poll, "agora_internal",
+                      side_effect=lambda m, p, payload=None: (200, {"heartbeats": []})), \
+         patch.object(runner.poll, "prepare_turn", side_effect=prepare), \
+         patch.object(runner.poll, "mark_answered_live"):
+        runner.poll_once()
+        assert prepared == ["c0", "c1", "c2", "c3"]
+        release.set()
+        runner.poll.join_running_turns()
+        runner.poll_once()
+        runner.poll.join_running_turns()
+    assert prepared[4:] == ["c0", "c1", "c2", "c3", "c4", "c5"]
+    assert answered == {f"c{i}" for i in range(6)}
