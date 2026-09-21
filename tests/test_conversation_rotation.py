@@ -544,3 +544,37 @@ def test_rotate_still_keeps_the_old_conversation_when_the_listing_itself_raises(
         raise AssertionError("nothing should be created after the listing dies")
 
     assert _rotation_with(fake_internal, fake_get) == "c-old"
+
+
+def test_prune_does_not_re_archive_conversations_already_archived():
+    """Cycle 1955: the listing returns archived conversations too, so every
+    rotation sent one PATCH per archived cycle -- 1,924 of them, 11 to 13
+    minutes before the cycle could start. Only a conversation that is still
+    active and older than the retention window may be archived."""
+    heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
+                 "rotateConversationEachRun": True, "conversationRetention": 3}
+    # c01..c07 already archived, c08..c10 active; newest is c10.
+    existing = [
+        {"id": f"c{i:02d}", "tags": ["evolve-cycle:hb1"],
+         "createdAt": f"2026-08-20T{i:02d}:00:00Z", "archived": i <= 7}
+        for i in range(1, 11)
+    ]
+    calls = []
+
+    def fake_get(path):
+        return 200, {"conversations": existing}
+
+    def fake_internal(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "POST" and path == "/conversations":
+            return 201, {"conversation": {"id": "c-new"}}
+        return 200, {}
+
+    with patch.object(rotation, "agora_get", side_effect=fake_get), \
+         patch.object(rotation, "agora_internal", side_effect=fake_internal):
+        assert rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS) == "c-new"
+
+    archived_ids = [c[1].rsplit("/", 1)[-1] for c in calls if c[2] == {"archived": True}]
+    # retention 3 keeps c10, c09 plus the new one; c08 is the only active
+    # conversation past the window, and c01..c07 are left alone.
+    assert archived_ids == ["c08"]
