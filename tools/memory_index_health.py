@@ -58,7 +58,10 @@ Exit contract, the same shape as `tools.cli_pin`:
 The fix on exit 2 is never to delete a memory file. Move the oldest index
 lines into `MEMORY-archive.md` and keep the archive linked from the first
 line of the index, so a memory that falls out of the loaded window is
-*named* rather than gone. That is cycle 1477's call and it stands.
+*named* rather than gone. That is cycle 1477's call and it stands, and
+since cycle 1990 `--roll` does it. Until then each red was fixed by
+hand, and at ~27 memories a day the one-day line comes round every few
+days, so it was a recurring chore.
 """
 import argparse
 import os
@@ -219,6 +222,8 @@ def report(store=DEFAULT_STORE, cli_path=DEFAULT_CLI, out=None, now=None):
     print(f"headroom   {line_room} line(s) / {char_room} character(s) = room "
           f"for about {room:.0f} more memory(s); {binding} bind first.",
           file=out)
+    print(f"           average index line is {avg:.0f} characters; a shorter "
+          f"hook fits more memories under the same cap.", file=out)
     if longest > 200:
         print(f"           longest index line is {longest} characters; the "
               f"loader asks for one line under ~200 and trims the hook, "
@@ -249,13 +254,101 @@ def report(store=DEFAULT_STORE, cli_path=DEFAULT_CLI, out=None, now=None):
               f"check's own {LOOKAHEAD_DAYS:.0f}-day re-run interval -- the "
               f"index can cross the cap and be trimmed for a full day of "
               f"cycles before anything looks again.", file=out)
-        print(f"         roll the oldest lines into {ARCHIVE} now. That is "
-              f"cheap while it fits and costs a whole cycle to rediscover "
-              f"once it does not.", file=out)
+        print(f"         run `python3 -m tools.memory_index_health --roll` "
+              f"now: it moves the oldest lines into {ARCHIVE}, losslessly. "
+              f"That is cheap while it fits and costs a whole cycle to "
+              f"rediscover once it does not.", file=out)
         return 2
     print("ok         the whole index reaches the session.", file=out)
     print("           NOT JUDGED  whether the memories in it are any good, "
           "or whether recall picks the right ones. This counts lines.",
+          file=out)
+    return 0
+
+
+#: How many days of measured growth `--roll` leaves free. One day is the
+#: check's own red line, so rolling to just past it would go red again the
+#: next morning; at ~27 memories a day and ~200 characters a line that is
+#: about 5 KB a day against a 25 KB cap, so three days is a roll every few
+#: days rather than every cycle.
+ROLL_DAYS = 3.0
+
+
+def _is_pointer(line):
+    """The index's own link to the archive, which must never be rolled."""
+    return f"({ARCHIVE})" in line
+
+
+def roll(store=DEFAULT_STORE, cli_path=DEFAULT_CLI, out=None, now=None,
+         days=ROLL_DAYS):
+    """Move the oldest index lines into the archive until `days` of growth fit.
+
+    Lossless by construction: a rolled line is appended to the END of
+    `MEMORY-archive.md` (which is oldest-first) before it leaves the index,
+    no memory file is touched, and the archive pointer is never a
+    candidate. The index is read twice and written only if both reads
+    match, because another session can append a memory while this runs and
+    a rewrite from a stale read would drop that line from the index.
+    Returns 0 when there was nothing to roll or the roll landed, 1 when it
+    could not measure or the index moved underneath it.
+    """
+    out = out or sys.stdout
+    index_path = os.path.join(store, INDEX)
+    archive_path = os.path.join(store, ARCHIVE)
+    cap_lines, cap_chars, cap_err = read_caps(cli_path)
+    growth = growth_per_day(store, now=now)
+    try:
+        text = open(index_path, encoding="utf-8").read()
+    except OSError as e:
+        print(f"NOT ROLLED  could not read {index_path}: {e}", file=out)
+        return 1
+    if cap_err or not growth:
+        why = cap_err or "no dated memory file, so no growth rate to size by"
+        print(f"NOT ROLLED  {why}", file=out)
+        return 1
+
+    lines = text.strip().split("\n")
+    avg = len(text.strip()) / len(lines)
+    want = days * growth[0]
+    max_lines = cap_lines - want
+    max_chars = cap_chars - want * avg
+    keep = list(lines)
+    rolled = []
+    while len(keep) > max_lines or len("\n".join(keep)) > max_chars:
+        idx = next((i for i, ln in enumerate(keep)
+                    if ln.strip() and not _is_pointer(ln)), None)
+        if idx is None:
+            break
+        rolled.append(keep.pop(idx))
+    if not rolled:
+        print(f"nothing to roll: {len(lines)} line(s) already leave "
+              f"{days:.0f} day(s) of growth free.", file=out)
+        return 0
+
+    try:
+        again = open(index_path, encoding="utf-8").read()
+    except OSError as e:
+        print(f"NOT ROLLED  could not re-read {index_path}: {e}", file=out)
+        return 1
+    if again != text:
+        print(f"NOT ROLLED  {INDEX} changed while I was sizing the roll "
+              f"(another session appended to it); run it again.", file=out)
+        return 1
+
+    try:
+        existing = open(archive_path, encoding="utf-8").read()
+    except FileNotFoundError:
+        existing = ""
+    sep = "" if not existing or existing.endswith("\n") else "\n"
+    with open(archive_path, "a", encoding="utf-8") as fh:
+        fh.write(sep + "\n".join(rolled) + "\n")
+    tmp = index_path + ".roll-tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(keep) + "\n")
+    os.replace(tmp, index_path)
+    print(f"rolled     {len(rolled)} oldest line(s) from {INDEX} to the end "
+          f"of {ARCHIVE}; {len(keep)} line(s) remain, sized to leave "
+          f"{days:.0f} day(s) of growth free. No memory file was touched.",
           file=out)
     return 0
 
@@ -266,7 +359,14 @@ def main(argv=None):
                     help="auto-memory directory holding MEMORY.md")
     ap.add_argument("--cli", default=DEFAULT_CLI,
                     help="installed Claude Code binary to read the caps from")
+    ap.add_argument("--roll", action="store_true",
+                    help=f"move the oldest index lines into {ARCHIVE} until "
+                         f"{ROLL_DAYS:.0f} days of growth fit, then report")
     args = ap.parse_args(argv)
+    if args.roll:
+        code = roll(store=args.store, cli_path=args.cli)
+        if code:
+            return code
     return report(store=args.store, cli_path=args.cli)
 
 
