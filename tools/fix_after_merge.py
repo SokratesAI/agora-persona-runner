@@ -24,7 +24,12 @@ at all. It is not a repair rate -- "slice 2 of #n" is planned work -- and is
 printed beside the two so that the first cut of this tool, which counted it
 as the floor and read 18.9%, is not mistaken for the answer.
 
-The truth is between them. Every pair behind the ceiling is printed with both
+**It counts every merged PR in the org, not only mine**, and cannot do
+otherwise from GitHub: my PRs and Sokrates' are opened and merged by the same
+`sokrates-ai-user` account (measured on the last 40 merges in three repos, 119
+of 120). Dependabot is the only other author seen, and it is rare.
+
+The truth is between the floor and the ceiling. Every pair behind the ceiling is printed with both
 titles, so a reader can judge any one of them in a second rather than trust
 the rate.
 
