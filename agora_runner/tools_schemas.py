@@ -187,6 +187,32 @@ def client_tool_schemas(caps, active_step=None):
                              "required": ["path", "content"]},
         })
         tools.append({
+            "name": "vault_move",
+            "description": (
+                "Move or rename one vault file: its text is written to `destination` and the "
+                "source is deleted. Refused if `destination` already holds a file. A copy of the "
+                "source is kept in agora/backups/<timestamp>/<source path> first, so a move can "
+                "be undone by the owner."
+            ),
+            "input_schema": {"type": "object",
+                             "properties": {
+                                 "source": {"type": "string"},
+                                 "destination": {"type": "string"},
+                             },
+                             "required": ["source", "destination"]},
+        })
+        tools.append({
+            "name": "vault_delete",
+            "description": (
+                "Delete one vault file (it disappears from Obsidian on every device). A copy is "
+                "kept in agora/backups/<timestamp>/<path> first, so a delete can be undone by the "
+                "owner. Deletes files only, one per call; there is no folder delete."
+            ),
+            "input_schema": {"type": "object",
+                             "properties": {"path": {"type": "string"}},
+                             "required": ["path"]},
+        })
+        tools.append({
             "name": "vault_append",
             "description": (
                 "Add content to an EXISTING vault file WITHOUT losing what's already there -- "
@@ -713,6 +739,8 @@ TOOL_TO_CAPABILITY = {
     "nova_read_image": "vaultRead",
     "vault_write": "vaultWrite",
     "vault_append": "vaultWrite",
+    "vault_move": "vaultWrite",
+    "vault_delete": "vaultWrite",
     "vault_update_frontmatter_batch": "vaultWrite",
     "kubectl_read": "kubectlRead",
     "kubectl_test": "kubectlTest",

@@ -462,12 +462,12 @@ def build_system(persona, conversation=None, heartbeat_extra=None, default_style
                 "vault_find_stub_notes, vault_find_duplicate_titles, vault_get_token_metrics, "
                 "vault_git_revision_history and vault_summarize_recent_agent_work (both "
                 "against the daily backup mirror on GitHub)"
-                + (", and vault_update_frontmatter_batch for bulk metadata edits" if caps.get("vaultWrite") else "")
+                + (", vault_update_frontmatter_batch for bulk metadata edits, and vault_move and vault_delete to reorganise files (each keeps a copy in agora/backups/)" if caps.get("vaultWrite") else "")
                 + "."
             )
         elif caps.get("vaultWrite"):
             vault.append(
-                "You also have vault_update_frontmatter_batch for bulk metadata edits."
+                "You also have vault_update_frontmatter_batch for bulk metadata edits, and vault_move and vault_delete to reorganise files (each keeps a copy in agora/backups/)."
             )
         parts.append(" ".join(vault))
     if caps.get("kubectlRead"):

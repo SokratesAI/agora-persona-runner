@@ -1689,3 +1689,93 @@ def vault_summarize_recent_agent_work(hours=24):
     if len(data) > len(expand):
         lines.append(f"... and {len(data) - len(expand)} more commit(s) (message only, not expanded)")
     return "\n".join(lines)
+
+
+#: Where `vault_delete_path` and `vault_move_path` keep a copy of what they
+#: take away. The owner asked for it when he asked for the tools (issues
+#: capture 2026-09-21): a persona that can reorganise his vault must leave
+#: a way back that is not "wait for tonight's GitHub snapshot". It is a
+#: copy per delete/move only -- vault_write still takes none, see #47.
+BACKUP_ROOT = "agora/backups/"
+
+
+def _backup_path(path, now=None):
+    stamp = time.strftime("%Y-%m-%d %H%M%S", time.localtime(now or time.time()))
+    return f"{BACKUP_ROOT}{stamp}/{path.lower()}"
+
+
+def _tombstone(path, rev):
+    """Delete the way Obsidian does: keep the document, set `deleted`.
+
+    A CouchDB DELETE never reaches a phone that already holds the note --
+    see the bridge's `vault_tool.delete` for the owner's report of that.
+    `rev` is the one the caller read, so a file edited in between is not
+    deleted out from under the edit."""
+    path = path.lower()
+    db = db_for(path)
+    status, doc = couch_get_doc(path, db)
+    if status != 200:
+        return f"FAILED(HTTP {status} reading {path})"
+    if doc.get("_rev") != rev:
+        return f"FAILED(409 conflict: {path} changed since it was read)"
+    doc["deleted"] = True
+    doc["mtime"] = int(time.time() * 1000)
+    put_status, _ = couch_req(
+        "PUT", f"{db}/{urllib.parse.quote(path, safe='')}", doc)
+    if put_status in (200, 201):
+        return "deleted"
+    if put_status == 409:
+        return f"FAILED(409 conflict: {path} changed since it was read)"
+    return f"FAILED({put_status})"
+
+
+def vault_delete_path(path):
+    """Copy the file into `agora/backups/<stamp>/<path>`, then tombstone it.
+
+    The backup is written first and must succeed, so a delete never leaves
+    the vault with neither copy."""
+    try:
+        content, rev = vault_read_path_rev(path)
+    except VaultUnreadableDocument as e:
+        return f"FAILED({e})"
+    if content is None:
+        return f"FAILED(not found: {path})"
+    backup = _backup_path(path)
+    saved = vault_write_path(backup, content, if_rev=None)
+    if saved != "written":
+        return f"FAILED(backup to {backup} did not write, nothing deleted: {saved})"
+    result = _tombstone(path, rev)
+    if result != "deleted":
+        return f"{result} (a backup copy was left at {backup})"
+    return f"deleted {path.lower()} (backup: {backup})"
+
+
+def vault_move_path(src, dst):
+    """Write `src`'s text to `dst`, back `src` up, then tombstone `src`.
+
+    Refuses when `dst` already holds a live file -- a move that overwrote
+    one would be a vault_write nobody asked for. The copy lands first, so
+    a failure part-way leaves the file in two places, never in none."""
+    if src.lower() == dst.lower():
+        return "FAILED(source and destination are the same path)"
+    try:
+        content, rev = vault_read_path_rev(src)
+        dst_content, dst_rev = vault_read_path_rev(dst)
+    except VaultUnreadableDocument as e:
+        return f"FAILED({e})"
+    if content is None:
+        return f"FAILED(not found: {src})"
+    if dst_content is not None:
+        return f"FAILED({dst} already exists; delete or rename it first)"
+    written = vault_write_path(dst, content, if_rev=dst_rev)
+    if written != "written":
+        return f"FAILED(writing {dst}: {written}; {src} is untouched)"
+    backup = _backup_path(src)
+    saved = vault_write_path(backup, content, if_rev=None)
+    if saved != "written":
+        return (f"FAILED(backup to {backup} did not write, so {src} was kept: "
+                f"{saved}; the file is now at both {src} and {dst})")
+    result = _tombstone(src, rev)
+    if result != "deleted":
+        return f"{result} ({dst} was written; {src} is still there too)"
+    return f"moved {src.lower()} -> {dst.lower()} (backup: {backup})"
