@@ -22,6 +22,8 @@ type: log
 
 - older rule
   - Read Cycle 290. a reply
+
+- Standing instruction from Edvard: #227 only
 """
 
 
@@ -34,9 +36,10 @@ def couch(monkeypatch):
 
 def test_every_note_lands_with_its_sender_and_reply(couch):
     records = notes_import.plan(MD)
-    assert notes_import.write(records, now="2026-09-22T00:00:00Z") == (3, 0)
+    assert notes_import.write(records, now="2026-09-22T00:00:00Z") == (4, 0)
     notes = {n["text"]: n for n in store.list_notes()}
-    assert set(notes) == {"newest note", SOKRATES, "older rule"}
+    assert set(notes) == {"newest note", SOKRATES, "older rule", "Standing instruction from Edvard: #227 only"}
+    assert notes["Standing instruction from Edvard: #227 only"]["author"] == "sokrates"
     assert notes[SOKRATES]["author"] == "sokrates"
     assert notes["newest note"]["author"] == "edvard"
     assert notes["newest note"]["imported"]["position"] == 0
@@ -48,5 +51,5 @@ def test_a_second_run_writes_nothing(couch):
     records = notes_import.plan(MD)
     notes_import.write(records)
     before = dict(couch.docs)
-    assert notes_import.write(records) == (0, 3)
+    assert notes_import.write(records) == (0, 4)
     assert set(couch.docs) == set(before)

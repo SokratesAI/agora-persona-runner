@@ -15,8 +15,8 @@ comment from Nova on it.
 **Nothing here is a real date.** `notes.md` never recorded when a note was
 written, so `created` is the time of the import and the file's own order is
 kept in `imported.position` (0 = top of the file = newest). The author is
-`sokrates` for a note that opens "Sokrates here" -- his own signature, which
-every one of his notes carries -- and `edvard` for the rest.
+`sokrates` for a note that opens "Sokrates here" or names Edvard in the third
+person, and `edvard` for the rest (`author_of` says why).
 
     python3 -m tools.notes_import            # dry run: what would be written
     python3 -m tools.notes_import --write
@@ -40,7 +40,17 @@ NOTES_PATH = "projects/sokrates/projects/nova/notes.md"
 
 
 def author_of(text):
-    return "sokrates" if text.lstrip("- ").lower().startswith("sokrates here") else "edvard"
+    """`edvard` only for a note he could have typed himself.
+
+    A note that opens "Sokrates here" is Sokrates' signature. A note that
+    names Edvard in the third person ("Standing instruction from Edvard,
+    ...") was written *about* him, not by him, and the only other writer of
+    this file is Sokrates -- so it is his too. Signing it `edvard` would put
+    words under his name he did not type.
+    """
+    if text.lstrip("- ").lower().startswith("sokrates here") or "edvard" in text.lower():
+        return "sokrates"
+    return "edvard"
 
 
 def note_id(text):
