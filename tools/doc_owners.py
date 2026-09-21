@@ -100,7 +100,14 @@ VAULT_TOOL = "/app/bridge/vault_tool.py"
 # unmeasurable -- it is *at least* this old, which is well past every
 # window in `PROMPTS` and so decides the verdict on its own. See
 # `_mtimes`.
-RECENT_HOURS = 24 * 90
+#
+# It was 90 days until the listing outgrew the vault's 2,000-document cap:
+# `recent` then prints `[INCOMPLETE: ...]` over an arbitrary subset, the
+# digest's write from that morning was not in it, and this called the
+# digest 33.6 days stale (issue #40, 2026-09-21). Fourteen days is still
+# past the longest window here (Monday-only, eight days), and a test holds
+# it there; `listing_truncated` catches the cap if it is ever hit again.
+RECENT_HOURS = 24 * 14
 
 # The prompts a Nova cycle runs from, and the weekdays their heartbeats
 # fire on (0 = Monday, matching `datetime.weekday()`). Read off the
@@ -444,6 +451,16 @@ def _vault(*args):
     return done.stdout
 
 
+def listing_truncated(text):
+    """True when `vault_tool.py recent` says its listing hit the document
+    cap. Its rows are then an arbitrary subset rather than the newest, so
+    a document missing from them is unmeasured, not old -- reading it as
+    old is how the digest came out 33 days stale an hour after it was
+    written (issue #40).
+    """
+    return text.lstrip().startswith("[INCOMPLETE")
+
+
 _RECENT_ROW_RE = re.compile(
     r"^(?P<when>\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s+(?P<path>\S.*)$"
 )
@@ -508,6 +525,11 @@ def _read_state(documents):
         recent = _vault("recent", str(RECENT_HOURS), prefix)
         if recent is None:
             unreadable.append(f"write times under {prefix}")
+        elif listing_truncated(recent):
+            unreadable.append(
+                f"write times under {prefix} (listing hit the vault's "
+                "document cap, so its rows are not the newest)"
+            )
         else:
             written.update(parse_recent(recent))
 
