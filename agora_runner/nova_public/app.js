@@ -5489,6 +5489,7 @@
     stepsLabel: stepsLabel,
   }) : {};
   var renderAskThread = askThreadModule.renderAskThread;
+  var msUntilLost = askThreadModule.msUntilLost;
 
   /* The Conversations page is gone -- his ask, 2026-09-07: *"I only use
    * that chat modal for the conversations, never the /chat page. So
@@ -6681,6 +6682,7 @@
       makeActionSheet: makeActionSheet,
       paintModelPicker: paintModelPicker,
       renderAskThread: renderAskThread,
+      msUntilLost: msUntilLost,
       askPaintSent: askPaintSent,
       askPaintNote: askPaintNote,
       mergePendingSends: mergePendingSends,

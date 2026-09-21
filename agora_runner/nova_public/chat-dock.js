@@ -44,6 +44,7 @@
     var makeActionSheet = shared.makeActionSheet;
     var paintModelPicker = shared.paintModelPicker;
     var renderAskThread = shared.renderAskThread;
+    var msUntilLost = shared.msUntilLost;
     var askPaintSent = shared.askPaintSent;
     var askPaintNote = shared.askPaintNote;
     var mergePendingSends = shared.mergePendingSends;
@@ -69,6 +70,12 @@
     var dot = document.getElementById("chat-dot");
 
     var pollHandle = null;
+    /* The one-shot redraw that draws the lost-turn card after the poll has
+     * given up; see `scheduleLostRedraw`. */
+    var lostHandle = null;
+    /* The last payload `paint` drew, so that redraw has something to draw
+     * without asking the server for it again. */
+    var lastPainted = null;
     var loaded = false;
     var lastCount = 0;
     // Sends the server has not shown back yet, per thread; see `mergePendingSends`.
@@ -669,6 +676,9 @@
       // `hasMore` absent means an older server or the empty-thread reply;
       // both are honestly "nothing more to fetch", so the default is false.
       hasMore = !!(payload && payload.hasMore);
+      // Held for `scheduleLostRedraw`, after the pending-send merge above so
+      // the redraw sees the same thread he does.
+      lastPainted = payload;
       var follow = stickToBottom || atBottom(thread);
       var was = thread.scrollTop;
       var grewFrom = pendingAnchor;
@@ -802,11 +812,44 @@
         clearTimeout(pollHandle);
         pollHandle = null;
       }
+      if (lostHandle !== null) {
+        clearTimeout(lostHandle);
+        lostHandle = null;
+      }
+    }
+
+    /* One redraw, at the moment the turn becomes lost, off what is already
+     * on screen.
+     *
+     * The poll stops after `ASK_POLL_MAX` fast ticks -- four minutes -- and
+     * `askthread.js` draws the lost-turn card at ten minutes of silence, from
+     * inside a paint. Between those two numbers nothing repaints, so a dock
+     * he leaves open spins its loader for ever and never reaches the card the
+     * whole of #200 was about. My issues #39.
+     *
+     * No fetch: the poll gave up on purpose and re-opening it here would undo
+     * that. Everything the card needs is in the payload already painted --
+     * the card is a reading of its timestamps, and those do not change by
+     * being read later. */
+    function scheduleLostRedraw() {
+      if (!lastPainted || typeof msUntilLost !== "function") return;
+      var due = msUntilLost(lastPainted, lastPainted.messages || []);
+      // No usable stamp is nothing to schedule against, the same way it is
+      // nothing for `lostTurn` to judge.
+      if (due === null) return;
+      var token = sourceToken;
+      lostHandle = setTimeout(function () {
+        lostHandle = null;
+        // He switched threads while it was pending; that thread's own poll
+        // owns the screen now.
+        if (token !== sourceToken || !lastPainted) return;
+        paint(lastPainted);
+      }, due);
     }
 
     function pollChat(attempts) {
       stopChatPoll();
-      if (attempts >= ASK_POLL_MAX) return;
+      if (attempts >= ASK_POLL_MAX) return scheduleLostRedraw();
       var token = sourceToken;
       pollHandle = setTimeout(function () {
         pollHandle = null;

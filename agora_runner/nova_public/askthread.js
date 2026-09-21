@@ -141,7 +141,7 @@
      * the newest thing in the thread rather than from his message: a turn that
      * ran for twenty minutes and then died has been silent for however long it
      * has been silent, not twenty minutes. */
-    function lostTurn(payload, messages) {
+    function newestStamp(payload, messages) {
       var newest = Date.parse((payload.progress && payload.progress.askedAt) || "");
       (messages || []).forEach(function (message) {
         var at = Date.parse(message.createdAt || "");
@@ -151,12 +151,37 @@
           if (!isNaN(stepAt) && (isNaN(newest) || stepAt > newest)) newest = stepAt;
         });
       });
+      return newest;
+    }
+
+    function lostTurn(payload, messages) {
+      var newest = newestStamp(payload, messages);
       // No usable stamp anywhere is not evidence of silence. An older payload
       // carries none, and calling a live turn lost is the same lie pointing
       // the other way.
       if (isNaN(newest)) return 0;
       var quiet = Math.round((Date.now() - newest) / 1000);
       return quiet >= LOST_TURN_AFTER_SECONDS ? quiet : 0;
+    }
+
+    /* How long until this thread's turn is due to be called lost, in
+     * milliseconds from now.
+     *
+     * `lostTurn` answers "is it due yet", which is only useful to a caller
+     * that is already repainting -- and the dock stops repainting long before
+     * the bound. Its poll runs `ASK_POLL_MAX` fast ticks, four minutes, and
+     * this bound is ten, so for the six minutes in between nothing redraws
+     * and the card cannot appear at all. This is the number the dock schedules
+     * its one no-fetch redraw on.
+     *
+     * `null` for no usable stamp, which is the same "there is nothing to
+     * judge" that `lostTurn` reads as still-working -- there is nothing to
+     * schedule against either. Never negative: a bound already passed is due
+     * now, not in the past. */
+    function msUntilLost(payload, messages) {
+      var newest = newestStamp(payload, messages);
+      if (isNaN(newest)) return null;
+      return Math.max(0, newest + LOST_TURN_AFTER_SECONDS * 1000 - Date.now());
     }
 
     /* What the loader becomes when the turn stopped answering.
@@ -222,6 +247,7 @@
 
     return {
       renderAskThread: renderAskThread,
+      msUntilLost: msUntilLost,
     };
   };
 })();
