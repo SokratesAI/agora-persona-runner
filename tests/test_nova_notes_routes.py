@@ -104,3 +104,15 @@ def test_a_comment_is_signed_by_the_port_and_a_missing_note_is_a_404():
     assert status == 404
     status, _ = _post("/api/notes/comment", {"id": "board:1", "text": "x"})
     assert status == 400
+
+
+def test_the_capture_box_writes_a_note_record_signed_by_the_port():
+    status, answer = _post("/api/capture", {"target": "notes", "text": "from the box"})
+    assert (status, answer["ok"]) == (200, True)
+    assert [(d["author"], d["text"]) for d in store.list_notes()] == [("edvard", "from the box")]
+
+
+def test_the_capture_box_refuses_a_note_it_cannot_sign():
+    status, answer = _post("/api/capture", {"target": "notes", "text": "x"}, owner_port=False)
+    assert (status, answer["ok"]) == (403, False)
+    assert store.list_notes() == []

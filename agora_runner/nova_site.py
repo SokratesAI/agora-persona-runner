@@ -6389,6 +6389,22 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "is not a row" in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
+    def _post_capture_note(self, text):
+        """A note from the shared capture box, answered in its `ok` shape."""
+        author = resolve_caller(self)
+        if author is None:
+            self._send_json(403, {"ok": False, "message": "only the owner's own login, through the Tailscale proxy, can write a note"})
+            return
+        try:
+            nova_notes_store.create_note(author, text)
+        except ValueError as e:
+            self._send_json(400, {"ok": False, "message": str(e)})
+            return
+        except nova_notes_store.StoreError as e:
+            self._send_json(502, {"ok": False, "message": str(e)})
+            return
+        self._send_json(200, {"ok": True, "message": "Saved to your notes"})
+
     def _post_note(self, action, payload):
         """`/api/notes/<action>` -- write a note record (idea #333).
 
@@ -6935,6 +6951,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if not isinstance(text, str):
             self._send_json(400, {"error": "text must be a string"})
+            return
+        if target == "notes":
+            # Idea #333: a note is a record now, so the capture box writes
+            # the store the /notes page reads, signed by the port it came in
+            # on -- the same rule as `/api/notes/create`. `notes.md` is no
+            # longer written from here.
+            self._post_capture_note(text)
             return
         priority = payload.get("priority") or ""
         priority = canonical_priority(priority)
