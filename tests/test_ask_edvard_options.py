@@ -40,7 +40,7 @@ def _turn(tool_calls, chunks):
 
 def _speak(tool_calls, chunks, conversation_id="conv-1"):
     bodies, fake = _posts()
-    with patch.object(conversations, "fetch_persona", return_value=PERSONA), \
+    with patch.object(conversations, "fetch_persona_uncached", return_value=PERSONA), \
          patch.object(conversations, "generate_reply", side_effect=_turn(tool_calls, chunks)), \
          patch.object(conversations, "agora_internal", side_effect=fake), \
          patch("agora_runner.tools_dispatch.audit"):

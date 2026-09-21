@@ -13,6 +13,7 @@ import time
 from agora_runner.config import AGORA_URL, POLL_INTERVAL_SECONDS
 from agora_runner.log import log
 from agora_runner.heartbeats import join_running_heartbeats
+from agora_runner.poll import join_running_turns
 from agora_runner.poll import poll_once
 from agora_runner.invoke_server import start_invoke_server
 from agora_runner.otel import init_tracing
@@ -120,6 +121,9 @@ def _drain_and_exit():
     # errs toward "nobody asked" rather than inventing a request that was made.
     runner_lifecycle.record("signal", detail=f"signal {_shutdown_signum}")
     join_running_heartbeats()
+    # Chat replies run on their own threads too (poll.py), so the drain
+    # follows them there the same way.
+    join_running_turns()
 
 
 def main():

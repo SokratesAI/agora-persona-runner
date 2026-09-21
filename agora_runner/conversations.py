@@ -9,7 +9,7 @@ from agora_runner.config import (
 )
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
-from agora_runner.agora_api import fetch_persona
+from agora_runner.agora_api import fetch_persona_uncached
 from agora_runner.turns import build_system, decide_turn, merge_history
 from agora_runner.reply import generate_reply
 from agora_runner import pending_options
@@ -54,7 +54,7 @@ def prune_message_window_cache(known_ids):
     uptime -- the heartbeat rotates Nova into a new conversation every
     cycle, so without this it would grow ~24 windows a day forever."""
     for conversation_id in set(_message_window_cache) - set(known_ids):
-        del _message_window_cache[conversation_id]
+        _message_window_cache.pop(conversation_id, None)
 
 
 def notify(conversation_id, text, sender, system=False, push=True, thinking=False, options=None):
@@ -91,7 +91,10 @@ def default_answer_style(persona):
 def speak(conversation, detail, thread, speaker_name, model_override=None):
     participants = detail.get("personas") or []
     link = next((p for p in participants if p.get("name") == speaker_name), None)
-    persona = fetch_persona(link["personaId"]) if link else None
+    # Uncached: a reply runs on its own thread now (poll.py), and the tick
+    # clears the shared persona cache under it -- agora_api says why a
+    # thread must not touch that dict.
+    persona = fetch_persona_uncached(link["personaId"]) if link else None
     if persona is None:
         # Old-Agora degradation: inline fields, conservative tools-off.
         persona = {
@@ -234,6 +237,29 @@ def _unchanged_since_last_tick(summary, cached):
 
 
 def poll_conversation(summary):
+    """Fetch, decide and reply, all on the calling thread. `poll_once` uses
+    the two halves separately so a reply in one conversation never holds up
+    another; this whole-turn form is what every other caller wants."""
+    turn = prepare_turn(summary)
+    return turn() if turn else None
+
+
+def prepare_turn(summary):
+    """The cheap half of a turn: fetch the window and decide whether anybody
+    owes a reply. Returns a zero-argument callable that generates and posts
+    that reply -- minutes for a claude-cli persona -- or None when there is
+    nothing to say.
+
+    Split out on the owner's capture of 2026-09-21: he said hello to
+    Aristoteles at 14:40:36 and Aristoteles started at 14:42:39, 47 ms after
+    a Nova reply in another conversation finished, because the poll loop ran
+    every conversation's reply on its own thread one after another.
+
+    `_conversation_failures` and `_conversation_backoff` are read here and
+    written by the returned callable without a lock. That is safe only
+    because `poll_once` never prepares a conversation whose turn is still
+    running (its in-flight set), so the two halves never touch one key at
+    once."""
     name = summary.get("name", summary.get("id"))
     if summary.get("archived"):
         # A conversation being silently invisible to the poll loop (skipped
@@ -309,6 +335,13 @@ def poll_conversation(summary):
         else:
             _conversation_backoff.pop(summary["id"], None)
 
+    def run_turn():
+        return _run_turn(summary, detail, thread, speakers, override, visible)
+
+    return run_turn
+
+
+def _run_turn(summary, detail, thread, speakers, override, visible):
     local_thread = list(thread)
     try:
         for index, speaker in enumerate(speakers):

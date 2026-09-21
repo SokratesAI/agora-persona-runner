@@ -161,12 +161,14 @@ def test_a_slow_conversation_tick_no_longer_delays_a_firing(monkeypatch):
     monkeypatch.setattr(poll_mod, "workflow_bound_conversation_ids", lambda _h: set())
     monkeypatch.setattr(poll_mod, "cycle_bound_conversation_ids", lambda _h, _c: set())
     monkeypatch.setattr(poll_mod, "in_flight_cycle_conversation_ids", lambda _h: set())
-    monkeypatch.setattr(poll_mod, "poll_conversation", lambda _s: time.sleep(0.5) or True)
+    monkeypatch.setattr(poll_mod, "prepare_turn", lambda _s: (lambda: time.sleep(0.5) or True))
     monkeypatch.setattr(poll_mod, "mark_answered_live", lambda _s: None)
 
     thread = heartbeat_pass.start_heartbeat_pass(stop.is_set)
     try:
         poll_mod.poll_once()
+        # The reply runs on its own thread now; wait for it, then count.
+        poll_mod.join_running_turns()
         during = len(passes)
     finally:
         stop.set()
