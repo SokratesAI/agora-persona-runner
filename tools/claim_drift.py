@@ -264,10 +264,16 @@ def is_drifted(rows, has_deployment, has_pvc):
     only a field the two spell differently: the composition templates an
     env var for every port, so an absent one means the manifest has moved
     away from the shape the claim ordered. A shape mismatch -- no
-    Deployment under that name, no `<service>-data` PVC -- counts on its
-    own, and it is the only rule left for a claim that sets none of the
-    four, where the field rule has nothing to compare and would call a
-    manifest of some other shape an agreement.
+    Deployment under that name -- counts on its own, and it is the only
+    rule left for a claim that sets none of the four, where the field rule
+    has nothing to compare and would call a manifest of some other shape an
+    agreement.
+
+    A missing `<service>-data` PVC is not drift. The template stopped
+    writing one (platform-config#813, issue #288: an unused local-path PVC
+    pins the pod to one node), so a service made since then has none, and
+    `persistenceSize` then describes nothing and is not compared. A PVC
+    that exists at a different size still counts.
 
     Whether a value was ordered or defaulted does not enter into it: the
     stored XR says 8080 either way and the service runs 8090 either way,
@@ -275,10 +281,11 @@ def is_drifted(rows, has_deployment, has_pvc):
     report's job, not the verdict's -- making the sentence honest must
     not make the alarm quieter.
     """
-    if not has_deployment or not has_pvc:
+    if not has_deployment:
         return True
     return any(value is not None and value != deployed
-               for _field, value, deployed, _source in rows)
+               for field, value, deployed, _source in rows
+               if has_pvc or field != "persistenceSize")
 
 
 def format_report(results, problems):
@@ -303,7 +310,8 @@ def format_report(results, problems):
                            "holds something else" % row["name"])
             if not row["has_pvc"]:
                 out.append("      no PersistentVolumeClaim named %s-data in "
-                           "manifest.yaml" % row["name"])
+                           "manifest.yaml, so persistenceSize is not "
+                           "compared" % row["name"])
             for field, value, deployed, source in row["rows"]:
                 if value is None:
                     out.append("      %s: not set on the claim, not compared"

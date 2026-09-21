@@ -255,9 +255,19 @@ def test_a_renamed_deployment_counts_as_drift():
     assert cd.is_drifted(rows, has_deployment, has_pvc) is True
 
 
-def test_a_missing_pvc_counts_as_drift():
+def test_a_missing_pvc_is_not_drift_since_the_template_stopped_writing_one():
+    # platform-config#813 (issue #288) dropped the PVC from the template, so a
+    # new service has none and its persistenceSize describes nothing.
     rows, has_deployment, has_pvc = cd.compare(
         _claim("svc"), _manifest("svc", with_pvc=False))
+    assert cd.is_drifted(rows, has_deployment, has_pvc) is False
+
+
+def test_a_missing_pvc_does_not_hide_a_port_drift():
+    claim = _claim("svc")
+    claim["spec"]["publicPort"] = 9999
+    rows, has_deployment, has_pvc = cd.compare(
+        claim, _manifest("svc", with_pvc=False))
     assert cd.is_drifted(rows, has_deployment, has_pvc) is True
 
 
