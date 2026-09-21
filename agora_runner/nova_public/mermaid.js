@@ -171,14 +171,23 @@
   var mermaidDrawn = Object.create(null);
 
   /** The parsed <svg> for one render, or null if the string was not one.
-   *  A parse error document is itself an element called `parsererror`, so
-   *  this is the shape that has to be checked rather than trusted --
-   *  importing it would put the browser's error text on the page where the
-   *  diagram goes. */
+   *
+   *  Parsed as HTML, not as `image/svg+xml`. Mermaid's output is not XML:
+   *  a label with a line break in it comes back as `<br>` inside a
+   *  `<foreignObject>`, the XML parser answers with a `parsererror`
+   *  document, and every such diagram stayed its code block with no error
+   *  anywhere (the owner, issues.md 2026-09-21: "I only see the raw
+   *  text/code, not the flowchart"). One-line labels parsed, which is why
+   *  it looked like it worked. The HTML parser is the one a browser uses
+   *  for inline SVG, and a DOMParser document is inert either way.
+   *
+   *  The <svg> has to be the only element in the body, so a string that is
+   *  not a diagram is never imported where the diagram goes. */
   function mermaidSvg(markup) {
-    var parsed = new DOMParser().parseFromString(markup, "image/svg+xml");
-    var svg = parsed.documentElement;
-    if (!svg || String(svg.nodeName).toLowerCase() !== "svg") return null;
+    var body = new DOMParser().parseFromString(markup, "text/html").body;
+    var svg = body && body.firstElementChild;
+    if (!svg || body.childElementCount !== 1
+        || String(svg.nodeName).toLowerCase() !== "svg") return null;
     // Mermaid sizes the SVG for the width it measured, which is not the
     // width of a phone. Let CSS own the box.
     svg.removeAttribute("width");
