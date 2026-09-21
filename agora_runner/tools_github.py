@@ -123,8 +123,9 @@ def github_read(args):
 # raised out of http_json as a bare URLError, so create_pr could die between
 # creating the branch and committing to it. A request that never reached
 # GitHub (name resolution, refused connection) is safe to repeat for any
-# method; a timeout or a 502-504 may have been acted on, so only a GET, which
-# changes nothing, is repeated after one of those.
+# method. A 502-504 may have been acted on, so only a GET is repeated after
+# one. A timeout is never repeated: three 30s waits would outlast the ~60s
+# an MCP tool call survives, and the answer would be lost either way.
 GITHUB_RETRY_DELAYS = (2, 5)
 
 
@@ -144,7 +145,7 @@ def _github_api(method, path, body=None, _sleep=time.sleep):
         try:
             status, data = http_json(method, f"https://api.github.com{path}", body, headers, timeout=30)
         except (urllib.error.URLError, OSError) as e:
-            if delay is None or not (method == "GET" or _never_reached_github(e)):
+            if delay is None or not _never_reached_github(e):
                 return None, f"GitHub API {method} {path} -> no answer: {getattr(e, 'reason', e)}"
             log(f"github: {method} {path} got no answer ({getattr(e, 'reason', e)}), retrying in {delay}s")
             _sleep(delay)

@@ -5831,8 +5831,7 @@ def test_github_api_gives_up_with_an_error_not_an_exception(runner):
 
 
 def test_github_api_does_not_repeat_a_write_that_may_have_landed(runner):
-    # A timeout or a 502 on a POST may already have created the PR; a GET is
-    # the only method repeated after one of those.
+    # A timeout or a 502 on a POST may already have created the PR.
     for outcome in (TimeoutError("timed out"), (502, {})):
         fake, calls = _answers(outcome, (201, {"number": 7}))
         with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
@@ -5841,8 +5840,16 @@ def test_github_api_does_not_repeat_a_write_that_may_have_landed(runner):
         assert data is None and len(calls) == 1
 
 
+def test_github_api_does_not_repeat_a_timeout_even_on_a_get(runner):
+    fake, calls = _answers(TimeoutError("timed out"), (200, {"ok": 1}))
+    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
+         patch.object(runner.tools_github, "http_json", fake):
+        data, err = runner._github_api("GET", "/repos/SokratesAI/x", _sleep=lambda s: None)
+    assert data is None and "timed out" in err and len(calls) == 1
+
+
 def test_github_api_repeats_a_get_after_a_bad_gateway(runner):
-    fake, calls = _answers((502, {}), TimeoutError("timed out"), (200, {"ok": 1}))
+    fake, calls = _answers((502, {}), (503, {}), (200, {"ok": 1}))
     with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
          patch.object(runner.tools_github, "http_json", fake):
         data, err = runner._github_api("GET", "/repos/SokratesAI/x", _sleep=lambda s: None)
