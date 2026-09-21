@@ -5790,6 +5790,65 @@ def test_github_api_surfaces_http_error(runner):
     assert "HTTP 404" in err
 
 
+def _answers(*outcomes):
+    """A fake http_json that raises or returns each outcome in turn, counting calls."""
+    calls = []
+
+    def fake(method, url, *a, **k):
+        calls.append(method)
+        out = outcomes[len(calls) - 1]
+        if isinstance(out, BaseException):
+            raise out
+        return out
+    return fake, calls
+
+
+def _dns_failure():
+    import socket
+    import urllib.error
+    return urllib.error.URLError(socket.gaierror(-3, "Temporary failure in name resolution"))
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT"])
+def test_github_api_retries_a_request_that_never_reached_github(runner, method):
+    # Issue #106: a DNS blip used to raise out of create_pr mid-way.
+    fake, calls = _answers(_dns_failure(), (200, {"ok": 1}))
+    slept = []
+    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
+         patch.object(runner.tools_github, "http_json", fake):
+        data, err = runner._github_api(method, "/repos/SokratesAI/x", _sleep=slept.append)
+    assert (data, err) == ({"ok": 1}, None)
+    assert len(calls) == 2 and slept == [2]
+
+
+def test_github_api_gives_up_with_an_error_not_an_exception(runner):
+    fake, calls = _answers(_dns_failure(), _dns_failure(), _dns_failure())
+    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
+         patch.object(runner.tools_github, "http_json", fake):
+        data, err = runner._github_api("POST", "/repos/SokratesAI/x/pulls", _sleep=lambda s: None)
+    assert data is None and "no answer" in err and "name resolution" in err
+    assert len(calls) == 3
+
+
+def test_github_api_does_not_repeat_a_write_that_may_have_landed(runner):
+    # A timeout or a 502 on a POST may already have created the PR; a GET is
+    # the only method repeated after one of those.
+    for outcome in (TimeoutError("timed out"), (502, {})):
+        fake, calls = _answers(outcome, (201, {"number": 7}))
+        with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
+             patch.object(runner.tools_github, "http_json", fake):
+            data, err = runner._github_api("POST", "/repos/SokratesAI/x/pulls", _sleep=lambda s: None)
+        assert data is None and len(calls) == 1
+
+
+def test_github_api_repeats_a_get_after_a_bad_gateway(runner):
+    fake, calls = _answers((502, {}), TimeoutError("timed out"), (200, {"ok": 1}))
+    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
+         patch.object(runner.tools_github, "http_json", fake):
+        data, err = runner._github_api("GET", "/repos/SokratesAI/x", _sleep=lambda s: None)
+    assert (data, err) == ({"ok": 1}, None) and len(calls) == 3
+
+
 def test_create_pr_requires_repo_branch_and_files(runner):
     assert "required" in runner.create_pr("", "branch", [], "msg", "title")
     assert "required" in runner.create_pr("agora", "", [{"path": "a.md", "content": "x"}], "msg", "title")

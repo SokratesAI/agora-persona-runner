@@ -3,8 +3,10 @@
 import base64
 import json
 import os
+import socket
 import subprocess
 import time
+import urllib.error
 import urllib.parse
 
 import yaml
@@ -117,14 +119,41 @@ def github_read(args):
 # (branch/contents/pulls for create_pr; pulls/check-runs/merge for
 # merge_pr), never an arbitrary request shaped by model output.
 # --------------------------------------------------------------------------
-def _github_api(method, path, body=None):
+# Issue #106: one DNS blip on a push cost Cycle 361 its whole hour. Here it
+# raised out of http_json as a bare URLError, so create_pr could die between
+# creating the branch and committing to it. A request that never reached
+# GitHub (name resolution, refused connection) is safe to repeat for any
+# method; a timeout or a 502-504 may have been acted on, so only a GET, which
+# changes nothing, is repeated after one of those.
+GITHUB_RETRY_DELAYS = (2, 5)
+
+
+def _never_reached_github(exc):
+    reason = getattr(exc, "reason", exc)
+    return isinstance(reason, (socket.gaierror, ConnectionRefusedError))
+
+
+def _github_api(method, path, body=None, _sleep=time.sleep):
     if not GITHUB_BOT_TOKEN:
         return None, "no token configured (GITHUB_BOT_TOKEN not set)"
     headers = {
         "Authorization": f"Bearer {GITHUB_BOT_TOKEN}",
         "Accept": "application/vnd.github+json",
     }
-    status, data = http_json(method, f"https://api.github.com{path}", body, headers, timeout=30)
+    for delay in (*GITHUB_RETRY_DELAYS, None):
+        try:
+            status, data = http_json(method, f"https://api.github.com{path}", body, headers, timeout=30)
+        except (urllib.error.URLError, OSError) as e:
+            if delay is None or not (method == "GET" or _never_reached_github(e)):
+                return None, f"GitHub API {method} {path} -> no answer: {getattr(e, 'reason', e)}"
+            log(f"github: {method} {path} got no answer ({getattr(e, 'reason', e)}), retrying in {delay}s")
+            _sleep(delay)
+            continue
+        if delay is not None and method == "GET" and status in (502, 503, 504):
+            log(f"github: GET {path} -> HTTP {status}, retrying in {delay}s")
+            _sleep(delay)
+            continue
+        break
     if status >= 400:
         return None, f"GitHub API {method} {path} -> HTTP {status}: {json.dumps(data)[:400]}"
     return data, None
