@@ -161,6 +161,17 @@ CAPTURE_TARGETS = {
 # project that exists at the moment it is written.
 PROJECT_TAG_PREFIX = "#"
 
+# Idea #333: a note is a record in `nova_notes_store` now, and the /notes
+# page, the capture box and every cycle read that store. `notes.md` stays
+# in CAPTURE_TARGETS only because the site validates targets against it and
+# `reading_mirror` skips it by path; a write here would land in a file
+# nothing reads, and report success. So every function that writes a
+# capture file refuses `notes` instead.
+NOTES_ARE_RECORDS = (
+    "notes are records now: write them through nova_notes_store, "
+    "not notes.md"
+)
+
 _PROJECT_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -304,12 +315,14 @@ def amend(target, index, original, text, store=None):
     was boarded or removed between the attempts, and `replace_capture`
     returns `None` rather than resurrecting it.
 
-    **His two boards go to the #203 record store** (`_amend_records`); only
-    `notes`, which has no records, still reads and writes the file here.
+    **His two boards go to the #203 record store** (`_amend_records`); `notes` is
+    refused: notes are records in `nova_notes_store` (idea #333).
     """
     path = CAPTURE_TARGETS.get(target)
     if path is None:
         return False, f"unknown target: {target!r}"
+    if target == "notes":
+        return False, NOTES_ARE_RECORDS
     if not (original or "").strip():
         return False, "nothing to amend"
     bullets = clean_capture_text(text or "")
@@ -445,12 +458,14 @@ def comment_on_capture(target, index, original, text, store=None):
     concurrent writer is the same one: a cycle boarding these files while
     the reply is being written.
 
-    **His two boards go to the #203 record store** (`_reply_records`); only
-    `notes`, which has no records, still reads and writes the file here.
+    **His two boards go to the #203 record store** (`_reply_records`); `notes` is
+    refused: notes are records in `nova_notes_store` (idea #333).
     """
     path = CAPTURE_TARGETS.get(target)
     if path is None:
         return False, f"unknown target: {target!r}"
+    if target == "notes":
+        return False, NOTES_ARE_RECORDS
     if not (original or "").strip():
         return False, "nothing to answer"
     body = (text or "").strip()
@@ -553,11 +568,9 @@ def convert_capture(source, index, original, dest):
     message below says so rather than reporting success. A duplicate is
     recoverable; his text is not.
 
-    The rating rides across with the bullet for the two boards, because it
-    is his and it is still true after the move. It is stripped going into
-    `notes.md`, whose contract is *"never numbered, never boarded"* -- a
-    priority label in a file with no board is vocabulary from a page that
-    does not exist.
+    The rating rides across with the bullet, because it is his and it is
+    still true after the move. `notes` is refused either way: a note is a
+    record now, and `nova_site._post_convert_to_note` is the move into one.
     """
     if source not in CAPTURE_TARGETS:
         return False, f"unknown target: {source!r}"
@@ -565,16 +578,12 @@ def convert_capture(source, index, original, dest):
         return False, f"unknown target: {dest!r}"
     if source == dest:
         return False, f"already in {dest}"
+    if "notes" in (source, dest):
+        return False, NOTES_ARE_RECORDS
     if not (original or "").strip():
         return False, "nothing to convert"
 
-    text = original
-    if dest == "notes":
-        _, text = split_capture_priority(original)
-        if not text.strip():
-            return False, "nothing to convert"
-
-    ok, message = capture(dest, text)
+    ok, message = capture(dest, original)
     if not ok:
         return False, message
     ok, removal = amend(source, index, original, "")
@@ -830,7 +839,7 @@ def capture(target, text, priority="", one_item=False, project="", store=None):
     """Add a capture to one of his three boxes. Returns (ok, message).
 
     **His two boards go to the #203 record store** (`_capture_records`);
-    only `notes`, which has no records, still reads and writes the file here.
+    `notes` is refused: notes are records in `nova_notes_store` (idea #333).
 
     `target` is a key into CAPTURE_TARGETS, never a path -- nothing a
     client sends is ever used to address a vault document.
@@ -860,6 +869,8 @@ def capture(target, text, priority="", one_item=False, project="", store=None):
     path = CAPTURE_TARGETS.get(target)
     if path is None:
         return False, f"unknown target: {target!r}"
+    if target == "notes":
+        return False, NOTES_ARE_RECORDS
     if priority:
         # Normalised, not exact-matched, for the reason `canonical_priority`
         # gives: a caller still on the coloured spelling must not be refused.
