@@ -5165,6 +5165,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
             self._send_json(400, {"error": "index must be a non-negative number"})
             return
+        if dest == "notes":
+            self._post_convert_to_note(source, index, original)
+            return
 
         try:
             ok, message = convert_capture(source, index, original, dest)
@@ -6394,6 +6397,44 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(502, {"ok": False, "message": str(e)})
             return
         self._send_json(200, {"ok": True, "message": "Saved to your notes"})
+
+    def _post_convert_to_note(self, source, index, original):
+        """A capture moved to notes becomes a note record (idea #333).
+
+        `convert_capture` would append it to `notes.md`, which nothing a
+        cycle reads looks at any more, so the line would leave his board
+        for a file nobody opens. Same order as `convert_capture` and for the
+        same reason: write the note first, then remove the bullet, so a
+        failed removal costs a duplicate rather than his sentence.
+        """
+        author = resolve_caller(self)
+        if author is None:
+            self._send_json(403, {"ok": False, "message": "only the owner's own login, through the Tailscale proxy, can write a note"})
+            return
+        _, text = split_capture_priority(original)
+        try:
+            nova_notes_store.create_note(author, text)
+        except ValueError as e:
+            self._send_json(400, {"ok": False, "message": str(e)})
+            return
+        except nova_notes_store.StoreError as e:
+            self._send_json(502, {"ok": False, "message": str(e)})
+            return
+        ok, removal = amend(source, index, original, "")
+        _invalidate_capture_target(source)
+        message = "moved to your notes" if ok else (
+            f"saved as a note, but could not remove it from {source} ({removal})"
+            f" — it is in both, delete the {source} one")
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Convert {source} -> note record · {'ok' if ok else message}",
+            before=original[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
     def _post_note(self, action, payload):
         """`/api/notes/<action>` -- write a note record (idea #333).
