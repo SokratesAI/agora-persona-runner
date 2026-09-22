@@ -826,6 +826,21 @@ def _short_statement(statement):
     return " ".join(words[:8]) + ("\u2026" if len(words) > 8 else "")
 
 
+def _fences_balanced(lines):
+    """Does every fence close with a bare ``` before the next one opens?"""
+    fenced = False
+    for line in lines:
+        if not _ANY_FENCE_RE.match(line):
+            continue
+        if not fenced:
+            fenced = True
+        elif _FENCE_CLOSE_RE.match(line):
+            fenced = False
+        else:
+            return False
+    return not fenced
+
+
 def _fold_project_background(text):
     """Put each project's prose under a `#### <Project> -- background` fold.
 
@@ -846,6 +861,11 @@ def _fold_project_background(text):
     sits under it. So is anything before the first `## `.
     """
     lines = (text or "").split("\n")
+    if not _fences_balanced(lines):
+        # A half-written fence would carry every later `## ` into one
+        # project's fold; `_inline_goal_blocks` already renders it as a
+        # stray code block, so the card is left exactly as it was.
+        return text
     out, i = [], 0
     while i < len(lines):
         if not lines[i].startswith("## "):

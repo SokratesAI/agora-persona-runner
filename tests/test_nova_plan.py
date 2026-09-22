@@ -1059,6 +1059,35 @@ More.
     assert headings == ["Nova", "A heading of its own"]
 
 
+def test_a_half_written_fence_leaves_the_card_as_it_was(monkeypatch):
+    """An unterminated block would toggle the scan into "inside a fence"
+    for the rest of the file and carry project B into A's fold. The fold
+    stands aside instead: the card is exactly what it was without it."""
+    markdown = """# Project goals
+
+## A
+
+```key-result
+id: a
+name: Half written
+
+Why.
+
+## B
+
+```objective
+statement: Whole.
+```
+Why B.
+"""
+    from agora_runner import nova_plan
+
+    folded = _projects_doc(markdown)["sections"]
+    monkeypatch.setattr(nova_plan, "_fold_project_background", lambda text: text)
+    assert folded == _projects_doc(markdown)["sections"]
+    assert not any((s["heading"] or "").endswith("background") for s in folded)
+
+
 def test_only_the_project_goals_card_is_refolded():
     """`goals.md` and `roadmap.md` have no project sections; a `## ` there
     is an argument, and folding it would hide the argument."""
