@@ -186,7 +186,7 @@ def main(argv=None, client=None, now_ms=None):
     for verdict, name, content, rev in rows:
         note = {
             "COPY": "copied",
-            "STALE": (f"still changing, but the copy was over "
+            "STALE": ("still changing, but the copy was over "
                       f"{MAX_STALE_MINUTES} min behind -- copied anyway"),
             "CURRENT": "copy is current",
             "SETTLING": f"changed in the last {SETTLE_MINUTES} min, next run",
