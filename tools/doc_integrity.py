@@ -85,7 +85,6 @@ PATHS = (
     "projects/sokrates/projects/agora/nova/resources/idea-pool.md",
     "projects/sokrates/projects/nova/issues.md",
     "projects/sokrates/projects/nova/ideas.md",
-    "projects/sokrates/projects/nova/notes.md",
     "projects/sokrates/projects/agora/nova/resources/issues.md",
     "projects/sokrates/projects/agora/nova/resources/ideas.md",
     "projects/sokrates/projects/agora/nova/resources/inbox.md",
