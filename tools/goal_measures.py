@@ -1231,7 +1231,20 @@ def measure_nova_cost_per_cycle(since, until, ledger=None):
 #: predict -- so counting them would count a cycle that wrote. `still running`
 #: is the newest few, which legitimately have no entry yet; three cycles
 #: overlap, so counting those would read the cadence as a fault every hour.
-SILENT_VERDICTS_NOT_COUNTED = ("misfiled", "unnumbered", "still running")
+#: `skipped` is `cycle_postmortem` saying it read nothing about that number
+#: this run. It is not a silent cycle and it is not a clean one either, so
+#: it is excused here and the window below is set wide enough that it should
+#: never appear -- this is the backstop, not the fix.
+SILENT_VERDICTS_NOT_COUNTED = ("misfiled", "unnumbered", "still running",
+                               "skipped")
+
+#: How many cycle numbers `measure_nova_silent_cycles` needs judged. The
+#: cadence is one cycle every 24 minutes, so 24 hours is about 60 numbers --
+#: `cycle_postmortem`'s own default window of 48 is narrower than the window
+#: this measures over, and a number below it would come back `skipped`.
+#: Four days of headroom, and the remembered verdicts make a second run of
+#: it nearly free.
+_SILENT_CYCLE_WINDOW = 240
 
 
 def measure_nova_silent_cycles(since, until):
@@ -1261,7 +1274,8 @@ def measure_nova_silent_cycles(since, until):
     from datetime import datetime, timedelta, timezone
     from tools import cycle_postmortem
 
-    results, _newest, error, conversations, _paths = cycle_postmortem.collect()
+    results, _newest, error, conversations, _paths = cycle_postmortem.collect(
+        window=_SILENT_CYCLE_WINDOW, cache=cycle_postmortem.load_verdicts())
     if error:
         return None, f"cycle_postmortem could not read the loop's history: {error}"
     now = datetime.now(timezone.utc)

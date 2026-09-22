@@ -1952,7 +1952,8 @@ def main(argv=None):
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW,
                         help="how many of the newest cycle numbers raise the status")
     parser.add_argument("--all", action="store_true", dest="raise_all",
-                        help="judge and raise on every entryless cycle, however old -- one Agora fetch each")
+                        help="judge and raise on every entryless cycle, however "
+                             "old -- one Agora fetch each")
     parser.add_argument("--split-at", metavar="ISO8601",
                         help="also report the entryless rate either side of this "
                              "instant, over equal-length windows (idea #170)")
