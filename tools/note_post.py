@@ -15,6 +15,11 @@ the box can type is not that.
     python3 -m tools.note_post --as sokrates --text 'server2 is back'
     echo 'multi-line\n\ntext' | python3 -m tools.note_post --as nova --text -
     python3 -m tools.note_post --as sokrates --on note:8f2a1c --text 'seen'
+    python3 -m tools.note_post --as nova --read note:8f2a1c
+
+`--read` writes nothing he sees: it stamps the note as read by the sender,
+which is what takes it off `top_board_rows`' unread list (the notes.md
+equivalent was moving the bullet under `## Read`).
 
 Prints the stored record's id. Exit 1 when the store refused the write,
 2 on a usage error.
@@ -45,12 +50,21 @@ def post(sender, text, on=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python3 -m tools.note_post", description=__doc__.splitlines()[0])
     parser.add_argument("--as", dest="sender", required=True, choices=SENDERS)
-    parser.add_argument("--text", required=True, help="the text, or - to read it from stdin")
+    parser.add_argument("--text", help="the text, or - to read it from stdin")
     parser.add_argument("--on", help="a note id (note:<hex>) to comment on instead of posting a note")
+    parser.add_argument("--read", metavar="NOTE_ID", help="mark this note read by the sender; writes no text")
     args = parser.parse_args(argv)
-    text = sys.stdin.read() if args.text == "-" else args.text
+    if (args.text is None) == (args.read is None):
+        parser.error("give exactly one of --text or --read")
     try:
-        record = post(args.sender, text, args.on)
+        if args.read:
+            doc = store.read_note(args.read)
+            if doc is None:
+                raise store.StoreError(f"{args.read} does not exist")
+            record = store.mark_read(doc, args.sender)
+        else:
+            text = sys.stdin.read() if args.text == "-" else args.text
+            record = post(args.sender, text, args.on)
     except (ValueError, store.StoreError) as e:
         print(f"refused: {e}", file=sys.stderr)
         return 1
