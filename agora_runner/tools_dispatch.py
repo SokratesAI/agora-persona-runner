@@ -27,6 +27,7 @@ from agora_runner.tools_github import github_read, create_pr, github_comment, me
 from agora_runner.tools_terminal import terminal_exec
 from agora_runner.tools_search import web_search_tinyfish
 from agora_runner.nova_capture import capture as capture_to_backlog
+from agora_runner import nova_notes_store
 from agora_runner.nova_uploads import is_image, read_upload
 
 #: The shape `store_upload` writes into the owner's files. Deliberately the
@@ -235,6 +236,21 @@ class ToolImage(str):
         return obj
 
 
+def _capture_note(text):
+    """A note filed from a reply becomes a note record, signed Nova (idea #333).
+
+    `capture("notes", ...)` appends to `notes.md`, which no cycle reads since
+    the notes store replaced it, so a note filed from a chat reply landed in a
+    file nobody opens. It is signed `nova` because the reply turn wrote it,
+    and nothing goes out under his name that he did not type himself.
+    """
+    try:
+        nova_notes_store.create_note("nova", text)
+    except (ValueError, nova_notes_store.StoreError) as e:
+        return False, str(e)
+    return True, "saved to the notes page, signed Nova"
+
+
 def execute_tool(name, args, persona, conversation_id, active_step=None):
     persona_name = persona.get("name", "?")
     debug_log(f"execute_tool: {name} args={json.dumps(args)[:200]} persona={persona_name} conversation={conversation_id}")
@@ -399,7 +415,10 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
         if name == "nova_capture":
             target = str(args.get("target", ""))
             text = str(args.get("text", ""))
-            ok, message = capture_to_backlog(target, text)
+            if target == "notes":
+                ok, message = _capture_note(text)
+            else:
+                ok, message = capture_to_backlog(target, text)
             # Audited with the text on the `after` side, the same shape the
             # site's own capture box uses (nova_site.py), so a line filed by
             # a reply and a line typed into the box read identically in the
