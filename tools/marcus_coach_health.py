@@ -64,6 +64,8 @@ import urllib.request
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+from agora_runner.http_util import token_headers
+
 DEFAULT_DEPLOYMENT = "marcus"
 DEFAULT_NAMESPACE = "agents"
 TIMEOUT = 15
@@ -123,8 +125,11 @@ def read_listing(base_url, opener=urllib.request.urlopen):
     listing the app cannot parse either.
     """
     url = f"{base_url.rstrip('/')}/conversations?active=true"
+    # Agora's public app, so carry the agent token: the read has to survive
+    # Agora refusing untokened reads on :8080 (issue #287).
+    request = urllib.request.Request(url, headers=token_headers())
     try:
-        with opener(url, timeout=TIMEOUT) as response:
+        with opener(request, timeout=TIMEOUT) as response:
             if getattr(response, "status", 200) != 200:
                 return None
             body = json.loads(response.read())

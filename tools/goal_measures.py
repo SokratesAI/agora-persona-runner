@@ -70,6 +70,7 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.config import OSLO
+from agora_runner.http_util import token_headers
 from agora_runner.nova_goal_history import goal_key
 from agora_runner.nova_plan import _fenced, _goal, set_field_in_goals
 
@@ -195,9 +196,12 @@ def _iso_in_year(value, year):
     return _iso(text)
 
 
-def _get_json(url, timeout=60):
+def _get_json(url, timeout=60, headers=None):
+    # `headers` is for the Agora reads only: they carry the agent token so
+    # they survive Agora refusing untokened reads on :8080 (issue #287).
+    request = urllib.request.Request(url, headers=headers or {})
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read()), None
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         return None, f"could not read {url}: {exc}"
@@ -291,7 +295,7 @@ def fetch_agora_metered_places(site=AGORA):
     """
     from agora_runner.reply import METERED_PROVIDERS
 
-    catalog, error = _get_json(f"{site}/models")
+    catalog, error = _get_json(f"{site}/models", headers=token_headers())
     if error:
         return None, error
     models = catalog if isinstance(catalog, list) else (catalog or {}).get("models") or []
@@ -311,7 +315,7 @@ def fetch_agora_metered_places(site=AGORA):
                             ("heartbeats", "heartbeats", "heartbeat"),
                             ("conversations?active=true", "conversations",
                              "conversation")):
-        payload, error = _get_json(f"{site}/{path}")
+        payload, error = _get_json(f"{site}/{path}", headers=token_headers())
         if error:
             return None, error
         rows = payload if isinstance(payload, list) else (payload or {}).get(key) or []
@@ -3242,7 +3246,7 @@ def _probe_agora_workflows(since, until, site=AGORA):
     heartbeats out for the same reason and states it the same way: they cannot
     spend, and these cannot run.
     """
-    payload, error = _get_json(f"{site}/heartbeats")
+    payload, error = _get_json(f"{site}/heartbeats", headers=token_headers())
     if error:
         return None, error
     beats = (payload or {}).get("heartbeats")
@@ -3276,7 +3280,7 @@ def _probe_agora_multi_persona(since, until, site=AGORA):
     in, the same call `fetch_agora_metered_places` makes about archived
     conversations for the same reason.
     """
-    payload, error = _get_json(f"{site}/conversations", timeout=120)
+    payload, error = _get_json(f"{site}/conversations", timeout=120, headers=token_headers())
     if error:
         return None, error
     threads = (payload or {}).get("conversations")

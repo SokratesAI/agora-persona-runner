@@ -127,7 +127,17 @@ def test_listing_asks_for_the_active_filter_only():
     rows = [{"id": CONV}]
     opener = _opener(_Response(json.dumps(rows).encode()))
     assert read_listing(BASE, opener=opener) == rows
-    assert opener.url == f"{BASE}/conversations?active=true"
+    assert opener.url.full_url == f"{BASE}/conversations?active=true"
+
+
+def test_the_listing_carries_the_agent_token(monkeypatch):
+    """Agora is to refuse an untokened read on :8080 (issue #287), and this
+    reads the coach's listing there from the bridge pod."""
+    from agora_runner import http_util
+    monkeypatch.setattr(http_util, "AGORA_TOKEN", "tok")
+    opener = _opener(_Response(b"[]"))
+    read_listing(BASE, opener=opener)
+    assert opener.url.get_header("X-agora-token") == "tok"
 
 
 def test_listing_accepts_the_wrapped_shape():

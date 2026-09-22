@@ -71,6 +71,7 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 # from copies `agora_runner/` and not `tools/`, so the split is what makes
 # one copy possible; this module keeps the report and the exit contract,
 # which are a cycle's concern and not the endpoint's.
+from agora_runner.http_util import token_headers
 from agora_runner.heartbeat_liveness import (  # noqa: F401  (re-exported)
     AGORA_PUBLIC,
     _DELIBERATE_MARKER,
@@ -96,8 +97,11 @@ def fetch_conversation(conversation_id, url=None, opener=None, timeout=20):
     if not conversation_id:
         return None, "the heartbeat names no conversation"
     target = f"{(url or AGORA_PUBLIC).rstrip('/')}/conversations/{conversation_id}/messages"
+    # Carry the agent token, so the read survives Agora refusing untokened
+    # reads on :8080 (issue #287). Empty where the pod holds none.
+    request = urllib.request.Request(target, headers=token_headers())
     try:
-        with (opener or urllib.request.urlopen)(target, timeout=timeout) as resp:
+        with (opener or urllib.request.urlopen)(request, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         return None, f"could not read {target}: {e}"
