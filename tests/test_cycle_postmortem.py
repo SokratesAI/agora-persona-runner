@@ -399,7 +399,7 @@ def test_split_at_never_moves_the_exit_status(monkeypatch, capsys):
     own, so `preflight` cannot be turned red by a measurement."""
     conversations = _hourly(600, 6)
     monkeypatch.setattr("tools.cycle_postmortem.collect",
-                        lambda window=None: ([], 605, None, conversations, []))
+                        lambda window=None, judge_all=False, cache=None: ([], 605, None, conversations, []))
     status = postmortem_main(["--split-at", "2026-08-28T03:00:00Z"])
     assert status == 0
     assert "ENTRYLESS RATE" in capsys.readouterr().out
@@ -657,7 +657,7 @@ def test_main_searches_before_it_grades_not_after(monkeypatch, capsys):
     """
     results = [row(1183, "lost")]
     monkeypatch.setattr("tools.cycle_postmortem.collect",
-                        lambda window=None: (results, 1230, None, {}, []))
+                        lambda window=None, judge_all=False, cache=None: (results, 1230, None, {}, []))
     monkeypatch.setattr("tools.cycle_postmortem.find_misfiled",
                         lambda *a, **k: [(1183, 1184)])
     status = postmortem_main([])
@@ -1763,3 +1763,124 @@ def test_the_verdict_still_reaches_a_sweep():
     assert "--notify" not in preflight.CHECK_ARGS["cycle_postmortem"]
     assert cycle_postmortem.RAISING_VERDICTS, (
         "a verdict set that raises nothing makes this check unable to go red")
+
+
+# --- the gap list is history and only grows ---------------------------
+#
+# Cycle 2061 measured the shape of this before the pause of 2026-09-24:
+# every heartbeat run takes a cycle number before it can fail, so three
+# weeks with the subscription off burns roughly 1,260 numbers and every
+# one of them becomes a permanent entryless gap. `collect` judged all of
+# them on every run, one Agora message fetch each. Timing `preflight`
+# today proves nothing -- there are two dozen gaps -- so the test counts
+# fetches against a synthetic history instead.
+
+def _thousand_gap_world(monkeypatch, tmp_path, calls):
+    """A journal with one entry and 1,300 entryless numbers above it."""
+    monkeypatch.setattr(cycle_postmortem, "journal_paths",
+                        lambda: ["001-cycle-1000.md"])
+    monkeypatch.setattr(cycle_postmortem, "_get", lambda url, timeout=30: None)
+    monkeypatch.setattr(
+        cycle_postmortem, "conversations_by_cycle",
+        lambda payload, heartbeat=None: {
+            n: {"id": f"c{n}", "lastMessageAt": "2026-09-01T00:00:00Z"}
+            for n in range(1000, 2301)})
+
+    def counting_fetch(conversation_id, timeout=30):
+        calls.append(conversation_id)
+        return [message("heartbeat: Nova finished in 0s --- failed: boom")]
+
+    monkeypatch.setattr(cycle_postmortem, "_fetch_messages", counting_fetch)
+    monkeypatch.setattr(cycle_postmortem, "VERDICT_CACHE",
+                        str(tmp_path / "verdicts.json"))
+
+
+def test_a_thousand_dead_numbers_cost_a_window_of_fetches_not_a_thousand(
+        monkeypatch, tmp_path):
+    calls = []
+    _thousand_gap_world(monkeypatch, tmp_path, calls)
+    results, newest, error, _conversations, _paths = cycle_postmortem.collect(
+        window=96)
+    assert error is None
+    assert newest == 2300
+    # 1,299 gaps -- the newest number is the cycle asking, never a gap.
+    assert len(results) == 1299
+    assert len(calls) <= 96, f"{len(calls)} fetches for a 96-cycle window"
+
+
+def test_a_gap_nobody_looked_at_does_not_read_as_a_gap_that_came_back_clean(
+        monkeypatch, tmp_path):
+    """The contract `preflight` rests on: a check that never ran must not
+    look like one that came back clean."""
+    calls = []
+    _thousand_gap_world(monkeypatch, tmp_path, calls)
+    results, newest, error, _conversations, _paths = cycle_postmortem.collect(
+        window=96)
+    skipped = [r for r in results if r["verdict"] == "skipped"]
+    assert len(skipped) == 1299 - 95  # the 95 numbers above the floor
+    report, _status = cycle_postmortem.format_report(
+        results, newest, error, window=96)
+    assert "were not judged this run" in report
+    assert "--all to judge them" in report
+
+
+def test_all_judges_every_one_of_them(monkeypatch, tmp_path):
+    calls = []
+    _thousand_gap_world(monkeypatch, tmp_path, calls)
+    results, _newest, _error, _c, _p = cycle_postmortem.collect(
+        window=96, judge_all=True)
+    assert len(calls) == 1299
+    assert not [r for r in results if r["verdict"] == "skipped"]
+
+
+def test_a_verdict_already_settled_is_remembered_instead_of_refetched(
+        monkeypatch, tmp_path):
+    calls = []
+    _thousand_gap_world(monkeypatch, tmp_path, calls)
+    results, _newest, _error, _c, _p = cycle_postmortem.collect(
+        window=96, judge_all=True)
+    cycle_postmortem.save_verdicts(results)
+    calls.clear()
+    second, _newest, _error, _c, _p = cycle_postmortem.collect(
+        window=96, cache=cycle_postmortem.load_verdicts())
+    assert len(calls) <= 96
+    assert not [r for r in second if r["verdict"] == "skipped"]
+    old = [r for r in second if r["number"] == 1001]
+    assert old and old[0]["verdict"] == "cut off"
+    assert old[0]["remembered"] is True
+
+
+def test_a_lost_cycle_is_never_remembered_because_its_row_carries_a_reply(
+        tmp_path):
+    """A four-key record cannot carry the recovered reply a `lost` row
+    prints, and a remembered one would print "no reply to recover" over a
+    reply still sitting in the conversation."""
+    path = str(tmp_path / "verdicts.json")
+    cycle_postmortem.save_verdicts(
+        [{"number": 1, "verdict": "lost", "messages": 3, "detail": "d",
+          "reply": "the whole reply"},
+         {"number": 2, "verdict": "failed", "messages": 1, "detail": "d"}],
+        path=path)
+    remembered = cycle_postmortem.load_verdicts(path)
+    assert "1" not in remembered
+    assert remembered["2"]["verdict"] == "failed"
+
+
+def test_an_unreadable_cache_is_empty_rather_than_fatal(tmp_path):
+    path = tmp_path / "verdicts.json"
+    path.write_text("{ not json")
+    assert cycle_postmortem.load_verdicts(str(path)) == {}
+
+
+def test_saving_merges_rather_than_replacing(tmp_path):
+    """A run that judged only the window must not forget what an earlier
+    run learned about everything below it."""
+    path = str(tmp_path / "verdicts.json")
+    cycle_postmortem.save_verdicts(
+        [{"number": 1, "verdict": "failed", "messages": 1, "detail": "old"}],
+        path=path)
+    cycle_postmortem.save_verdicts(
+        [{"number": 2, "verdict": "absent", "messages": 0, "detail": "new"}],
+        path=path)
+    remembered = cycle_postmortem.load_verdicts(path)
+    assert sorted(remembered) == ["1", "2"]
