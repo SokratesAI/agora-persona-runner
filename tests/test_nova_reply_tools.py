@@ -144,6 +144,36 @@ def test_a_capture_from_a_reply_goes_through_the_same_writer_as_the_box():
     assert out == "captured to issues"
 
 
+def test_a_note_from_a_reply_is_a_note_record_not_a_notes_md_line():
+    """Idea #333: `notes.md` is no longer read by any cycle, so a note filed
+    from a reply goes to the notes store, signed Nova, and never reaches the
+    markdown writer."""
+    with patch("agora_runner.tools_dispatch.capture_to_backlog") as writer, \
+            patch("agora_runner.nova_notes_store.create_note") as create, \
+            patch("agora_runner.tools_dispatch.audit"):
+        from agora_runner.tools_dispatch import execute_tool
+        out = execute_tool(
+            "nova_capture", {"target": "notes", "text": "he rides a Garmin Edge 530"},
+            nova_replies.REPLY_PERSONA, nova_replies.CONVERSATION_ID,
+        )
+    create.assert_called_once_with("nova", "he rides a Garmin Edge 530")
+    writer.assert_not_called()
+    assert not out.startswith("FAILED")
+
+
+def test_a_note_the_store_refuses_reads_as_failed_to_the_model():
+    from agora_runner import nova_notes_store
+    with patch("agora_runner.nova_notes_store.create_note",
+               side_effect=nova_notes_store.StoreError("couch said 503")), \
+            patch("agora_runner.tools_dispatch.audit"):
+        from agora_runner.tools_dispatch import execute_tool
+        out = execute_tool(
+            "nova_capture", {"target": "notes", "text": "x"},
+            nova_replies.REPLY_PERSONA, nova_replies.CONVERSATION_ID,
+        )
+    assert out == "FAILED: couch said 503"
+
+
 def _post_mcp(payload, auth):
     """One real POST /mcp through the site's own handler.
 
