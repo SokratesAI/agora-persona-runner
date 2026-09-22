@@ -21,6 +21,7 @@ HIM = "him@example.com"
 def couch(monkeypatch):
     fake = FakeCouch()
     monkeypatch.setattr(ticket_docs, "_req", fake)
+    monkeypatch.setattr(nova_site, "audit", lambda *a, **k: None)
     with patch.object(nova_site.config, "NOVA_OWNER_LOGIN", HIM):
         yield fake
 
@@ -116,3 +117,37 @@ def test_the_capture_box_refuses_a_note_it_cannot_sign():
     status, answer = _post("/api/capture", {"target": "notes", "text": "x"}, owner_port=False)
     assert (status, answer["ok"]) == (403, False)
     assert store.list_notes() == []
+
+
+def test_a_capture_converted_to_a_note_becomes_a_record_not_a_notes_md_line():
+    # `notes.md` is read by nothing a cycle opens any more, so a capture
+    # moved there would leave his board for a file nobody looks at.
+    with patch.object(nova_site, "amend", return_value=(True, "ok")) as amend, \
+            patch.object(nova_site, "convert_capture") as conv:
+        status, answer = _post("/api/capture/convert", {
+            "from": "issues", "to": "notes", "index": 2, "original": "🟠 High: actually a note"})
+    assert (status, answer["ok"]) == (200, True)
+    conv.assert_not_called()
+    amend.assert_called_once_with("issues", 2, "🟠 High: actually a note", "")
+    assert [(d["author"], d["text"]) for d in store.list_notes()] == [("edvard", "actually a note")]
+
+
+def test_a_convert_to_a_note_it_cannot_sign_touches_neither_side():
+    with patch.object(nova_site, "amend") as amend:
+        status, answer = _post("/api/capture/convert", {
+            "from": "issues", "to": "notes", "index": 0, "original": "x"}, owner_port=False)
+    assert (status, answer["ok"]) == (403, False)
+    amend.assert_not_called()
+    assert store.list_notes() == []
+
+
+def test_a_convert_to_a_note_whose_removal_failed_says_it_is_in_both():
+    with patch.object(nova_site, "amend", return_value=(False, "the write failed")):
+        status, answer = _post("/api/capture/convert", {
+            "from": "ideas", "to": "notes", "index": 0, "original": "x"})
+    assert status == 502 and "in both" in answer["message"]
+    with patch.object(nova_site, "amend", return_value=(False, "that capture is no longer in the list")):
+        status, answer = _post("/api/capture/convert", {
+            "from": "ideas", "to": "notes", "index": 0, "original": "y"})
+    assert status == 502 and "duplicate" in answer["message"]
+    assert len(store.list_notes()) == 2
