@@ -64,13 +64,13 @@ persona's detail was, and neither is a measurement of anything.
 import argparse
 import json
 import sys
-import urllib.request
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+from agora_runner.http_util import open_agora  # noqa: E402
 from agora_runner.heartbeat_liveness import AGORA_PUBLIC  # noqa: E402
 from agora_runner.turns import runs_on_the_bridge  # noqa: E402
 
@@ -79,7 +79,7 @@ def _get(path, opener=None, timeout=30):
     """`(payload, error)` for one Agora GET. Never raises."""
     target = AGORA_PUBLIC.rstrip("/") + path
     try:
-        with (opener or urllib.request.urlopen)(target, timeout=timeout) as r:
+        with (opener or open_agora)(target, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8")), None
     except Exception as e:
         return None, f"could not read {target}: {e}"

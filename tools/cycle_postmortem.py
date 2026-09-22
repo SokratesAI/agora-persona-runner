@@ -157,7 +157,6 @@ import re
 import subprocess
 import sys
 import urllib.error
-import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -174,6 +173,7 @@ from agora_runner.cycle_health import MAX_CYCLE_MINUTES, missing_cycles  # noqa:
 from agora_runner.nova_journal import entry_seq, file_cycle, parse_heading  # noqa: E402
 from agora_runner.cycle_number import _NAME_RE  # noqa: E402
 from agora_runner.heartbeat_liveness import AGORA_PUBLIC  # noqa: E402
+from agora_runner.http_util import open_agora  # noqa: E402
 from tools.cli_sessions import (  # noqa: E402
     apply_cli_sessions,
     apply_session_endings,
@@ -377,7 +377,7 @@ def misfiled_entries(lost, entry_prs, reply_prs, step=1):
 
 
 def _get(url, timeout=30):
-    with urllib.request.urlopen(url, timeout=timeout) as response:
+    with open_agora(url, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

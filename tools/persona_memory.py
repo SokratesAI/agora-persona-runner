@@ -48,7 +48,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -57,6 +56,7 @@ from zoneinfo import ZoneInfo
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+from agora_runner.http_util import open_agora  # noqa: E402
 from agora_runner.heartbeat_liveness import AGORA_PUBLIC  # noqa: E402
 
 OSLO = ZoneInfo("Europe/Oslo")
@@ -124,7 +124,7 @@ def _get(path, opener=None, timeout=60):
     """`(payload, error)` for one Agora GET. Never raises."""
     target = AGORA_PUBLIC.rstrip("/") + path
     try:
-        with (opener or urllib.request.urlopen)(target, timeout=timeout) as r:
+        with (opener or open_agora)(target, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8")), None
     except Exception as e:
         return None, f"could not read {target}: {e}"
