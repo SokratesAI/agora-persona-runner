@@ -126,7 +126,10 @@ def plan(client, now_ms, settle_minutes=SETTLE_MINUTES):
         found = client.file_docs(src_path).get(src_path)
         if found is None:
             raise RuntimeError(f"could not find {src_path}")
-        todo.append((name, src_path, found.get("mtime"), EXTRA_SETTLE_MINUTES))
+        # min(), so --force (settle_minutes=0) reaches these too. The digest
+        # is the document the last cycle before a pause rewrites last.
+        todo.append((name, src_path, found.get("mtime"),
+                     min(settle_minutes, EXTRA_SETTLE_MINUTES)))
     out = []
     names = set()
     for name, src_path, mtime, settle in todo:
@@ -174,11 +177,17 @@ def _client():
 def main(argv=None, client=None, now_ms=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true", help=(
+        "copy every out-of-date document now, however recently it changed. "
+        "For the last run before the loop stops: nothing mirrors while it "
+        "is asleep, so whatever is SETTLING then stays unseen until it "
+        "wakes."))
     args = ap.parse_args(argv)
     try:
         client = client or _client()
         now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        rows = plan(client, now_ms)
+        rows = plan(client, now_ms,
+                    settle_minutes=0 if args.force else SETTLE_MINUTES)
     except Exception as e:  # noqa: BLE001 -- any failure is "no instrument"
         print(f"reading_mirror: COULD NOT READ: {e}")
         return 1

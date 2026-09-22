@@ -88,6 +88,14 @@ def test_a_brand_new_document_with_no_copy_yet_still_settles():
     assert verdicts(v) == {"plans.md": "SETTLING"}
 
 
+def test_force_copies_a_document_that_only_just_changed(with_digest):
+    """The last run before the loop stops: nothing mirrors while asleep."""
+    v = FakeVault({SRC + "goals.md": ("# fresh\n", FRESH),
+                   with_digest: ("# Digest\n", FRESH)})
+    assert rm.main(["--force"], client=v, now_ms=NOW) == 0
+    assert sorted(v.writes) == [DST + "goals.md", DST + "journal-digest.md"]
+
+
 def test_an_unchanged_source_is_not_rewritten():
     text = "# r\n"
     v = FakeVault({SRC + "roadmap.md": (text, OLD),
