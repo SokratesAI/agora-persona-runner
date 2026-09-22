@@ -244,7 +244,7 @@ def cmd_start(args):
         registry, rev = _read_registry()
         # A rollback, not a retirement: this demo was never handed to
         # anyone, so a tombstone saying he did not open it would read as
-        # disinterest in `demos-kr-opened` when it was a crash.
+        # disinterest in `nova-kpi-demos-opened` when it was a crash.
         unregister(registry, args.slug, retire_row=False)
         _write_registry(registry, rev)
         tail = ""
