@@ -406,7 +406,7 @@ def board_contents(board, local=None, store=None):
 
 
 def unread_notes(notes):
-    """Note records -> the ones Edvard or Sokrates left that I have not marked read.
+    """Note records -> the ones the owner or Sokrates left that I have not marked read.
 
     Since idea #333 his notes are records in the notes store, not bullets in
     `notes.md`, so "unread" is `nova_notes_store.is_unread`: live, not mine,

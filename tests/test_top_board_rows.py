@@ -483,7 +483,7 @@ def test_main_surfaces_captures_from_both_files(tmp_path, capsys):
 # --- notes, the third capture target (Cycle 253; the notes store since idea #333) ---
 
 def notes_json(text):
-    """A local `--notes` file: one live note from Edvard, or none for a blank text."""
+    """A local `--notes` file: one live note from the owner, or none for a blank text."""
     if not text.strip():
         return "[]"
     return json.dumps([{"_id": "note:abc123", "type": "note", "author": "edvard",
