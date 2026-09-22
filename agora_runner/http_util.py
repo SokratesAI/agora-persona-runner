@@ -52,10 +52,23 @@ def http_json(method, url, payload=None, headers=None, timeout=30):
         return e.code, body
 
 
-def http_bytes(url, timeout=30):
+def _token_headers():
+    """The agent token, for every call this repo makes to Agora on either app.
+
+    The public app (:8080) checks no token today, and issue #287 is that
+    any pod in `agents` can read any conversation off it. Closing that
+    means Agora refusing an untokened read there -- and the runner reads
+    every conversation through `agora_get` every few seconds, so it has
+    to carry the token first or the guard silences this loop. Sending it
+    where nothing checks it yet is harmless; the guard can land after.
+    """
+    return {"x-agora-token": AGORA_TOKEN} if AGORA_TOKEN else {}
+
+
+def http_bytes(url, timeout=30, headers=None):
     """GET a URL and return (status, raw_bytes) -- for fetching attachment
     content, not JSON APIs."""
-    req = urllib.request.Request(url, method="GET")
+    req = urllib.request.Request(url, headers=headers or {}, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read()
@@ -70,7 +83,8 @@ def fetch_attachment_bytes(attachment_id):
     Gemini/Claude never saw the image; an image-only message became a
     genuinely empty turn, which Gemini rejects outright -- see
     GEMINI_TRANSIENT_STATUSES's docstring for the related fallback fix)."""
-    status, data = http_bytes(f"{AGORA_URL}/attachments/{attachment_id}")
+    status, data = http_bytes(f"{AGORA_URL}/attachments/{attachment_id}",
+                              headers=_token_headers())
     if status != 200:
         log(f"fetch_attachment_bytes: {attachment_id} returned HTTP {status}")
         return None
@@ -78,13 +92,12 @@ def fetch_attachment_bytes(attachment_id):
 
 
 def agora_get(path):
-    status, body = http_json("GET", f"{AGORA_URL}{path}")
+    status, body = http_json("GET", f"{AGORA_URL}{path}", headers=_token_headers())
     return status, body
 
 
 def agora_internal(method, path, payload=None):
-    headers = {"x-agora-token": AGORA_TOKEN} if AGORA_TOKEN else {}
-    return http_json(method, f"{AGORA_INTERNAL_URL}{path}", payload, headers)
+    return http_json(method, f"{AGORA_INTERNAL_URL}{path}", payload, _token_headers())
 
 
 def agora_public(method, path, payload=None):
@@ -97,7 +110,7 @@ def agora_public(method, path, payload=None):
     internal one is a 404 rather than a permission error, which reads as
     "that conversation is gone" and is the opposite of what happened.
     """
-    return http_json(method, f"{AGORA_URL}{path}", payload)
+    return http_json(method, f"{AGORA_URL}{path}", payload, _token_headers())
 
 
 def unauthorized_hint(status):
