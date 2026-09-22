@@ -676,11 +676,81 @@ def format_rate_split(split):
     return lines
 
 
-def collect(window=DEFAULT_WINDOW):
+#: Verdicts already reached for cycle numbers outside the window, so a gap
+#: that has already been explained does not cost an Agora fetch on every run
+#: forever. Not in the repo and not in `/data/workspace` -- the first would
+#: make it a commit and the second is swept by `tools.tidy_workspace`; the
+#: bridge pod's `/data/claude-home` persists across cycles, which is the same
+#: reasoning `preflight.STATE_PATH` carries.
+VERDICT_CACHE = os.environ.get(
+    "NOVA_POSTMORTEM_VERDICTS",
+    os.path.join(os.path.expanduser("~"), ".nova-postmortem-verdicts.json"),
+)
+
+#: What is worth remembering. `lost` and `silent` are deliberately absent:
+#: their rows print a recovered reply, a branch landing, a runner lifecycle
+#: line -- things a four-key record cannot carry, and a remembered `lost` row
+#: would print "no reply to recover" over a reply that is still there. They
+#: are the two verdicts `--all` exists to re-derive.
+_CACHEABLE = ("failed", "absent", "misfiled", "unnumbered", "doubled",
+              "cut off", "api error", "unjudged")
+
+_CACHED_KEYS = ("verdict", "messages", "detail")
+
+#: How many of the newest numbers are never read from the record, however
+#: settled their verdict looks. Three cycles overlap, so the newest few
+#: legitimately have no entry yet and their verdict can still change under
+#: them -- and a remembered one would freeze `still running` or `cut off`
+#: into the report for good.
+_SETTLING = 3
+
+
+def load_verdicts(path=None):
+    """Remembered verdicts by cycle number. Unreadable is empty, never fatal."""
+    try:
+        with open(path or VERDICT_CACHE) as fh:
+            state = json.load(fh)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_verdicts(results, path=None):
+    """Merge this run's settled verdicts into the record. Best effort.
+
+    Merge rather than replace: a run that judged only the window must not
+    forget what an earlier run learned about everything below it.
+    """
+    path = path or VERDICT_CACHE
+    state = load_verdicts(path)
+    for row in results:
+        if row.get("verdict") not in _CACHEABLE:
+            continue
+        state[str(row["number"])] = {k: row.get(k) for k in _CACHED_KEYS}
+    try:
+        with open(path, "w") as fh:
+            json.dump(state, fh)
+    except OSError:
+        pass
+
+
+def collect(window=DEFAULT_WINDOW, judge_all=False, cache=None):
     """`(results, newest, error, conversations, paths)` -- a row per entryless cycle.
 
     `paths` comes back so `find_misfiled` can read an entry's footer
     without a second listing of the journal folder.
+
+    **Only gaps inside the window are fetched.** The gap list is history and
+    only ever grows, so judging all of it meant one Agora message fetch per
+    gap on every run, forever -- and the pause of 2026-09-24 was about to add
+    roughly 1,260 numbers to it at once, because every heartbeat run takes a
+    cycle number before it can fail. Concurrency does not fix an unbounded
+    list; it only moves where it breaks. So the work is now bounded by
+    `window` regardless of how much history piles up, an older gap whose
+    verdict a previous run settled is read from `cache` instead, and anything
+    left over is reported as `skipped` rather than quietly dropped -- a gap
+    nobody looked at must not read like a gap that came back clean. `--all`
+    judges every one of them.
     """
     paths = journal_paths()
     if paths is None:
@@ -701,6 +771,8 @@ def collect(window=DEFAULT_WINDOW):
     newest = max(conversations)
     gaps = entryless(paths, newest)
     now = datetime.now(timezone.utc)
+    cache = {} if cache is None else cache
+    floor = newest - window
 
     def one(number):
         conversation = conversations.get(number)
@@ -715,15 +787,37 @@ def collect(window=DEFAULT_WINDOW):
             messages = []
         return judge(number, conversation, messages, now=now)
 
-    # Concurrent because the gap list only ever grows -- it is history, so
-    # every past gap is re-read on every run, forever, and one blocking
-    # fetch each would eventually walk this check into `preflight`'s
-    # 240-second hang ceiling for a reason unrelated to the loop's health.
-    # Six, matching `preflight`'s own pool.
+    # The record is consulted by whether a verdict has settled, NOT by
+    # whether the number is inside the window. A closed conversation does
+    # not change its mind, and only the verdicts that cannot need a second
+    # look are ever written down -- so a gap inside the window that has
+    # already been judged costs nothing either. Reading the record below the
+    # floor only would have left the newest 240 numbers re-fetched on every
+    # run, which after a long pause is every dead number in it, every time.
+    settled = newest - _SETTLING
+    fetch, remembered, skipped = [], [], []
+    for number in gaps:
+        row = None if judge_all else cache.get(str(number))
+        if row is not None and number <= settled:
+            remembered.append(dict(row, number=number, remembered=True))
+        elif judge_all or number > floor:
+            fetch.append(number)
+        else:
+            skipped.append(number)
+
+    # Still concurrent, because `window` is 96 in `preflight` and 96 blocking
+    # fetches would walk this check into its 240-second hang ceiling on their
+    # own. Six, matching `preflight`'s own pool.
     with ThreadPoolExecutor(max_workers=6) as pool:
-        results = list(pool.map(one, gaps))
+        judged = list(pool.map(one, fetch))
+    results = judged + remembered + [
+        {"number": number, "verdict": "skipped", "messages": 0,
+         "detail": "older than the window and no verdict is remembered for it "
+                   "-- pass --all to judge it"}
+        for number in skipped]
+    results.sort(key=lambda row: row["number"])
     for row in results:
-        row["recent"] = row["number"] > newest - window
+        row["recent"] = row["number"] > floor
     return results, newest, None, conversations, paths
 
 
@@ -1409,6 +1503,9 @@ _HEADINGS = (
     ("unjudged", "NOT JUDGED — a closing line in a shape this does not read"),
     ("unreadable", "UNREADABLE — the conversation exists and its messages did not answer"),
     ("still running", "STILL RUNNING — no outcome yet, and it spoke a moment ago"),
+    ("skipped", "OLDER THAN THE WINDOW — nothing was read about these this run",
+     "Not a finding and not a clean bill either: no Agora call was made for "
+     "them. `--all` judges every one."),
 )
 
 
@@ -1843,6 +1940,11 @@ def format_report(results, newest, error, window=DEFAULT_WINDOW,
                  + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) + ".")
     lines.append(f"Newest cycle Agora has run: {newest}; the window is the newest "
                  f"{window} number(s).")
+    unjudged_count = sum(1 for row in results if row["verdict"] == "skipped")
+    if unjudged_count:
+        lines.append(f"{unjudged_count} of them were not judged this run: they are "
+                     "older than the window and no verdict is remembered for them. "
+                     "Pass --all to judge them.")
     lines.append("Raising verdicts: " + ", ".join(RAISING_VERDICTS)
                  + " -- the gap is unexplained or the work is not in the record. "
                  "The rest are Agora saying definitely that the run did not complete, "
@@ -1864,7 +1966,8 @@ def main(argv=None):
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW,
                         help="how many of the newest cycle numbers raise the status")
     parser.add_argument("--all", action="store_true", dest="raise_all",
-                        help="raise on every entryless cycle, however old")
+                        help="judge and raise on every entryless cycle, however "
+                             "old -- one Agora fetch each")
     parser.add_argument("--split-at", metavar="ISO8601",
                         help="also report the entryless rate either side of this "
                              "instant, over equal-length windows (idea #170)")
@@ -1879,7 +1982,9 @@ def main(argv=None):
             return 1
         if split_at.tzinfo is None:
             split_at = split_at.replace(tzinfo=timezone.utc)
-    results, newest, error, conversations, paths = collect(window=args.window)
+    results, newest, error, conversations, paths = collect(
+        window=args.window, judge_all=args.raise_all,
+        cache=load_verdicts())
     # Located before the report is built, not after: `format_report` decides
     # the exit status from the verdicts, so a `lost` row this can explain has
     # to stop being `lost` first. Printing the explanation under a red status
@@ -1947,6 +2052,11 @@ def main(argv=None):
         sessions, reach = cli_session_index()
         apply_cli_sessions(results, conversations, sessions, reach)
         apply_session_endings(results)
+    # After every join, so what is remembered is the verdict the report
+    # prints -- a row cached as `lost` would be re-searched from scratch on
+    # the next run and a row cached as `misfiled` never is again.
+    if not error:
+        save_verdicts(results)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all,
                                    lifecycle_error=lifecycle_error)

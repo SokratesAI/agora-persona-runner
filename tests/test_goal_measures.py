@@ -1242,6 +1242,40 @@ def test_measure_nova_silent_cycles_counts_only_cycles_inside_the_window(monkeyp
     assert "10 silent" not in detail
 
 
+def test_a_cycle_nobody_looked_at_is_not_counted_as_a_cycle_that_went_silent(
+        monkeypatch):
+    """`skipped` means `cycle_postmortem` read nothing about that number.
+
+    It bounds its fetching by its window now, and this KPI counts over 24
+    hours -- about 60 cycle numbers at the 24-minute cadence, wider than
+    `cycle_postmortem`'s own default window of 48. Counting a number nobody
+    looked at as a cycle that went silent would report the fetch bound as a
+    fault in the loop.
+    """
+    conversations = {30: _conv(40), 31: _conv(30), 32: _conv(5)}
+    results = [
+        {"number": 30, "verdict": "skipped"},
+        {"number": 31, "verdict": "silent"},
+    ]
+    _pm_stub(monkeypatch, results, conversations)
+    value, detail = goal_measures.measure_nova_silent_cycles(None, None)
+    assert value == 1
+    assert "31 silent" in detail
+    assert "30 skipped" not in detail
+
+
+def test_the_silent_cycle_window_is_wider_than_a_day_of_cycle_numbers():
+    """The backstop above excuses a `skipped` row; this is the actual fix.
+
+    A day is about 60 numbers and the KPI counts over 24 hours, so asking
+    `cycle_postmortem` for its default 48 would leave the older third of the
+    window unjudged and silently excused.
+    """
+    from tools import cycle_postmortem
+    assert goal_measures._SILENT_CYCLE_WINDOW > cycle_postmortem.DEFAULT_WINDOW
+    assert goal_measures._SILENT_CYCLE_WINDOW >= 4 * 60
+
+
 def test_measure_nova_silent_cycles_does_not_count_an_entry_that_exists(monkeypatch):
     """`misfiled` and `unnumbered` mean the work IS in the journal.
 
