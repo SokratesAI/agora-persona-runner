@@ -21,6 +21,7 @@ from agora_runner import nova_capture
 from agora_runner.nova_boards import _captures, PROJECT_META_PATH
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
+    NOTE_TARGET,
     project_slug,
     amend,
     capture,
@@ -445,7 +446,9 @@ def test_notes_is_a_capture_target_pointing_at_edvards_own_folder():
     `vault.db_for`, so `test_vault_database_routing` asks it directly for
     every target; this one just pins the path.
     """
-    assert CAPTURE_TARGETS["notes"] == "projects/sokrates/projects/nova/notes.md"
+    # notes.md was archived and deleted (Cycle 2013, idea #333): a note is a
+    # record in nova_notes_store, and `notes` is no longer a capture file.
+    assert "notes" not in CAPTURE_TARGETS
     assert CAPTURE_TARGETS["issues"] == "projects/sokrates/projects/nova/issues.md"
     assert CAPTURE_TARGETS["ideas"] == "projects/sokrates/projects/nova/ideas.md"
     # Deliberately not `projects.md`: that path is `PROJECT_META_PATH`, the
@@ -514,7 +517,9 @@ def test_every_button_in_the_page_names_a_real_target():
     with open(page, encoding="utf-8") as handle:
         html = handle.read()
     buttons = re.findall(r'class="capture-btn" data-target="([^"]+)"', html)
-    assert sorted(buttons) == sorted(CAPTURE_TARGETS)
+    # The Note button is the one button whose target is not a file: the site
+    # routes `notes` to the notes store (idea #333).
+    assert sorted(buttons) == sorted([*CAPTURE_TARGETS, NOTE_TARGET])
 
 
 # --- editing and deleting a capture (issues.md #66) -----------------------

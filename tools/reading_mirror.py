@@ -46,7 +46,7 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 SOURCE_PREFIX = "projects/sokrates/projects/nova/"
 MIRROR_PREFIX = "projects/sokrates/projects/nova-reading/"
 EXCLUDED = frozenset({
-    "_context.md", "issues.md", "ideas.md", "notes.md", "proposed-projects.md",
+    "_context.md", "issues.md", "ideas.md", "proposed-projects.md",
 })
 SETTLE_MINUTES = 30
 SHA_KEY = "mirror_sha"

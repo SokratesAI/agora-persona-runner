@@ -128,6 +128,7 @@ from agora_runner.nova_uploads import (
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
     MAX_BODY_BYTES,
+    NOTE_TARGET,
     STALE_CAPTURE,
     amend,
     capture,
@@ -4912,11 +4913,11 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         index = payload.get("index")
         original = payload.get("original")
         text = "" if delete else payload.get("text")
+        if target == NOTE_TARGET:
+            self._send_json(400, {"error": NOTES_ARE_RECORDS})
+            return
         if target not in CAPTURE_TARGETS:
             self._send_json(400, {"error": f"target must be one of {sorted(CAPTURE_TARGETS)}"})
-            return
-        if target == "notes":
-            self._send_json(400, {"error": NOTES_ARE_RECORDS})
             return
         if not isinstance(original, str) or not original.strip():
             self._send_json(400, {"error": "original must be a non-empty string"})
@@ -4992,11 +4993,11 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         index = payload.get("index")
         original = payload.get("original")
         text = payload.get("text")
+        if target == NOTE_TARGET:
+            self._send_json(400, {"error": NOTES_ARE_RECORDS})
+            return
         if target not in CAPTURE_TARGETS:
             self._send_json(400, {"error": f"target must be one of {sorted(CAPTURE_TARGETS)}"})
-            return
-        if target == "notes":
-            self._send_json(400, {"error": NOTES_ARE_RECORDS})
             return
         # `True` is an int in Python and would silently address capture 1.
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
@@ -5168,16 +5169,18 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         dest = payload.get("to")
         index = payload.get("index")
         original = payload.get("original")
-        for name, value in (("from", source), ("to", dest)):
-            if value not in CAPTURE_TARGETS:
-                self._send_json(
-                    400, {"error": f"{name} must be one of {sorted(CAPTURE_TARGETS)}"})
+        if source == NOTE_TARGET:
+            self._send_json(400, {"error": NOTES_ARE_RECORDS})
+            return
+        # `to` may also be `notes`: the "Make note" move, which lands in the
+        # notes store rather than a capture file.
+        for name, value, legal in (("from", source, CAPTURE_TARGETS),
+                                   ("to", dest, {*CAPTURE_TARGETS, NOTE_TARGET})):
+            if value not in legal:
+                self._send_json(400, {"error": f"{name} must be one of {sorted(legal)}"})
                 return
         if source == dest:
             self._send_json(400, {"error": "from and to must differ"})
-            return
-        if source == "notes":
-            self._send_json(400, {"error": NOTES_ARE_RECORDS})
             return
         if not isinstance(original, str) or not original.strip():
             self._send_json(400, {"error": "original must be a non-empty string"})
@@ -5186,7 +5189,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
             self._send_json(400, {"error": "index must be a non-negative number"})
             return
-        if dest == "notes":
+        if dest == NOTE_TARGET:
             self._post_convert_to_note(source, index, original)
             return
 
@@ -7004,13 +7007,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         target = payload.get("target")
         text = payload.get("text")
-        if target not in CAPTURE_TARGETS:
-            self._send_json(400, {"error": f"target must be one of {sorted(CAPTURE_TARGETS)}"})
+        legal = {*CAPTURE_TARGETS, NOTE_TARGET}
+        if target not in legal:
+            self._send_json(400, {"error": f"target must be one of {sorted(legal)}"})
             return
         if not isinstance(text, str):
             self._send_json(400, {"error": "text must be a string"})
             return
-        if target == "notes":
+        if target == NOTE_TARGET:
             # Idea #333: a note is a record now, so the capture box writes
             # the store the /notes page reads, signed by the port it came in
             # on -- the same rule as `/api/notes/create`. `notes.md` is no

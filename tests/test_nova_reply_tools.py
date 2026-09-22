@@ -345,12 +345,16 @@ def test_the_capture_tool_offers_every_target_the_backend_accepts():
     exact two-way choice he asked three times to be rid of, with nothing
     red anywhere. Found by a reviewer, not by a test; this is the test.
     """
-    from agora_runner.nova_capture import CAPTURE_TARGETS
+    from agora_runner.nova_capture import CAPTURE_TARGETS, NOTE_TARGET
     from agora_runner.tools_schemas import client_tool_schemas
 
     tools = client_tool_schemas({"novaCapture": True})
     schema = next(t for t in tools if t["name"] == "nova_capture")
-    assert schema["input_schema"]["properties"]["target"]["enum"] == sorted(CAPTURE_TARGETS)
+    # `notes` is not a capture file since notes.md was deleted (idea #333),
+    # but the reply tool still files one: tools_dispatch routes it to the
+    # notes store.
+    assert schema["input_schema"]["properties"]["target"]["enum"] == sorted(
+        [*CAPTURE_TARGETS, NOTE_TARGET])
 
 
 def test_an_attached_image_reaches_the_reply_turn_as_a_picture():
