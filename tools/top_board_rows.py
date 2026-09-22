@@ -79,9 +79,8 @@ has no vault client) can use it at all.
 markdown** (issue #203). `board_contents` below is the one door; the
 `--issues`/`--ideas` flags still take a markdown file and still mean what
 they meant, and they go through `board_migration_preflight`, which is the
-one module the migration reads markdown in. `notes.md` is not a board --
-no `## Board` table, no write-ups, never migrated -- so it stays a vault
-fetch and a `capture_entries` parse, after the switchover as before it.
+one module the migration reads markdown in. Notes are not a board either;
+since idea #333 they are records in the notes store, read by `unread_notes`.
 """
 
 import argparse
@@ -105,6 +104,7 @@ from agora_runner.nova_boards import (
     unanswered_comment_bodies_from_details,
 )
 from agora_runner import board_records
+from agora_runner import nova_notes_store
 from tools import board_migration_preflight
 # Imported rather than re-listed: `goal_measures` owns the research folder's
 # path because `pm-kpi-research-reused` is measured from it, and a second copy
@@ -156,14 +156,6 @@ OSLO = ZoneInfo("Europe/Oslo")
 # not have to.
 ISSUES_PATH = BOARD_PATHS["issues"]["edvard"]
 IDEAS_PATH = BOARD_PATHS["ideas"]["edvard"]
-# The owner's third capture file, and the last one the opening read could only
-# reach by hand. It is not a board -- a note is never numbered and never
-# rated, so it has no row to rank -- but it carries the same bare-bullet
-# contract as the other two, which is why `parse_board`'s capture half reads
-# it unchanged. Taken from `CAPTURE_TARGETS` for the same reason the two
-# above come from `BOARD_PATHS`: a hand-typed copy of a path that has moved
-# once will be wrong the next time it moves.
-NOTES_PATH = CAPTURE_TARGETS["notes"]
 PROPOSED_PROJECTS_PATH = CAPTURE_TARGETS["projects"]
 
 # His own rating of the projects themselves, written by the app's project
@@ -413,37 +405,24 @@ def board_contents(board, local=None, store=None):
                                   store=store or board_records.board_store)
 
 
-def unread_notes(markdown):
-    """`notes.md` -> the notes the owner has left that no cycle has moved.
+def unread_notes(notes):
+    """Note records -> the ones Edvard or Sokrates left that I have not marked read.
 
-    The contract is `prompt.md` step 1a's: he writes bare bullets at the
-    top, a cycle acts on each and moves it under `## Read` with a line on
-    what it did. So "unread" is structural -- everything above the first
-    heading -- and `capture_entries` already finds exactly that,
-    frontmatter and cursor bullet excluded.
-
-    It calls `capture_entries` rather than `parse_board`'s capture half,
-    which is the same function one indirection away, because `notes.md`
-    has no `## Board` table and no write-ups: asking the board parser for
-    two bullets ran the row parse and the detail parse over 96KB and threw
-    both away. It is also why this call survives issue #203 -- `notes.md`
-    is not a board, so `board_migrate` never migrates it and it stays
-    markdown after the switchover.
+    Since idea #333 his notes are records in the notes store, not bullets in
+    `notes.md`, so "unread" is `nova_notes_store.is_unread`: live, not mine,
+    and no `readBy.nova` stamp newer than the note's last edit. A cycle clears
+    one with `tools.note_post --as nova --read <id>`, which he never sees --
+    the store's equivalent of moving a bullet under `## Read`.
 
     A note is not a board row and gets no rating. It is printed with the
     captures rather than ranked, because `rank` sorts on a `Priority` cell
     that a note does not have and never will.
     """
-    return [{"board": "note", "priority": "", "text": text,
-             # The same two-part reply address the boards get. A note is
-             # the one capture target where the reply already renders
-             # properly -- the notes page draws an indented bullet as a
-             # cycle's own bubble -- so leaving it off here would have
-             # withheld the address from the page that reads it best.
-             "index": index, "original": text,
-             "slug": slug_for_capture(text)}
-            for index, (_, _, text, _)
-            in enumerate(capture_entries(markdown or ""))]
+    return [{"board": "note", "priority": "", "text": doc.get("text", ""),
+             "index": doc["_id"], "original": doc.get("text", ""),
+             "author": doc.get("author"),
+             "slug": slug_for_capture(doc.get("text", ""))}
+            for doc in notes if nova_notes_store.is_unread(doc)]
 
 
 def unread_projects(markdown):
@@ -724,7 +703,7 @@ def _capture_line(capture):
              ) if capture.get("nearMissDone") else ""
     claim = _claim_tag(capture)
     if capture["board"] == "note":
-        return f"notes.md  {held}{capture['text']}{claim}"
+        return f"note {capture['index']} from {capture['author']}  {held}{capture['text']}{claim}"
     if capture["board"] == "project":
         # His rule for a new project rated Immediately is onboard-then-top,
         # not "slot the raw project in", so the line says the whole order.
@@ -762,7 +741,12 @@ def _capture_reply_help(captures):
     out = ["  Answer one where he wrote it — POST http://nova-site.agents.svc.cluster.local:8083/api/capture/comment",
            "  with {\"target\": \"issues\"|\"ideas\"|\"notes\"|\"projects\", \"index\": N, \"original\": \"<his bullet, verbatim>\", \"text\": \"...\"}."]
     for capture in captures:
-        board = "notes" if capture["board"] == "note" else capture["board"] + "s"
+        if capture["board"] == "note":
+            # A note lives in the store, not a file the capture route edits.
+            out.append(f"     note: python3 -m tools.note_post --as nova --on {capture['index']} --text '...'"
+                       f"   then --read {capture['index']} once acted on")
+            continue
+        board = capture["board"] + "s"
         # `original`, whole -- not `text`. `text` is stripped of the rating
         # glyph and of a `DONE (Cycle N):` marker for display, and a
         # truncation would be worse still: the route matches the bullet
@@ -1304,7 +1288,7 @@ def main(argv=None):
     # fall through to the vault is what CI caught: it is green on this box,
     # where `vault_tool.py` exists, and exits 1 anywhere else -- a test that
     # passes for a reason that has nothing to do with what it asserts.
-    ap.add_argument("--notes", help="local notes.md instead of a vault fetch")
+    ap.add_argument("--notes", help="local JSON list of note records instead of the notes store")
     ap.add_argument("--proposed-projects",
                     help="local proposed-projects.md instead of a vault fetch")
     ap.add_argument("--claims", help="local claims.json instead of a vault fetch")
@@ -1367,14 +1351,18 @@ def main(argv=None):
         captures.extend(unboarded_captures_from_contents(contents, board))
         closed_waiting.extend(closed_rows_waiting(contents, board))
 
-    notes_md = open(args.notes, encoding="utf-8").read() if args.notes \
-        else _fetch(NOTES_PATH)
-    if notes_md is None:
+    try:
+        if args.notes:
+            with open(args.notes, encoding="utf-8") as fh:
+                notes = json.loads(fh.read() or "[]")
+        else:
+            notes = nova_notes_store.list_notes()
+    except (OSError, ValueError, nova_notes_store.StoreError) as exc:
         # Same treatment as a board: said out loud rather than read as
         # "he has left no notes", which is what silence here would mean.
-        missing.append(NOTES_PATH)
+        missing.append(f"the notes store ({exc})")
     else:
-        captures.extend(unread_notes(notes_md))
+        captures.extend(unread_notes(notes))
 
     # A local run that named its notes but not this file reads no project
     # captures rather than falling through to the vault -- the CI trap the

@@ -74,6 +74,16 @@ def _no_live_diagnoses_read(monkeypatch):
     monkeypatch.setattr(top_board_rows, "fetch_diagnoses", lambda: ("", True))
 
 
+@pytest.fixture(autouse=True)
+def _no_live_notes_read(monkeypatch):
+    """Nor for the notes store, which `main` reads when `--notes` is not given.
+
+    An empty list is no live notes, so a test that predates the store sees
+    the output it was written against.
+    """
+    monkeypatch.setattr(top_board_rows.nova_notes_store, "list_notes", lambda archived=False: [])
+
+
 def board(*rows, done=()):
     """A board file with the live five-column `## Board` shape."""
     head = ["## Board", "", "| # | Item | Status | Updated | Priority |",
@@ -180,7 +190,7 @@ def test_main_reads_both_local_boards(tmp_path, capsys):
     issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
     ideas.write_text(board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE)))
     notes = tmp_path / "notes.md"
-    notes.write_text(NOTES.format(" "))
+    notes.write_text(notes_json(" "))
     code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
                                 "--notes", str(notes)])
     out = capsys.readouterr().out
@@ -460,7 +470,7 @@ def test_main_surfaces_captures_from_both_files(tmp_path, capsys):
     ideas.write_text(with_captures(board((64, "the immediate idea", BACKLOG, "08-12", IMMEDIATE)),
                                    "an idea I typed"))
     notes = tmp_path / "notes.md"
-    notes.write_text(NOTES.format(" "))
+    notes.write_text(notes_json(" "))
     code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
                                 "--notes", str(notes)])
     out = capsys.readouterr().out
@@ -470,19 +480,15 @@ def test_main_surfaces_captures_from_both_files(tmp_path, capsys):
     assert out.index("UNPROCESSED CAPTURES FROM EDVARD (2)") < out.index("idea #64")
 
 
-# --- notes.md, the third capture file (Cycle 253) ---------------------------
+# --- notes, the third capture target (Cycle 253; the notes store since idea #333) ---
 
-NOTES = """---
-type: log
----
-
-- {}
-
-## Read
-
-- an old note
-  - Read Cycle 1. Did the thing.
-"""
+def notes_json(text):
+    """A local `--notes` file: one live note from Edvard, or none for a blank text."""
+    if not text.strip():
+        return "[]"
+    return json.dumps([{"_id": "note:abc123", "type": "note", "author": "edvard",
+                        "text": text, "archived": False,
+                        "created": "2026-09-22T00:00:00Z", "updated": "2026-09-22T00:00:00Z"}])
 
 
 def test_main_surfaces_an_unread_note(tmp_path, capsys):
@@ -495,13 +501,13 @@ def test_main_surfaces_an_unread_note(tmp_path, capsys):
     notes = tmp_path / "notes.md"
     issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
     ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
-    notes.write_text(NOTES.format("Stop using the metered API for anything scheduled."))
+    notes.write_text(notes_json("Stop using the metered API for anything scheduled."))
     code = top_board_rows.main(
         ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)])
     out = capsys.readouterr().out
     assert code == 0
     assert "Stop using the metered API" in out
-    assert "notes.md" in out
+    assert "note note:abc123 from edvard" in out
     # Printed with the captures, above the ranking -- not as a board row.
     assert out.index("Stop using the metered API") < out.index("issue #10")
     # A note has no rating cell, so it must not be labelled as unrated.
@@ -509,36 +515,40 @@ def test_main_surfaces_an_unread_note(tmp_path, capsys):
     assert "(unrated)" not in note_line
 
 
-def test_a_note_already_moved_under_read_is_not_unread(tmp_path, capsys):
-    """The other half of step 1a's contract: a cycle acts on a note and
-    moves it under `## Read`. Everything below that heading is answered,
-    and re-surfacing it would make the list grow forever -- the failure
-    the done-capture marker already had to fix once."""
-    issues = tmp_path / "issues.md"
-    ideas = tmp_path / "ideas.md"
-    notes = tmp_path / "notes.md"
-    issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
-    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
-    notes.write_text(NOTES.format(" "))  # his empty cursor bullet
-    assert top_board_rows.main(
-        ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)]) == 0
-    out = capsys.readouterr().out
-    assert "an old note" not in out
-    assert "UNPROCESSED CAPTURES" not in out
+def test_a_note_i_marked_read_is_not_unread_until_he_edits_it():
+    """The store's `## Read`: `note_post --read` stamps `readBy.nova`, which he
+    never sees. An edit he makes afterwards moves `updated` past the stamp and
+    the note is unread again; my own notes and archived ones never are."""
+    base = {"_id": "note:abc123", "type": "note", "author": "edvard", "text": "t",
+            "archived": False, "created": "2026-09-22T00:00:00Z",
+            "updated": "2026-09-22T00:00:00Z"}
+    unread = lambda doc: [n["index"] for n in top_board_rows.unread_notes([doc])]
+    assert unread(base) == ["note:abc123"]
+    read = dict(base, readBy={"nova": "2026-09-22T00:05:00Z"})
+    assert unread(read) == []
+    assert unread(dict(read, updated="2026-09-22T00:10:00Z")) == ["note:abc123"]
+    assert unread(dict(base, author="nova")) == []
+    assert unread(dict(base, archived=True)) == []
+    assert unread(dict(base, author="sokrates")) == ["note:abc123"]
 
 
-def test_a_notes_file_that_cannot_be_read_is_said_out_loud(tmp_path, capsys):
+def test_a_notes_store_that_cannot_be_read_is_said_out_loud(tmp_path, capsys):
     """Silence here would read as "he has left no notes", which is the
     same wrong-answer-wearing-the-right-shape the boards already guard."""
     issues = tmp_path / "issues.md"
     ideas = tmp_path / "ideas.md"
     issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
     ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
-    with patch.object(top_board_rows, "_fetch", return_value=None):
+
+    def refuse(*_a, **_k):
+        raise top_board_rows.nova_notes_store.StoreError("connection refused")
+
+    with patch.object(top_board_rows.nova_notes_store, "list_notes", refuse), \
+            patch.object(top_board_rows, "_fetch", return_value=""):
         code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
     out = capsys.readouterr().out
     assert code == 1
-    assert "COULD NOT READ" in out and "notes.md" in out
+    assert "COULD NOT READ" in out and "the notes store (connection refused)" in out
 
 
 # --- The end of the loop this tool sits in --------------------------------
@@ -754,7 +764,7 @@ def test_main_surfaces_a_comment_on_a_closed_row(tmp_path, capsys):
                      + details((63, "a finished row",
                                 "Problem.\n\n**Edvard, 08-22:** premature?")),
                      encoding="utf-8")
-    notes.write_text("## Read\n", encoding="utf-8")
+    notes.write_text("[]", encoding="utf-8")
     code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
                                 "--notes", str(notes)])
     out = capsys.readouterr().out
@@ -826,7 +836,7 @@ def _rendered(issues_md, ideas_md, ledger, cycle=None, tmp_path=None):
     """Run `main` end to end on local files and return what it printed."""
     paths = {}
     for name, text in (("issues.md", issues_md), ("ideas.md", ideas_md),
-                       ("notes.md", "- \n\n## Read\n"), ("claims.json", ledger)):
+                       ("notes.md", "[]"), ("claims.json", ledger)):
         paths[name] = tmp_path / name
         paths[name].write_text(text, encoding="utf-8")
     argv = ["--issues", str(paths["issues.md"]), "--ideas", str(paths["ideas.md"]),
@@ -1076,7 +1086,7 @@ def test_main_applies_claims_to_the_closed_rows_too(tmp_path, capsys):
                      + details((63, "premature",
                                 "**Edvard, 08-22:** this is not actually done")))
     notes = tmp_path / "notes.md"
-    notes.write_text(NOTES.format(" "))
+    notes.write_text(notes_json(" "))
     slug = top_board_rows.closed_rows_waiting(_contents(ideas.read_text()), "idea")[0]["replySlug"]
     claims = tmp_path / "claims.json"
     claims.write_text('{"claims": [{"item": "%s", "cycle": 99, "state": "open",'
@@ -1151,7 +1161,7 @@ def test_main_marks_a_spent_capture_from_the_ledger_it_reads(tmp_path, capsys):
     ideas = tmp_path / "ideas.md"
     ideas.write_text(board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)))
     notes = tmp_path / "notes.md"
-    notes.write_text(NOTES.format(" "))
+    notes.write_text(notes_json(" "))
     slug = top_board_rows.slug_for_capture("switch to Claude 20x by 18:00")
     claims = tmp_path / "claims.json"
     claims.write_text(json.dumps(_spent(slug, 343, "journal seq race closed")))
@@ -1186,7 +1196,7 @@ def test_an_unparseable_ledger_leaves_every_claim_command_printed(tmp_path, caps
     ideas = tmp_path / "ideas.md"
     ideas.write_text(board())
     notes = tmp_path / "notes.md"
-    notes.write_text(NOTES.format(" "))
+    notes.write_text(notes_json(" "))
     claims = tmp_path / "claims.json"
     claims.write_text("{ not json")
 
@@ -1253,7 +1263,7 @@ def test_main_marks_a_progressed_capture_from_the_ledger_it_reads(tmp_path, caps
     ideas = tmp_path / "ideas.md"
     ideas.write_text(board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)))
     notes = tmp_path / "notes.md"
-    notes.write_text(NOTES.format(" "))
+    notes.write_text(notes_json(" "))
     slug = top_board_rows.slug_for_capture("switch to Claude 20x by 18:00")
     claims = tmp_path / "claims.json"
     claims.write_text(json.dumps(_progressed(slug, 343, "two collision surfaces remain")))
@@ -1290,7 +1300,7 @@ def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, cap
     ideas = tmp_path / "ideas.md"
     notes = tmp_path / "notes.md"
     ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
-    notes.write_text(NOTES.format("a note he left"))
+    notes.write_text(notes_json("a note he left"))
 
     issues = tmp_path / "issues.md"
     issues.write_text("- the first thing he typed\n- the second thing he typed\n- \n\n"
@@ -1304,7 +1314,7 @@ def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, cap
     assert "target issues, index 1  ->  the second thing he typed" in out
     # A note is a capture too, and the notes page is the one that already
     # draws the reply properly -- it must carry an address as well.
-    assert "target notes, index 0  ->  a note he left" in out
+    assert "note: python3 -m tools.note_post --as nova --on note:abc123" in out
 
     # **The whole bullet, rating glyph and all, never the display text.**
     # `text` is priority-stripped and was truncated at 60 chars; the route
@@ -1323,7 +1333,7 @@ def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, cap
 
     # The help belongs to the captures, so it must not print when there are none.
     notes2 = tmp_path / "notes2.md"
-    notes2.write_text(NOTES.format(""))
+    notes2.write_text(notes_json(""))
     issues2 = tmp_path / "issues2.md"
     issues2.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
     top_board_rows.main(["--issues", str(issues2), "--ideas", str(ideas),
@@ -1616,7 +1626,7 @@ def test_main_ranks_by_his_project_order_when_given_the_file(tmp_path, capsys):
     ideas.write_text(project_board(
         (64, "a medium row in his top project", BACKLOG, "08-01",
          PRIORITY_LABELS["medium"], "Marcus")))
-    notes.write_text(NOTES.format(" "))
+    notes.write_text(notes_json(" "))
     projects.write_text(PROJECTS_MD)
 
     argv = ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes),
@@ -1643,7 +1653,7 @@ def test_an_unreadable_projects_file_is_said_out_loud_but_does_not_fail(
     ideas.write_text(project_board(
         (64, "a medium row in his top project", BACKLOG, "08-01",
          PRIORITY_LABELS["medium"], "Marcus")))
-    notes.write_text(NOTES.format(" "))
+    notes.write_text(notes_json(" "))
     monkeypatch.setattr(top_board_rows, "fetch_projects", lambda: ("", False))
 
     argv = ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)]
@@ -1909,34 +1919,6 @@ def test_closed_rows_waiting_never_reaches_markdown(monkeypatch):
     assert got[0]["waiting"] is True
 
 
-def test_unread_notes_never_reaches_the_board_parser(monkeypatch):
-    """`notes.md` is not a board, so it must not go through `parse_board`.
-
-    `parse_board`'s capture half *is* `capture_entries`, so the two
-    spellings return the same list and no assertion about the notes can
-    tell them apart -- a mutation swapping one for the other survives every
-    equality test in this file, which is how it stayed unnoticed. The only
-    thing that separates them is whether the board parser was called at
-    all, so this makes it fatal.
-
-    The cost it removes is real rather than stylistic: the board parse ran
-    the row parse and the detail parse over 96KB of notes and threw both
-    away. The reason it must stay this way is issue #203 -- `notes.md` has
-    no `## Board` table, is never migrated, and stays markdown after the
-    switchover.
-    """
-    text = "---\ntype: log\n---\n\n- a note he left\n\n## Read\n\n- an old one\n"
-
-    def landmine(*_args, **_kwargs):
-        raise AssertionError("unread_notes reached the board parser")
-
-    monkeypatch.setattr("agora_runner.nova_boards.parse_board", landmine)
-    with pytest.raises(AssertionError):
-        board_migration_preflight.board_contents(text)
-    assert [n["text"] for n in top_board_rows.unread_notes(text)] \
-        == ["a note he left"]
-
-
 def test_the_project_tier_is_a_share_of_cycles_not_his_hand_order():
     """Issue #214: Nova is first on his hand order and has taken every recent
     cycle, so the picker must name the project that is furthest behind."""
@@ -2141,7 +2123,7 @@ def test_main_prints_the_check_first_line_under_the_top_row(tmp_path, capsys):
     ideas = tmp_path / "ideas.md"
     ideas.write_text(board((92, "a dashboard", BACKLOG, "2026-08-19", IMMEDIATE)))
     notes = tmp_path / "notes.md"
-    notes.write_text(NOTES.format(" "))
+    notes.write_text(notes_json(" "))
     claims = tmp_path / "claims.json"
     claims.write_text(json.dumps(_spent("idea-92", 1917, "bridge#125 merged")))
 

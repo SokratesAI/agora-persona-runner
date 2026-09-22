@@ -149,6 +149,25 @@ def set_archived(doc, archived=True):
     return _update(dict(doc, archived=bool(archived), updated=_now()))
 
 
+def mark_read(doc, reader):
+    """Stamp `readBy[reader]` without touching `updated`.
+
+    How a cycle says it has acted on a note without writing anything he sees:
+    the /notes page never draws `readBy`, and `updated` stays his so an edit
+    he makes afterwards reads as unread again (`is_unread`).
+    """
+    _check_author(reader)
+    return _update(dict(doc, readBy=dict(doc.get("readBy") or {}, **{reader: _now()})))
+
+
+def is_unread(doc, reader="nova"):
+    """A live note someone else wrote that `reader` has not marked since it last changed."""
+    if doc.get("archived") or doc.get("author") == reader:
+        return False
+    seen = (doc.get("readBy") or {}).get(reader)
+    return not seen or seen < (doc.get("updated") or doc.get("created") or "")
+
+
 def read_comments(note_id):
     """A note's comments, oldest first."""
     return [doc for doc in _list(f"comment:{_key(note_id)}:") if doc.get("type") == COMMENT_TYPE]
