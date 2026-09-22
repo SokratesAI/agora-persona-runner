@@ -5010,42 +5010,20 @@ def test_the_plan_page_and_its_endpoint_both_answer():
     assert all(doc["missing"] for doc in json.loads(empty)["documents"])
 
 
-def test_the_notes_page_and_its_endpoint_both_answer():
-    """The same pair as `/plan`, for the same reason (`issues.md` #7).
+def test_the_notes_page_shell_answers_and_the_markdown_endpoint_is_gone():
+    """`/notes` must still serve the shell, and `/api/notes` must stay gone.
 
-    `nova_notes`' own tests call the shaping directly and the browser
-    tests stub `fetch`, so nothing else here would notice `/notes` or
-    `/api/notes` disappearing and the nav tab 404ing on his phone.
-
-    The owner's capture, 2026-08-21: *"I do not have a notes page that shows
-    any overview of the notes made."* `notes.md` is in his own database,
-    which this process reaches with a different credential from the one
-    the boards use -- so the empty half matters here as much as it does
-    on `/plan`: a vault where he has never left a note must render an
-    empty page, not a 502.
+    The page reads note records (`/api/notes/records`, tested in
+    `test_nova_notes_routes`) since idea #333. The old endpoint parsed
+    `notes.md` into notes, and `notes-records.md` asks that nothing parse
+    markdown into a note again -- a route left answering is a parser
+    something will call again.
     """
-    markdown = (
-        "---\ntype: log\n---\n\n- Waiting on someone.\n- \n\n"
-        "## Read\n\n- Answered one.\n  - Read Cycle 258. Did the thing.\n"
-    )
-    with patch.object(nova_sources, "vault_read_path", return_value=markdown):
-        nova_site.reset_cache()
-        status, _, body = _get("/api/notes")
-        shell_status, _, shell = _get("/notes")
-    assert status == 200
-    payload = json.loads(body)
-    assert payload["waitingTotal"] == 1 and payload["readTotal"] == 1
-    # Oldest first, unanswered last -- the page is a conversation and it
-    # opens scrolled to the bottom (`nova_notes.notes_payload`).
-    assert payload["notes"][0]["responses"][0]["cycle"] == 258
-    assert payload["notes"][1]["text"] == "Waiting on someone."
+    nova_site.reset_cache()
+    status, _, _ = _get("/api/notes")
+    shell_status, _, shell = _get("/notes")
+    assert status == 404
     assert shell_status == 200 and b"<!doctype html>" in shell.lower()
-
-    with patch.object(nova_sources, "vault_read_path", return_value=None):
-        nova_site.reset_cache()
-        empty_status, _, empty = _get("/api/notes")
-    assert empty_status == 200
-    assert json.loads(empty)["notes"] == []
 
 
 def test_service_worker_precaches_the_chart_library():

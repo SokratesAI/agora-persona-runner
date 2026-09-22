@@ -15,7 +15,6 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 from agora_runner.nova_boards import (
     BOARD_PATHS, MILESTONE_PINS_PATH, MILESTONE_SEATS_PATH, PROJECT_META_PATH,
 )
-from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_catalog import CATALOG_PATH
 from agora_runner.nova_recap import RECAP_PATH
 from agora_runner.nova_claims import CLAIMS_PATH
@@ -353,23 +352,6 @@ def nova_board_markdown(name):
         vault_read_path(paths["nova"]) or "",
         vault_read_path(paths["nova_archive"]) or "",
     )
-
-
-def notes_markdown():
-    """`notes.md`, raw -- the owner's third capture file.
-
-    The path comes out of `nova_capture.CAPTURE_TARGETS` rather than
-    being written here a second time. That map is what the Note button
-    writes to, and a page reading a different path from the one the
-    button writes would be the two-copies-of-one-constant failure this
-    loop has already filed against itself three times.
-
-    `""` if it is missing, which parses to a page with nothing on it --
-    the `cost_ledger_json` call rather than the `journal_markdown` one,
-    for `plan_markdown`'s reason: an empty notes file is a state a fresh
-    vault is legitimately in.
-    """
-    return vault_read_path(CAPTURE_TARGETS["notes"]) or ""
 
 
 def goal_history_json():
