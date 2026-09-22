@@ -607,6 +607,44 @@ More prose.
     assert all(o is False for _h, o in _open(payload, "goals"))
 
 
+def test_an_entry_that_folds_its_detail_is_still_the_open_newest():
+    """Issue #96: the newest review opened 900 words on the owner's screen.
+
+    Folding its detail under a `####` put an undated section between two
+    dated ones, which read as the end of the stack -- the newest entry
+    became a lone one and folded, and the *second* entry opened instead.
+    The sub-heading stays folded; only the entry's own lead opens.
+    """
+    folded = """# Goals
+
+## Weekly review
+
+### 2026-08-17 — the newest
+
+One line.
+
+#### The full review
+
+Detail.
+
+### 2026-08-16 — the older
+
+Body.
+
+#### The full review
+
+Detail.
+"""
+    payload = plan_payload({"goals": folded})
+    assert _open(payload, "goals") == [
+        ("Weekly review", False),
+        ("2026-08-17 — the newest", True),
+        ("The full review", False),
+        ("2026-08-16 — the older", False),
+        ("The full review", False),
+    ]
+
+
 def test_a_parent_with_its_own_prose_still_folds_above_the_open_newest():
     """The real shape of `goals.md`, which the shared fixture does not have.
 

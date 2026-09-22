@@ -765,20 +765,28 @@ def _mark_open(sections):
     # Maximal runs of adjacent dated sections at one level. Adjacency is
     # what makes it a stack: two dated headings with an undated section
     # between them are two separate things that happen to carry dates.
+    # A deeper heading inside an entry is part of that entry, not a gap
+    # between two -- a review that folds its detail under `####` is still
+    # one entry of the stack (issue #96: the open newest review was 900
+    # words, and folding its detail must not cost it the open slot).
     newest = set()
     start = 0
     while start < len(sections):
         if not is_dated(sections[start]):
             start += 1
             continue
+        level = sections[start]["level"]
+        entries = 1
         end = start + 1
-        while (
-            end < len(sections)
-            and is_dated(sections[end])
-            and sections[end]["level"] == sections[start]["level"]
-        ):
-            end += 1
-        if end - start > 1:
+        while end < len(sections):
+            if sections[end]["level"] > level:
+                end += 1
+            elif is_dated(sections[end]) and sections[end]["level"] == level:
+                entries += 1
+                end += 1
+            else:
+                break
+        if entries > 1:
             newest.add(start)
         start = end
 
@@ -840,7 +848,9 @@ def _document(key, label, text, history=None, seats=None):
 
     title = label
     sections = []
-    for level, heading, body in outline(text):
+    # `####` is a section too (issue #96): a weekly review keeps its
+    # one-line lead open and folds the detail under a sub-heading.
+    for level, heading, body in outline(text, max_level=4):
         if level == 1 and title == label:
             # The `# ` heading is the document's own title, so it becomes
             # the card's title rather than a section inside it. Its body
