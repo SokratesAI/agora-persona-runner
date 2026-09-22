@@ -142,8 +142,12 @@ def test_a_convert_to_a_note_it_cannot_sign_touches_neither_side():
 
 
 def test_a_convert_to_a_note_whose_removal_failed_says_it_is_in_both():
-    with patch.object(nova_site, "amend", return_value=(False, "that capture is no longer in the list")):
+    with patch.object(nova_site, "amend", return_value=(False, "the write failed")):
         status, answer = _post("/api/capture/convert", {
             "from": "ideas", "to": "notes", "index": 0, "original": "x"})
     assert status == 502 and "in both" in answer["message"]
-    assert len(store.list_notes()) == 1
+    with patch.object(nova_site, "amend", return_value=(False, "that capture is no longer in the list")):
+        status, answer = _post("/api/capture/convert", {
+            "from": "ideas", "to": "notes", "index": 0, "original": "y"})
+    assert status == 502 and "duplicate" in answer["message"]
+    assert len(store.list_notes()) == 2

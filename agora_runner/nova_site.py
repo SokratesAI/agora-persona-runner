@@ -6422,9 +6422,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         ok, removal = amend(source, index, original, "")
         _invalidate_capture_target(source)
-        message = "moved to your notes" if ok else (
-            f"saved as a note, but could not remove it from {source} ({removal})"
-            f" — it is in both, delete the {source} one")
+        # A stale address means the bullet already left `source` (a second
+        # tap, or a cycle boarded it), so the duplicate may be the note.
+        if ok:
+            message = "moved to your notes"
+        elif STALE_CAPTURE in removal:
+            message = f"saved as a note, but {source} moved under me — check your notes for a duplicate"
+        else:
+            message = (f"saved as a note, but could not remove it from {source}"
+                       f" ({removal}) — it is in both, delete the {source} one")
         audit(
             "Nova",
             "",
