@@ -281,7 +281,23 @@ def test_every_silent_cycle_is_named_not_the_newest_five():
     line = describe(report)
     for number in holes:
         assert f"{number}" in line
-    assert line.startswith("7 cycle(s) ran and wrote no journal entry: 110, 112")
+    assert line.startswith("7 cycle number(s) have no journal entry: 110, 112")
+
+
+def test_the_missing_line_does_not_claim_the_cycle_ran():
+    """A number with no entry is not evidence that a cycle woke.
+
+    Idea #335. Every heartbeat run takes its number before it can fail, so
+    a run that dies on a dead subscription burns one -- and the old wording
+    called that a cycle that "ran and wrote no journal entry", which is the
+    opposite finding from the true one. Only `tools.cycle_postmortem` can
+    separate the two, so the line says what it saw and points at the tool
+    that says why."""
+    report = findings(paths(109, 111), {}, NOW)
+    line = describe(report)
+    assert "ran and wrote no journal entry" not in line
+    assert "1 cycle number(s) have no journal entry: 110" in line
+    assert "cycle_postmortem" in line
 
 
 def test_a_silent_cycle_is_bracketed_by_the_entries_either_side_of_it():

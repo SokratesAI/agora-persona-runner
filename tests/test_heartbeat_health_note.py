@@ -72,7 +72,7 @@ def test_nova_is_told_about_the_cycle_that_died_last_hour(monkeypatch):
                                **entry(135, NOW - timedelta(minutes=35))})
     note = nova_health_note(NOVA, (NOW - timedelta(hours=1)).isoformat())
     assert "134" in note
-    assert "wrote no journal entry" in note
+    assert "no journal entry" in note
     assert "/data/workspace" in note
 
 

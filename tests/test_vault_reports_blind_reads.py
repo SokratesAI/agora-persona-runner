@@ -160,7 +160,7 @@ def test_a_lost_entry_is_not_reported_as_a_cycle_that_wrote_nothing():
     line = describe(report)
     assert "could not be read" in line
     assert "131-cycle-131.md" in line
-    assert line.index("could not be read") < line.index("wrote no journal entry")
+    assert line.index("could not be read") < line.index("no journal entry")
 
 
 def test_the_listing_tool_stops_saying_no_files_when_it_could_not_look():
