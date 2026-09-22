@@ -48,3 +48,28 @@ def test_no_header_without_a_token(monkeypatch, sent, call):
     monkeypatch.setattr(http_util, "AGORA_TOKEN", "")
     call()
     assert sent == [{}]
+
+
+def test_open_agora_sends_the_token(monkeypatch):
+    """The check tools' default opener (heartbeat_gaps, persona_memory,
+    persona_restrictions, cycle_postmortem) read :8080 untokened until
+    Cycle 2027."""
+    seen = []
+    monkeypatch.setattr(http_util, "AGORA_TOKEN", "tok")
+    monkeypatch.setattr(http_util.urllib.request, "urlopen",
+                        lambda req, timeout=None: seen.append(req))
+    http_util.open_agora("http://agora:8080/conversations")
+    assert seen[0].get_header("X-agora-token") == "tok"
+    assert seen[0].full_url == "http://agora:8080/conversations"
+
+
+@pytest.mark.parametrize("module", [
+    "tools.heartbeat_gaps", "tools.persona_memory",
+    "tools.persona_restrictions", "tools.cycle_postmortem",
+])
+def test_check_tools_read_agora_through_open_agora(module):
+    import importlib
+    import inspect
+    source = inspect.getsource(importlib.import_module(module))
+    assert "open_agora" in source
+    assert "urllib.request.urlopen" not in source

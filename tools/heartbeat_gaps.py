@@ -107,13 +107,13 @@ import argparse
 import json
 import subprocess
 import sys
-import urllib.request
 from datetime import datetime, timedelta, timezone
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+from agora_runner.http_util import open_agora  # noqa: E402
 from agora_runner.heartbeat_liveness import (  # noqa: E402
     AGORA_PUBLIC,
     _fetch,
@@ -350,7 +350,7 @@ def fetch_conversations(url=None, opener=None, timeout=20, limit=_CONVERSATION_L
     """
     target = f"{(url or AGORA_PUBLIC).rstrip('/')}/conversations?limit={limit}"
     try:
-        with (opener or urllib.request.urlopen)(target, timeout=timeout) as resp:
+        with (opener or open_agora)(target, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         return [], f"could not read {target}: {e}"

@@ -65,6 +65,19 @@ def token_headers():
     return {"x-agora-token": AGORA_TOKEN} if AGORA_TOKEN else {}
 
 
+def open_agora(url, timeout=30):
+    """`urlopen` for a GET to Agora, carrying the agent token.
+
+    For the check tools that read the public app with plain `urllib` and
+    take an injectable opener for their tests: they pass this as the
+    default, so a real read carries the token and a test opener still
+    gets the bare URL. Four of them read :8080 untokened until Cycle 2027,
+    found by the `[:8080 no token]` counter agora#107 added (issue #287).
+    """
+    req = urllib.request.Request(url, headers=token_headers(), method="GET")
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def http_bytes(url, timeout=30, headers=None):
     """GET a URL and return (status, raw_bytes) -- for fetching attachment
     content, not JSON APIs."""
