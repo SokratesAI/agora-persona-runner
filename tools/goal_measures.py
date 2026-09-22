@@ -4146,6 +4146,9 @@ def measure_maint_pins_current(since, until):
 def measure_demos_opened(since, until):
     """Share of demos handed over that a person opened at least once. A share.
 
+    KPI `nova-kpi-demos-opened`, a floor -- it was the key result
+    `demos-kr-opened` until Cycle 2018.
+
     Reads the demo registry -- the same vault document `tools.demo` allocates
     ports in -- and counts the rows carrying `opened_at`, which `nova_site`
     writes the first time a real browser asks for `/demo/<slug>/`. A headless
@@ -5141,7 +5144,6 @@ def measure_infra_no_new_money(since, until):
 KEY_RESULT_FETCH_MEASURERS = {
     "marcus-kr-coach-first-try": measure_marcus_coach_first_try,
     "maint-kr-supported": measure_maint_supported,
-    "demos-kr-opened": measure_demos_opened,
     "demos-kr-no-litter": measure_demos_no_litter,
     "nova-kr-trust-data-fresh": measure_nova_trust_data_fresh,
     "nova-kr-trust-cycles-shown": measure_nova_trust_cycles_shown,
@@ -5187,6 +5189,10 @@ KPI_MEASURERS = {
     "pm-kpi-research-reused": measure_research_reused,
     "nova-kpi-push-delivered": measure_nova_push_delivered,
     "nova-kpi-false-status": measure_nova_false_status,
+    # A key result under the struck "everything reaches you" objective until
+    # Cycle 2018; the 2026-09-15 goal thread (3f42afbc) made it a floor to
+    # stay above rather than a target to reach (issue #237).
+    "nova-kpi-demos-opened": measure_demos_opened,
 }
 
 #: KPIs whose measurer judges the other KPIs' readings rather than a source of

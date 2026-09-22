@@ -401,7 +401,7 @@ def retire(entry):
 def unregister(registry, slug, retire_row=True):
     """Drop a demo. Returns the entry, or None if it was not registered.
 
-    **The row is dropped and a tombstone is kept.** `demos-kr-opened` asks
+    **The row is dropped and a tombstone is kept.** `nova-kpi-demos-opened` asks
     for the share of demos handed over that the owner opened at least once,
     and until now this loop threw the evidence away at exactly the moment
     the question became answerable: `opened_at` is written when a real

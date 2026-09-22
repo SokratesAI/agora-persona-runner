@@ -1776,7 +1776,7 @@ def test_no_restart_reaps_a_rolled_demo_the_old_way(tmp_path):
 
 
 def test_stopping_a_demo_keeps_whether_it_was_ever_opened():
-    # `demos-kr-opened` asks for the share of demos handed over that he
+    # `nova-kpi-demos-opened` asks for the share of demos handed over that he
     # opened at least once, and the evidence used to be thrown away at the
     # moment the question became answerable: `opened_at` lived on the row,
     # and `stop` popped the row.

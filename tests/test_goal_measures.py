@@ -2852,7 +2852,7 @@ def test_pins_current_is_wired_into_the_kpi_map():
 
 
 class TestDemosOpened:
-    """`demos-kr-opened` -- the share of demos handed over that he opened.
+    """`nova-kpi-demos-opened` -- the share of demos handed over that he opened.
 
     Stubbed at `tools.demo._read_registry` rather than through `sys.modules`:
     `measure_demos_opened` does `from tools import demo`, which reads the
@@ -2878,6 +2878,14 @@ class TestDemosOpened:
         assert value == 50.0
         assert "2 of 4" in detail
         assert "2 running, 2 retired" in detail
+
+    def test_it_is_read_as_a_kpi_and_no_longer_as_a_key_result(self):
+        # Issue #237: the goal thread made this a floor, so a key result
+        # with this measurer would be the guardrail-used-as-a-goal mistake.
+        assert gm.KPI_MEASURERS["nova-kpi-demos-opened"] is \
+            gm.measure_demos_opened
+        assert gm.measure_demos_opened not in \
+            gm.KEY_RESULT_FETCH_MEASURERS.values()
 
     def test_an_empty_registry_is_no_reading_rather_than_nought_percent(
             self, monkeypatch):
