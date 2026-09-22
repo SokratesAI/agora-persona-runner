@@ -1,7 +1,7 @@
 """Capability-gated tool schemas for both providers, and the persona-capabilities <-> tool-name map."""
 
 from agora_runner.config import NO_CAPS
-from agora_runner.nova_capture import CAPTURE_TARGETS
+from agora_runner.nova_capture import CAPTURE_TARGETS, NOTE_TARGET
 from agora_runner.tools_kubectl import KUBECTL_ALLOWED_VERBS, KUBECTL_ALLOWED_FLAGS
 from agora_runner.tools_kubectl_test import (
     KUBECTL_TEST_NAMESPACE,
@@ -456,7 +456,7 @@ def client_tool_schemas(caps, active_step=None):
                     # path -- the one a journal-comment reply uses -- could
                     # still only offer the owner's two old files, which is the
                     # exact confusion he asked three times to be rid of.
-                    "target": {"type": "string", "enum": sorted(CAPTURE_TARGETS)},
+                    "target": {"type": "string", "enum": sorted({*CAPTURE_TARGETS, NOTE_TARGET})},
                     "text": {"type": "string"},
                 },
                 "required": ["target", "text"],

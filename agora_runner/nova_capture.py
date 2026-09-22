@@ -101,22 +101,6 @@ from agora_runner.vault import vault_read_path_rev, vault_write_path
 CAPTURE_TARGETS = {
     "issues": "projects/sokrates/projects/nova/issues.md",
     "ideas": "projects/sokrates/projects/nova/ideas.md",
-    # The owner, issues.md 2026-08-12: *"I should be able to just leave you
-    # notes instead of just issues and ideas. I have said this 2-3 times
-    # before. Add a button next to issues/ideas in the Nova app that lets
-    # me just send you notes."* A note is neither a bug nor a proposal --
-    # it is context, a correction, a preference, something he wants a
-    # cycle to know. Forcing it into one of the other two files is what
-    # made him ask three times.
-    #
-    # `notes.md` deliberately carries the same bare-bullet contract as the
-    # other two rather than a shape of its own, because every line of this
-    # module is about *that* list and a third convention would need a
-    # third parser. What differs is downstream: notes are never boarded,
-    # numbered or given a `# Details` block. A cycle reads them and acts;
-    # `prompt.md` step 1a is where that obligation is written down, and
-    # without it this button files into a file nothing opens.
-    "notes": "projects/sokrates/projects/nova/notes.md",
     # His capture 2026-09-08, with a screenshot of the box: *"another
     # [button] that is like issues and ideas, but it says 'project'."*
     #
@@ -128,7 +112,7 @@ CAPTURE_TARGETS = {
     # moment it exists. A cycle promotes a bullet here into a real project
     # the same way it boards an issue.
     #
-    # Same obligation as `notes` above, and it is the half that makes this
+    # Same obligation as the other two, and it is the half that makes this
     # a button rather than a dead end: `prompt.md` step 1a has to read this
     # file, or a capture lands where nothing opens it.
     #
@@ -162,11 +146,13 @@ CAPTURE_TARGETS = {
 PROJECT_TAG_PREFIX = "#"
 
 # Idea #333: a note is a record in `nova_notes_store` now, and the /notes
-# page, the capture box and every cycle read that store. `notes.md` stays
-# in CAPTURE_TARGETS only because the site validates targets against it and
-# `reading_mirror` skips it by path; a write here would land in a file
-# nothing reads, and report success. So every function that writes a
-# capture file refuses `notes` instead.
+# page, the capture box and every cycle read that store. `notes.md` was
+# archived and deleted (Cycle 2013), so `notes` is not a capture target any
+# more: it is the name the capture box's Note button and the "Make note"
+# move still send, and the site routes it to the store. Every function
+# here that writes a capture file refuses it by name, so a caller gets the
+# reason rather than "unknown target".
+NOTE_TARGET = "notes"
 NOTES_ARE_RECORDS = (
     "notes are records now: write them through nova_notes_store, "
     "not notes.md"
@@ -318,11 +304,11 @@ def amend(target, index, original, text, store=None):
     **His two boards go to the #203 record store** (`_amend_records`); `notes` is
     refused: notes are records in `nova_notes_store` (idea #333).
     """
+    if target == NOTE_TARGET:
+        return False, NOTES_ARE_RECORDS
     path = CAPTURE_TARGETS.get(target)
     if path is None:
         return False, f"unknown target: {target!r}"
-    if target == "notes":
-        return False, NOTES_ARE_RECORDS
     if not (original or "").strip():
         return False, "nothing to amend"
     bullets = clean_capture_text(text or "")
@@ -461,11 +447,11 @@ def comment_on_capture(target, index, original, text, store=None):
     **His two boards go to the #203 record store** (`_reply_records`); `notes` is
     refused: notes are records in `nova_notes_store` (idea #333).
     """
+    if target == NOTE_TARGET:
+        return False, NOTES_ARE_RECORDS
     path = CAPTURE_TARGETS.get(target)
     if path is None:
         return False, f"unknown target: {target!r}"
-    if target == "notes":
-        return False, NOTES_ARE_RECORDS
     if not (original or "").strip():
         return False, "nothing to answer"
     body = (text or "").strip()
@@ -572,14 +558,14 @@ def convert_capture(source, index, original, dest):
     still true after the move. `notes` is refused either way: a note is a
     record now, and `nova_site._post_convert_to_note` is the move into one.
     """
+    if NOTE_TARGET in (source, dest):
+        return False, NOTES_ARE_RECORDS
     if source not in CAPTURE_TARGETS:
         return False, f"unknown target: {source!r}"
     if dest not in CAPTURE_TARGETS:
         return False, f"unknown target: {dest!r}"
     if source == dest:
         return False, f"already in {dest}"
-    if "notes" in (source, dest):
-        return False, NOTES_ARE_RECORDS
     if not (original or "").strip():
         return False, "nothing to convert"
 
@@ -866,11 +852,11 @@ def capture(target, text, priority="", one_item=False, project="", store=None):
     is both: the glyph for the colour he likes, and the word without
     which the colour means nothing.
     """
+    if target == NOTE_TARGET:
+        return False, NOTES_ARE_RECORDS
     path = CAPTURE_TARGETS.get(target)
     if path is None:
         return False, f"unknown target: {target!r}"
-    if target == "notes":
-        return False, NOTES_ARE_RECORDS
     if priority:
         # Normalised, not exact-matched, for the reason `canonical_priority`
         # gives: a caller still on the coloured spelling must not be refused.
