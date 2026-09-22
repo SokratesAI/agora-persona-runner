@@ -266,7 +266,6 @@ from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
                                      opened_by_a_person, public_rows)
 from agora_runner.vault import (vault_bulk_fetch, vault_doc_rev, vault_read_path, vault_read_path_rev,
                                 vault_write_path)
-from agora_runner.nova_notes import notes_payload
 from agora_runner import nova_notes_store
 from agora_runner.nova_notes_view import notes_page, shape_comment, shape_note
 from agora_runner.nova_stop_timings import record as record_stop_timing
@@ -4282,15 +4281,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/board":
                 self._send_board(query)
-                return
-            if path == "/api/notes":
-                # Cached like the boards and for the same reason: the
-                # vault read is the slow part and the file changes when
-                # the owner types a note or a cycle answers one, not
-                # between two taps. It is also the smallest payload on
-                # the site -- 11KB of markdown -- so nothing here wants
-                # a window.
-                self._send_cached_json("notes", notes_payload)
                 return
             if path == "/api/notes/records":
                 # Not cached: a note is written through this same process
