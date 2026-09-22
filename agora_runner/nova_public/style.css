@@ -372,7 +372,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   flex: 1 1 6rem;
   margin: 0;
   color: var(--dim);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 
 .capture-status.is-error { color: var(--warn); }
@@ -388,7 +388,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   /* 44px is the iOS touch-target minimum, same as `.capture-btn`. */
   min-height: 44px;
   color: var(--dim);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   cursor: pointer;
 }
 
@@ -721,10 +721,10 @@ a.status-sub:hover .status-pr { color: var(--text); }
   margin-bottom: 0.5rem;
 }
 
-.stamp { color: var(--dim); font-size: 0.82rem; }
-.runtime { color: var(--dim); font-size: 0.82rem; }
-.pr { color: var(--dim); font-size: 0.82rem; }
-.outcome-detail { color: var(--dim); font-size: 0.82rem; font-style: italic; }
+.stamp { color: var(--dim); font-size: 0.8rem; }
+.runtime { color: var(--dim); font-size: 0.8rem; }
+.pr { color: var(--dim); font-size: 0.8rem; }
+.outcome-detail { color: var(--dim); font-size: 0.8rem; font-style: italic; }
 
 /* Its own touch target, so tapping a PR never also means "collapse the
  * card" -- same 44px reasoning as the permalink, minus the padding that
@@ -741,7 +741,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * deliberately the same link treatment -- the difference between them is
  * where they go, not how important they are, and giving the internal one
  * its own colour would say otherwise. */
-.board { color: var(--dim); font-size: 0.82rem; }
+.board { color: var(--dim); font-size: 0.8rem; }
 
 .board-link {
   color: var(--accent);
@@ -752,7 +752,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .board-link:hover { text-decoration: underline; }
 
 .badge {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   border: 1px solid var(--line);
@@ -969,7 +969,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * minutes at a time. */
 .comment-waiting {
   margin: 0.5rem 0 0;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   color: var(--dim);
   font-style: italic;
 }
@@ -1003,7 +1003,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   flex: 1;
   margin: 0;
   color: var(--dim);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 
 .comment-status.is-error { color: var(--warn); }
@@ -1616,7 +1616,7 @@ body.nav-open { overflow: hidden; }
 
 .filter-extra {
   flex: 0 1 auto;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 
 /* The project chips sit in the same strip as the extras and read the
@@ -1625,7 +1625,7 @@ body.nav-open { overflow: hidden; }
  * what says so without a label row costing another line on a phone. */
 .filter-project {
   flex: 0 1 auto;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   font-style: italic;
 }
 
@@ -2140,7 +2140,7 @@ body.nav-open { overflow: hidden; }
 .chip.size {
   border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   letter-spacing: 0.04em;
   cursor: default;
 }
@@ -2319,7 +2319,7 @@ blockquote {
 .tile-label {
   margin: 0;
   color: var(--dim);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -2333,7 +2333,7 @@ blockquote {
   font-variant-numeric: tabular-nums;
 }
 
-.tile-note { margin: 0; color: var(--dim); font-size: 0.78rem; }
+.tile-note { margin: 0; color: var(--dim); font-size: 0.8rem; }
 
 .chart {
   /* A column, so the zoom row can be ordered after a legend the chart
@@ -2350,7 +2350,7 @@ blockquote {
 }
 
 .chart-title { margin: 0 0.25rem; font-size: 1rem; font-weight: 600; }
-.chart-sub { margin: 0.1rem 0.25rem 0.5rem; color: var(--dim); font-size: 0.82rem; }
+.chart-sub { margin: 0.1rem 0.25rem 0.5rem; color: var(--dim); font-size: 0.8rem; }
 
 /* ECharts mounts into this box and sizes its canvas from it, so unlike
  * the hand-written SVG it replaced, the height has to be a real number
@@ -2380,7 +2380,7 @@ blockquote {
 /* One line of plain words rather than icons for the gestures, because
  * nothing else on the chart says the gestures exist. It wraps to two
  * lines on a narrow phone and that is fine. */
-.chart-tools-hint { color: var(--dim); font-size: 0.72rem; line-height: 1.3; }
+.chart-tools-hint { color: var(--dim); font-size: 0.75rem; line-height: 1.3; }
 
 .chart-tool {
   /* 34px is the smallest target that is still comfortable on a phone --
@@ -2459,7 +2459,7 @@ body.has-full-chart { overflow: hidden; }
 .share-track { flex: 1; height: 8px; background: var(--code-bg); border-radius: 4px; }
 .share-fill { display: block; height: 100%; border-radius: 4px; }
 .share-value { width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; }
-.share-note { margin: 0.4rem 0 0; color: var(--dim); font-size: 0.78rem; }
+.share-note { margin: 0.4rem 0 0; color: var(--dim); font-size: 0.8rem; }
 
 /* The one screen (ideas.md #120), at the top of the retro page. Built on
  * the retro card's shape because it is the same kind of object, with an
@@ -2487,7 +2487,7 @@ body.has-full-chart { overflow: hidden; }
 
 .week-sub {
   margin: 0.8rem 0 0.2rem;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--dim);
@@ -2543,7 +2543,7 @@ body.has-full-chart { overflow: hidden; }
 
 .retro-sub {
   margin: 0.8rem 0 0.2rem;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--dim);
@@ -2667,7 +2667,7 @@ body.has-full-chart { overflow: hidden; }
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--line);
   color: var(--dim);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   line-height: 1.35;
 }
 
@@ -2713,7 +2713,7 @@ body.has-full-chart { overflow: hidden; }
 }
 
 .plan-title { margin: 0; font-size: 1.1rem; }
-.plan-updated { margin: 0; color: var(--dim); font-size: 0.78rem; white-space: nowrap; }
+.plan-updated { margin: 0; color: var(--dim); font-size: 0.8rem; white-space: nowrap; }
 
 /* How many projects have no goal, under the card title (issue #227).
  *
@@ -2727,7 +2727,7 @@ body.has-full-chart { overflow: hidden; }
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.35rem;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 .plan-coverage-count { color: var(--dim); }
 .plan-coverage-chip {
@@ -2738,7 +2738,7 @@ body.has-full-chart { overflow: hidden; }
   align-items: baseline;
   gap: 0.3rem;
 }
-.plan-coverage-rows { color: var(--dim); font-size: 0.74rem; }
+.plan-coverage-rows { color: var(--dim); font-size: 0.75rem; }
 
 /* The goals scoreboard, above the prose (issue #96).
  *
@@ -2753,8 +2753,8 @@ body.has-full-chart { overflow: hidden; }
   background: rgba(122, 162, 247, 0.05);
 }
 
-.goal-board-title { margin: 0 0 0.6rem; font-size: 0.82rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
-.goal-board-note { margin: 0.55rem 0 0; font-size: 0.76rem; color: var(--dim); }
+.goal-board-title { margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.goal-board-note { margin: 0.55rem 0 0; font-size: 0.75rem; color: var(--dim); }
 .goal-list { list-style: none; margin: 0; padding: 0; }
 .goal-row + .goal-row { margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--line); }
 
@@ -2763,7 +2763,7 @@ body.has-full-chart { overflow: hidden; }
 
 /* The verdict is a word first. The colour is the second encoding, never
  * the only one -- the owner, 2026-08-20, on bare priority symbols. */
-.goal-verdict { font-size: 0.72rem; white-space: nowrap; padding: 0.1rem 0.4rem; border-radius: 999px; border: 1px solid; }
+.goal-verdict { font-size: 0.75rem; white-space: nowrap; padding: 0.1rem 0.4rem; border-radius: 999px; border: 1px solid; }
 .goal-verdict.on { color: var(--good); border-color: rgba(123, 216, 143, 0.45); }
 .goal-verdict.off { color: var(--warn); border-color: rgba(232, 183, 92, 0.45); }
 
@@ -2776,15 +2776,15 @@ body.has-full-chart { overflow: hidden; }
 .goal-state { font-size: 0.75rem; }
 .goal-state.approved { color: var(--good); }
 .goal-state.declined { color: var(--dim); }
-.goal-state-btn { min-height: 44px; padding: 0 0.7rem; font: inherit; font-size: 0.78rem; cursor: pointer; border-radius: 8px; border: 1px solid var(--outline); background: transparent; color: var(--text); }
+.goal-state-btn { min-height: 44px; padding: 0 0.7rem; font: inherit; font-size: 0.8rem; cursor: pointer; border-radius: 8px; border: 1px solid var(--outline); background: transparent; color: var(--text); }
 .goal-state-btn.current { border-color: var(--accent); color: var(--accent); }
 .goal-state-btn[disabled] { opacity: 0.5; cursor: default; }
-.goal-state-note { font-size: 0.72rem; color: var(--dim); }
+.goal-state-note { font-size: 0.75rem; color: var(--dim); }
 
-.goal-measure { margin: 0.2rem 0 0; font-size: 0.78rem; color: var(--dim); line-height: 1.4; }
+.goal-measure { margin: 0.2rem 0 0; font-size: 0.8rem; color: var(--dim); line-height: 1.4; }
 .goal-figures { margin: 0.3rem 0 0; display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
 .goal-now { font-size: 1.05rem; font-weight: 600; }
-.goal-target { font-size: 0.78rem; color: var(--dim); }
+.goal-target { font-size: 0.8rem; color: var(--dim); }
 
 /* Thin mark, rounded data-end, anchored to the left baseline. The tick is
  * the target on the same scale, so the gap between the fill's end and the
@@ -2808,7 +2808,7 @@ body.has-full-chart { overflow: hidden; }
 .goal-spark-line { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .goal-spark-dot { fill: var(--accent); opacity: 0.55; }
 .goal-spark-dot.last { opacity: 1; }
-.goal-history-text { margin: 0.25rem 0 0; font-size: 0.78rem; color: var(--dim); }
+.goal-history-text { margin: 0.25rem 0 0; font-size: 0.8rem; color: var(--dim); }
 
 /* `##` and `###` land on h3/h4 here, so the sizes are set explicitly
  * rather than inherited: the card's own title is the h2, and a browser
@@ -2913,7 +2913,7 @@ body.has-full-chart { overflow: hidden; }
 .ask-status {
   margin: 0.4rem 0 0;
   color: var(--warn);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 
 .ask-thread { display: flex; flex-direction: column; gap: 0.9rem; }
@@ -2935,7 +2935,7 @@ body.has-full-chart { overflow: hidden; }
 
 .ask-who {
   color: var(--dim);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   margin-bottom: 0.25rem;
 }
 
@@ -2978,7 +2978,7 @@ body.has-full-chart { overflow: hidden; }
   border-radius: 6px;
   color: var(--dim);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 
@@ -2996,7 +2996,7 @@ body.has-full-chart { overflow: hidden; }
   border-radius: 6px;
   color: var(--dim);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 
@@ -3425,7 +3425,7 @@ body.has-full-chart { overflow: hidden; }
 .step-tool-arg {
   color: var(--dim);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   /* One line, clipped -- the whole argument is in the detail view one tap
      away, and a forty-line `Bash` heredoc would otherwise be the list. */
   overflow: hidden;
@@ -3439,7 +3439,7 @@ body.has-full-chart { overflow: hidden; }
   flex: none;
   margin-left: auto;
   color: var(--dim);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 .step-tool-state ~ .step-tool-at { margin-left: 0.5rem; }
@@ -3450,7 +3450,7 @@ body.has-full-chart { overflow: hidden; }
 .step-section-label {
   margin: 0.9rem 0 0.3rem;
   color: var(--dim);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
 }
 /* Inputs and Output are verbatim machine text, so they wrap rather than
    scroll sideways -- on a 360px phone a horizontal scroller inside a sheet
@@ -3483,8 +3483,8 @@ body.has-full-chart { overflow: hidden; }
   background: rgba(122, 162, 247, 0.05);
 }
 
-.rank-strip-title { margin: 0 0 0.6rem; font-size: 0.82rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
-.rank-strip-note { margin: 0.55rem 0 0; font-size: 0.76rem; color: var(--dim); }
+.rank-strip-title { margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.rank-strip-note { margin: 0.55rem 0 0; font-size: 0.75rem; color: var(--dim); }
 .rank-list { list-style: none; margin: 0; padding: 0; }
 .rank-card + .rank-card { margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--line); }
 
@@ -3492,15 +3492,15 @@ body.has-full-chart { overflow: hidden; }
 .rank-num {
   flex: none;
   min-width: 1.35rem;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   font-weight: 600;
   color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
 .rank-title { flex: 1 1 8rem; font-size: 0.9rem; font-weight: 600; }
-.rank-chip { flex: none; font-size: 0.72rem; white-space: nowrap; padding: 0.1rem 0.4rem; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+.rank-chip { flex: none; font-size: 0.75rem; white-space: nowrap; padding: 0.1rem 0.4rem; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
 .rank-claim { margin: 0.25rem 0 0 1.8rem; font-size: 0.8rem; line-height: 1.45; }
-.rank-board { margin: 0.2rem 0 0 1.8rem; font-size: 0.74rem; color: var(--dim); }
+.rank-board { margin: 0.2rem 0 0 1.8rem; font-size: 0.75rem; color: var(--dim); }
 
 /* The finished half of the ranked strip. It is on the page so the rank
  * numbers do not read as though items had gone missing, and it is dimmed
@@ -3708,7 +3708,7 @@ body.has-full-chart { overflow: hidden; }
 .diag-key {
   margin: 0.9rem 0 0.15rem;
   color: var(--dim);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -3761,7 +3761,7 @@ body.has-full-chart { overflow: hidden; }
   padding: 0.12rem 0.5rem;
   border: 1px solid var(--line);
   border-radius: 999px;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   color: var(--dim);
 }
 
@@ -3789,7 +3789,7 @@ body.has-full-chart { overflow: hidden; }
 
 .pool-said-when {
   color: var(--dim);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   margin-right: 0.45rem;
 }
 
@@ -3836,7 +3836,7 @@ body.has-full-chart { overflow: hidden; }
 .pool-count {
   margin: 0 0 1rem;
   color: var(--dim);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   text-align: center;
 }
 
@@ -3911,7 +3911,7 @@ body.has-full-chart { overflow: hidden; }
 
 .pool-history-meta {
   margin: 0.3rem 0 0;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   color: var(--dim);
 }
 
@@ -4107,7 +4107,7 @@ body.chat-open { overflow: hidden; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   color: var(--dim);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -4301,7 +4301,7 @@ body.chat-open { overflow: hidden; }
  * `+` in the middle of the row (his report, 2026-09-08). One auto, on the
  * leftmost control of the right-hand group, is the whole mechanism; see the
  * `.chat-plus` rule above for which control that is. */
-.chat-status { margin: 0; font-size: 0.76rem; color: var(--dim); }
+.chat-status { margin: 0; font-size: 0.75rem; color: var(--dim); }
 .chat-send {
   flex: none;
   background: var(--card);
@@ -4462,7 +4462,7 @@ body.chat-open { overflow: hidden; }
   border: 0;
   border-radius: 999px;
   font: inherit;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   cursor: pointer;
 }
 
@@ -4533,12 +4533,12 @@ body.chat-open { overflow: hidden; }
 
 .hb-name, .marcus-stop-name { font-weight: 600; }
 .hb-meta, .marcus-stop-meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
-.hb-when { color: var(--dim); font-size: 0.78rem; margin-top: 0.1rem; }
+.hb-when { color: var(--dim); font-size: 0.8rem; margin-top: 0.1rem; }
 
 /* The word beside the state, never a bare colour -- his ask about the
  * priority symbols, and the same reason: a reader who has to know a colour
  * code to know what was said has not been told. */
-.hb-state { font-size: 0.78rem; margin-top: 0.35rem; font-weight: 600; }
+.hb-state { font-size: 0.8rem; margin-top: 0.35rem; font-weight: 600; }
 .hb-state-on { color: var(--good, #5ec27a); }
 .hb-state-off { color: var(--dim); }
 .hb-state-running { color: var(--accent, #a98bff); }
@@ -4567,7 +4567,7 @@ body.chat-open { overflow: hidden; }
 .hb-task pre {
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   color: var(--dim);
   margin: 0.4rem 0 0;
 }
@@ -4593,13 +4593,13 @@ body.chat-open { overflow: hidden; }
   border-radius: 8px;
   padding: 0.45rem 0.6rem;
   font: inherit;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   color: var(--text);
   cursor: pointer;
 }
 
 .hb-thread-name { word-break: break-word; }
-.hb-thread-when { color: var(--dim); font-size: 0.72rem; white-space: nowrap; }
+.hb-thread-when { color: var(--dim); font-size: 0.75rem; white-space: nowrap; }
 
 
 /* The service catalog (/catalog). Cards rather than the markdown table
@@ -4631,14 +4631,14 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 /* The word beside the state, never a bare colour -- and "off on purpose"
  * spelled out rather than shortened, because the whole point of the
  * distinction is that one of these is fine and the other is not. */
-.cat-state { font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+.cat-state { font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
 .cat-state-up { color: var(--good); }
 .cat-state-off { color: var(--dim); }
 .cat-state-down { color: var(--danger); }
 .cat-state-unknown { color: var(--warn); }
 
 .cat-ns {
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--dim);
@@ -4657,8 +4657,8 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .cat-warn { border-color: var(--warn); }
 
 .cat-lead { font-weight: 600; margin: 0; }
-.cat-detail { color: var(--dim); font-size: 0.82rem; margin: 0.4rem 0 0; }
-.cat-when { color: var(--dim); font-size: 0.78rem; margin-top: 1rem; }
+.cat-detail { color: var(--dim); font-size: 0.8rem; margin: 0.4rem 0 0; }
+.cat-when { color: var(--dim); font-size: 0.8rem; margin-top: 1rem; }
 
 
 .mail {
@@ -4857,7 +4857,7 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 
 .next-card-note {
   margin: 0.2rem 0 0;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   opacity: 0.7;
 }
 
@@ -4894,7 +4894,7 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 }
 
 .next-num {
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   opacity: 0.7;
   white-space: nowrap;
 }
@@ -4904,7 +4904,7 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 }
 
 .next-chip {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 0.05rem 0.5rem;
@@ -5265,7 +5265,7 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .galaxy-row.is-live { opacity: 1; }
 .galaxy-dot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; margin-top: 0.35rem; }
 .galaxy-row-body { min-width: 0; }
-.galaxy-row-head { font-size: 0.82rem; opacity: 0.72; }
+.galaxy-row-head { font-size: 0.8rem; opacity: 0.72; }
 .galaxy-row-note { overflow-wrap: anywhere; }
 
 /* The twelve-hour recap, pinned above the feed (his 🔴 Immediately capture,
@@ -5312,7 +5312,7 @@ X that summarizes the last 12
 
 .recap-title {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--accent);
@@ -5364,7 +5364,7 @@ X that summarizes the last 12
 
 .recap-note {
   margin: 0.6rem 0 0;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   color: var(--dim);
 }
 
@@ -5400,7 +5400,7 @@ X that summarizes the last 12
  * back is to close it and look at the button. */
 .capture-sheet-head {
   margin: 0.9rem 0 0.3rem;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--dim);
@@ -5548,7 +5548,7 @@ X that summarizes the last 12
  * the token's own comment states -- the only interactive things here are
  * links, and they carry `--accent` rather than a border. */
 .home-section-title {
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--dim);
