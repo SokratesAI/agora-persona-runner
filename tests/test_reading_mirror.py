@@ -62,6 +62,32 @@ def test_a_document_changed_minutes_ago_waits_for_the_next_run():
     assert v.writes == []
 
 
+def test_a_source_rewritten_every_cycle_is_copied_once_it_falls_behind():
+    """The failure this guards: a document a cycle touches every cycle is
+    always younger than the settle window, so it would never be copied."""
+    v = FakeVault({SRC + "plans.md": ("v3", FRESH)})
+    v.files[DST + "plans.md"] = (rm.to_mirror("v1", SRC + "plans.md"),
+                                 NOW - 90 * 60_000)
+    v.revs[DST + "plans.md"] = "1-a"
+    assert verdicts(v) == {"plans.md": "STALE"}
+    assert rm.main([], client=v, now_ms=NOW) == 0
+    assert rm.from_mirror(v.read(DST + "plans.md"))[1] == "v3"
+
+
+def test_a_copy_that_is_only_a_little_behind_still_waits():
+    v = FakeVault({SRC + "plans.md": ("v2", FRESH)})
+    v.files[DST + "plans.md"] = (rm.to_mirror("v1", SRC + "plans.md"),
+                                 NOW - 10 * 60_000)
+    v.revs[DST + "plans.md"] = "1-a"
+    assert verdicts(v) == {"plans.md": "SETTLING"}
+    assert v.writes == []
+
+
+def test_a_brand_new_document_with_no_copy_yet_still_settles():
+    v = FakeVault({SRC + "plans.md": ("v1", FRESH)})
+    assert verdicts(v) == {"plans.md": "SETTLING"}
+
+
 def test_an_unchanged_source_is_not_rewritten():
     text = "# r\n"
     v = FakeVault({SRC + "roadmap.md": (text, OLD),
