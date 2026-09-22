@@ -997,28 +997,28 @@ def test_converting_a_capture_reaches_the_vault_through_the_real_request_path():
     with patch.object(nova_site, "convert_capture", return_value=(True, "moved to ideas")) as conv:
         status, _, body = _post(
             "/api/capture/convert",
-            {"from": "notes", "to": "ideas", "index": 1, "original": "actually an idea"},
+            {"from": "issues", "to": "ideas", "index": 1, "original": "actually an idea"},
         )
     assert status == 200
     assert json.loads(body)["ok"] is True
-    conv.assert_called_once_with("notes", 1, "actually an idea", "ideas")
+    conv.assert_called_once_with("issues", 1, "actually an idea", "ideas")
 
 
 @pytest.mark.parametrize("payload", [
     {"from": "../../etc/passwd", "to": "ideas", "index": 0, "original": "x"},
-    {"from": "notes", "to": "projects/sokrates/projects/nova/ideas.md", "index": 0, "original": "x"},
+    {"from": "issues", "to": "projects/sokrates/projects/nova/ideas.md", "index": 0, "original": "x"},
     {"to": "ideas", "index": 0, "original": "x"},
-    {"from": "notes", "index": 0, "original": "x"},
+    {"from": "issues", "index": 0, "original": "x"},
     # Converting a line into the file it is already in is a no-op the page
     # should never send and the server should never carry out -- it would
     # write the copy and then delete the address it had just shifted.
-    {"from": "notes", "to": "notes", "index": 0, "original": "x"},
-    {"from": "notes", "to": "ideas", "index": 0, "original": ""},
-    {"from": "notes", "to": "ideas", "index": 0, "original": 42},
-    {"from": "notes", "to": "ideas", "original": "x"},
-    {"from": "notes", "to": "ideas", "index": True, "original": "x"},
-    {"from": "notes", "to": "ideas", "index": -1, "original": "x"},
-    {"from": "notes", "to": "ideas", "index": "0", "original": "x"},
+    {"from": "issues", "to": "issues", "index": 0, "original": "x"},
+    {"from": "issues", "to": "ideas", "index": 0, "original": ""},
+    {"from": "issues", "to": "ideas", "index": 0, "original": 42},
+    {"from": "issues", "to": "ideas", "original": "x"},
+    {"from": "issues", "to": "ideas", "index": True, "original": "x"},
+    {"from": "issues", "to": "ideas", "index": -1, "original": "x"},
+    {"from": "issues", "to": "ideas", "index": "0", "original": "x"},
 ])
 def test_a_convert_that_could_address_the_wrong_document_is_rejected(payload):
     with patch.object(nova_site, "convert_capture") as conv:
@@ -1032,7 +1032,7 @@ def test_a_convert_whose_address_went_stale_is_a_conflict_rather_than_a_failure(
                       return_value=(False, "that capture is no longer in the list")):
         status, _, _ = _post(
             "/api/capture/convert",
-            {"from": "notes", "to": "ideas", "index": 0, "original": "gone"},
+            {"from": "issues", "to": "ideas", "index": 0, "original": "gone"},
         )
     assert status == 409
 
@@ -1048,7 +1048,7 @@ def test_a_half_done_convert_is_502_even_though_its_message_says_no_longer():
                    "delete the notes one")):
         status, _, _ = _post(
             "/api/capture/convert",
-            {"from": "notes", "to": "ideas", "index": 0, "original": "x"},
+            {"from": "issues", "to": "ideas", "index": 0, "original": "x"},
         )
     assert status == 502, "a landed destination write must not read as nothing happened"
 
@@ -1057,15 +1057,15 @@ def test_an_exception_after_the_destination_write_still_drops_both_pages():
     """The write may already have happened when the exception is raised, and a
     cached page would hide the copy that really is there."""
     nova_site.reset_cache()
-    nova_site._cache["notes"] = ({"notes": ["stale"]}, "{}", 'W/"x"', 0.0)
+    nova_site._cache["board:issues"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
     nova_site._cache["board:ideas"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
     with patch.object(nova_site, "convert_capture", side_effect=RuntimeError("boom")):
         status, _, _ = _post(
             "/api/capture/convert",
-            {"from": "notes", "to": "ideas", "index": 0, "original": "x"},
+            {"from": "issues", "to": "ideas", "index": 0, "original": "x"},
         )
     assert status == 502
-    assert "notes" not in nova_site._cache
+    assert "board:issues" not in nova_site._cache
     assert "board:ideas" not in nova_site._cache
 
 
@@ -1074,30 +1074,35 @@ def test_a_convert_drops_both_pages_it_touched_even_when_it_half_failed():
     cold. A cached destination would keep the copy invisible while the
     message says it is in both files."""
     nova_site.reset_cache()
-    nova_site._cache["notes"] = ({"notes": ["stale"]}, "{}", 'W/"x"', 0.0)
+    nova_site._cache["board:issues"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
     nova_site._cache["board:ideas"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
     with patch.object(nova_site, "convert_capture",
                       return_value=(False, "copied to ideas, but ... it is in both")):
         _post("/api/capture/convert",
-              {"from": "notes", "to": "ideas", "index": 0, "original": "x"})
-    assert "notes" not in nova_site._cache
+              {"from": "issues", "to": "ideas", "index": 0, "original": "x"})
+    assert "board:issues" not in nova_site._cache
     assert "board:ideas" not in nova_site._cache
 
 
-@pytest.mark.parametrize("path", ["/api/capture/edit", "/api/capture/delete"])
-def test_writing_a_note_drops_the_notes_page_not_a_board_that_never_existed(path):
-    """`board:notes` has never existed -- notes are not a board -- and for
-    every write but the first this endpoint only ever popped that key. A
-    note edited or deleted from the app left `/notes` serving the copy from
-    before the write."""
-    nova_site.reset_cache()
-    nova_site._cache["notes"] = ({"notes": ["stale"]}, "{}", 'W/"x"', 0.0)
-    with patch.object(nova_site, "capture", return_value=(True, "ok")), \
-            patch.object(nova_site, "amend", return_value=(True, "ok")):
-        _post(path, {"target": "notes", "index": 0, "original": "x", "text": "y"})
-    assert "notes" not in nova_site._cache, (
-        "the notes page would reload to the copy from before the write"
-    )
+@pytest.mark.parametrize("path, payload", [
+    ("/api/capture/edit", {"target": "notes", "index": 0, "original": "x", "text": "y"}),
+    ("/api/capture/delete", {"target": "notes", "index": 0, "original": "x"}),
+    ("/api/capture/comment", {"target": "notes", "index": 0, "original": "x", "text": "y"}),
+    ("/api/capture/convert", {"from": "notes", "to": "ideas", "index": 0, "original": "x"}),
+])
+def test_a_capture_route_refuses_notes_rather_than_writing_notes_md(path, payload):
+    """Idea #333: a note is a record, edited through `/api/notes/*`. These
+    routes address a bullet in `notes.md`, which nothing shows him any more,
+    so an edit there would report success and change nothing he can see."""
+    with patch.object(nova_site, "amend") as amend, \
+            patch.object(nova_site, "comment_on_capture") as comment, \
+            patch.object(nova_site, "convert_capture") as conv:
+        status, _, body = _post(path, payload)
+    assert status == 400
+    assert "/api/notes/" in json.loads(body)["error"]
+    amend.assert_not_called()
+    comment.assert_not_called()
+    conv.assert_not_called()
 
 
 # Parametrized over the dict rather than a literal list: this test was

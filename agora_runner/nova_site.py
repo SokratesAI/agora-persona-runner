@@ -2760,6 +2760,18 @@ def invalidate(name):
         board_publish.request(_RECORD_BOARDS[name[len("board:"):]])
 
 
+# Idea #333: a note is a record now, and the /notes page edits, deletes and
+# comments through `/api/notes/*`. The capture routes that address a bullet
+# in a file would still read and write `notes.md`, which nothing shows him
+# any more -- an edit there reports success and changes nothing he can see.
+# So they refuse `notes` rather than write it. Filing a note (`/api/capture`)
+# and converting a capture *into* a note already go to the store.
+NOTES_ARE_RECORDS = (
+    "notes are records now: edit, delete or comment through "
+    "/api/notes/edit, /api/notes/delete or /api/notes/comment"
+)
+
+
 def _invalidate_capture_target(target):
     """Drop whichever cached page shows captures for `target`.
 
@@ -4903,6 +4915,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if target not in CAPTURE_TARGETS:
             self._send_json(400, {"error": f"target must be one of {sorted(CAPTURE_TARGETS)}"})
             return
+        if target == "notes":
+            self._send_json(400, {"error": NOTES_ARE_RECORDS})
+            return
         if not isinstance(original, str) or not original.strip():
             self._send_json(400, {"error": "original must be a non-empty string"})
             return
@@ -4979,6 +4994,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         text = payload.get("text")
         if target not in CAPTURE_TARGETS:
             self._send_json(400, {"error": f"target must be one of {sorted(CAPTURE_TARGETS)}"})
+            return
+        if target == "notes":
+            self._send_json(400, {"error": NOTES_ARE_RECORDS})
             return
         # `True` is an int in Python and would silently address capture 1.
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
@@ -5157,6 +5175,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
         if source == dest:
             self._send_json(400, {"error": "from and to must differ"})
+            return
+        if source == "notes":
+            self._send_json(400, {"error": NOTES_ARE_RECORDS})
             return
         if not isinstance(original, str) or not original.strip():
             self._send_json(400, {"error": "original must be a non-empty string"})

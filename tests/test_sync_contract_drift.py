@@ -552,7 +552,10 @@ def test_edvards_own_nova_folder_dropped_from_both_copies_is_caught(tmp_path):
     with pytest.raises(sync_contract.ContractRouterMissing) as caught:
         sync_contract.compare_routing(runner, bridge)
     message = str(caught.value)
-    assert "projects/sokrates/projects/nova/issues.md" in message
+    # It names the first probe in his folder that came back wrong, which is
+    # whichever of them the table reaches first -- any one of them is the
+    # finding.
+    assert "projects/sokrates/projects/nova/" in message
     assert "expected" in message
 
 
