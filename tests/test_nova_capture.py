@@ -28,6 +28,7 @@ from agora_runner.nova_capture import (
     STALE_CAPTURE,
     capture_entries,
     comment_on_capture,
+    NOTES_ARE_RECORDS,
     convert_capture,
     insert_captures,
     list_captures,
@@ -346,10 +347,10 @@ def test_no_bullets_leaves_the_file_byte_identical(issues_md):
 def test_capture_writes_the_updated_file_to_the_right_path(issues_md):
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(issues_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
-        ok, message = capture("notes", "the app needs a restart")
+        ok, message = capture("projects", "the app needs a restart")
     assert ok, message
     path, content = write.call_args[0]
-    assert path == CAPTURE_TARGETS["notes"]
+    assert path == CAPTURE_TARGETS["projects"]
     assert "- the app needs a restart" in content
 
 
@@ -381,7 +382,7 @@ def test_a_conflicting_write_is_retried_against_freshly_read_content(issues_md):
                        side_effect=[(c, "1-x") for c in reads]) as read, \
             patch.object(nova_capture, "vault_write_path",
                          side_effect=["FAILED(409)", "written"]) as write:
-        ok, message = capture("notes", "mine")
+        ok, message = capture("projects", "mine")
     assert ok, message
     assert read.call_count == 2
     final = write.call_args[0][1]
@@ -391,7 +392,7 @@ def test_a_conflicting_write_is_retried_against_freshly_read_content(issues_md):
 def test_a_write_that_keeps_conflicting_gives_up_rather_than_spinning(issues_md):
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(issues_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="FAILED(409)") as write:
-        ok, _ = capture("notes", "mine")
+        ok, _ = capture("projects", "mine")
     assert not ok
     assert write.call_count == nova_capture.WRITE_ATTEMPTS
 
@@ -401,7 +402,7 @@ def test_a_non_conflict_failure_is_not_retried(issues_md):
     triples the damage and the latency."""
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(issues_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="FAILED(401)") as write:
-        ok, message = capture("notes", "mine")
+        ok, message = capture("projects", "mine")
     assert not ok
     assert "401" in message
     assert write.call_count == 1
@@ -412,7 +413,7 @@ def test_a_missing_target_file_is_reported_not_created():
     appeared from nowhere would be a silent second copy of the backlog."""
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(None, None)), \
             patch.object(nova_capture, "vault_write_path") as write:
-        ok, message = capture("notes", "mine")
+        ok, message = capture("projects", "mine")
     assert not ok
     assert "not found" in message
     write.assert_not_called()
@@ -480,14 +481,21 @@ def test_a_note_keeps_the_single_empty_bullet_last(notes_md):
     assert _capture_list(out) == ["- one", "- two", "- "]
 
 
-def test_capture_writes_a_note_to_notes_md(notes_md):
-    with patch.object(nova_capture, "vault_read_path_rev", return_value=(notes_md, "1-x")), \
-            patch.object(nova_capture, "vault_write_path", return_value="written") as write:
-        ok, message = capture("notes", "you were right about the OOM kills")
-    assert ok, message
-    path, content = write.call_args[0]
-    assert path == CAPTURE_TARGETS["notes"]
-    assert "- you were right about the OOM kills" in content
+def test_every_writer_refuses_notes_without_touching_the_vault():
+    """Idea #333: a note is a record now, and `notes.md` is a file nothing
+    reads. A write there would report success and reach nobody."""
+    with patch.object(nova_capture, "vault_read_path_rev") as read, \
+            patch.object(nova_capture, "vault_write_path") as write:
+        results = [
+            capture("notes", "you were right about the OOM kills"),
+            amend("notes", 0, "one", "two"),
+            amend("notes", 0, "one", ""),
+            comment_on_capture("notes", 0, "one", "a reply"),
+            convert_capture("notes", 0, "one", "ideas"),
+            convert_capture("ideas", 0, "one", "notes"),
+        ]
+    assert results == [(False, NOTES_ARE_RECORDS)] * len(results)
+    assert read.call_count == 0 and write.call_count == 0
 
 
 def test_every_button_in_the_page_names_a_real_target():
@@ -607,7 +615,7 @@ def test_a_capture_that_is_no_longer_there_is_not_an_edit(issues_md):
 def test_amend_reports_a_boarded_capture_without_writing(issues_md):
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(issues_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path") as write:
-        ok, message = amend("notes", 0, "not in the file", "new text")
+        ok, message = amend("projects", 0, "not in the file", "new text")
     assert not ok
     assert "no longer" in message
     write.assert_not_called()
@@ -617,10 +625,10 @@ def test_amend_writes_the_edited_file_to_the_right_path(issues_md):
     start = insert_captures(issues_md, ["the app needs a restart"])
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(start, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
-        ok, message = amend("notes", 0, "the app needs a restart", "the app needs two restarts")
+        ok, message = amend("projects", 0, "the app needs a restart", "the app needs two restarts")
     assert ok, message
     path, content = write.call_args[0]
-    assert path == CAPTURE_TARGETS["notes"]
+    assert path == CAPTURE_TARGETS["projects"]
     assert list_captures(content)[-1] == "the app needs two restarts"
 
 
@@ -628,7 +636,7 @@ def test_amend_with_no_text_deletes(issues_md):
     start = insert_captures(issues_md, ["a typo I want gone"])
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(start, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
-        ok, message = amend("notes", 0, "a typo I want gone", "")
+        ok, message = amend("projects", 0, "a typo I want gone", "")
     assert ok, message
     assert "deleted" in message
     assert "a typo I want gone" not in list_captures(write.call_args[0][1])
@@ -651,7 +659,7 @@ def test_an_amend_conflict_is_retried_against_freshly_read_content(issues_md):
                        side_effect=[(c, "1-x") for c in [start, meanwhile]]) as read, \
             patch.object(nova_capture, "vault_write_path",
                          side_effect=["FAILED(409)", "written"]) as write:
-        ok, message = amend("notes", 0, "mine", "mine, reworded")
+        ok, message = amend("projects", 0, "mine", "mine, reworded")
     assert ok, message
     assert read.call_count == 2
     final = write.call_args[0][1]
@@ -669,7 +677,7 @@ def test_an_amend_conflict_that_loses_to_a_boarding_does_not_resurrect_it(issues
                        side_effect=[(c, "1-x") for c in [start, issues_md]]), \
             patch.object(nova_capture, "vault_write_path",
                          side_effect=["FAILED(409)", "written"]) as write:
-        ok, message = amend("notes", 0, "mine", "mine, reworded")
+        ok, message = amend("projects", 0, "mine", "mine, reworded")
     assert not ok
     assert "no longer" in message
     assert write.call_count == 1
@@ -704,12 +712,12 @@ def test_a_capture_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
     overwrites them. Interleaving anywhere later is caught either way and
     proves nothing.
     """
-    path = CAPTURE_TARGETS["notes"]
+    path = CAPTURE_TARGETS["projects"]
     couch = _seeded(path, issues_md)
     couch.interleave = {2: lambda c: c.seed(
         path, insert_captures(issues_md, ["something he typed meanwhile"]))}
     with patch.object(vault, "couch_req", couch.req):
-        ok, message = capture("notes", "mine")
+        ok, message = capture("projects", "mine")
     assert ok, message
     assert couch.rejected == 1, "the losing write must have been refused"
     assert _capture_list(couch.text(path)) == [
@@ -727,7 +735,7 @@ def test_an_amend_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
     losing-and-retrying case only exists when the rest of the file moved,
     which is what a cycle boarding an item actually does.
     """
-    path = CAPTURE_TARGETS["notes"]
+    path = CAPTURE_TARGETS["projects"]
     start = insert_captures(issues_md, ["mine"])
     his_board = start.replace(
         "|---|------|--------|---------|",
@@ -736,7 +744,7 @@ def test_an_amend_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
     couch = _seeded(path, start)
     couch.interleave = {2: lambda c: c.seed(path, his_board)}
     with patch.object(vault, "couch_req", couch.req):
-        ok, message = amend("notes", 0, "mine", "mine, edited")
+        ok, message = amend("projects", 0, "mine", "mine, edited")
     assert ok, message
     assert couch.rejected == 1, "the losing write must have been refused"
     final = couch.text(path)
@@ -790,13 +798,13 @@ def _two_file_vault(paths):
 
 
 def test_convert_moves_the_bullet_out_of_one_file_and_into_the_other(notes_md, ideas_md):
-    couch = _two_file_vault({"notes": insert_captures(notes_md, ["rebuild the notes page"])})
+    couch = _two_file_vault({"projects": insert_captures(notes_md, ["rebuild the notes page"])})
     ideas = _dest_records(ideas_md)
     with patch.object(vault, "couch_req", couch.req), \
             patch.object(nova_capture, "board_store", ideas):
-        ok, message = convert_capture("notes", 0, "rebuild the notes page", "ideas")
+        ok, message = convert_capture("projects", 0, "rebuild the notes page", "ideas")
     assert ok, message
-    assert "rebuild the notes page" not in couch.text(CAPTURE_TARGETS["notes"])
+    assert "rebuild the notes page" not in couch.text(CAPTURE_TARGETS["projects"])
     assert _idea_captures(ideas)[-1] == "rebuild the notes page"
 
 
@@ -805,25 +813,25 @@ def test_convert_leaves_the_source_alone_when_the_destination_write_fails(notes_
 
     The destination is not seeded, so `vault_read_path_rev` returns None
     and `capture` refuses before anything is removed. His sentence has to
-    still be in `notes.md` afterwards -- that is the whole reason the two
+    still be in the source file afterwards -- that is the whole reason the two
     calls are in this order.
     """
-    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"])})
+    couch = _two_file_vault({"projects": insert_captures(notes_md, ["actually an idea"])})
     with patch.object(vault, "couch_req", couch.req):
-        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+        ok, message = convert_capture("projects", 0, "actually an idea", "ideas")
     assert not ok
-    assert "actually an idea" in couch.text(CAPTURE_TARGETS["notes"]), \
+    assert "actually an idea" in couch.text(CAPTURE_TARGETS["projects"]), \
         "a failed destination write must never cost him the line"
 
 
 def test_convert_says_so_when_the_copy_landed_but_the_removal_did_not(notes_md, ideas_md):
     """The one half-done state this ordering can produce, reported not hidden."""
-    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"])})
+    couch = _two_file_vault({"projects": insert_captures(notes_md, ["actually an idea"])})
     ideas = _dest_records(ideas_md)
     with patch.object(vault, "couch_req", couch.req), \
             patch.object(nova_capture, "board_store", ideas), \
             patch.object(nova_capture, "amend", return_value=(False, "boom")):
-        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+        ok, message = convert_capture("projects", 0, "actually an idea", "ideas")
     assert not ok
     assert "it is in both" in message, message
     assert "actually an idea" in _idea_captures(ideas)
@@ -840,40 +848,25 @@ def test_convert_carries_the_rating_between_the_two_boards(issues_md, ideas_md):
         "the source half of a move off his board is the capture's record"
 
 
-def test_convert_strips_the_rating_going_into_notes(issues_md, notes_md):
-    """`notes.md` is *"never numbered, never boarded"* -- a priority label
-    in a file with no board is vocabulary from a page that does not exist."""
-    rated = "🟠 High: the runner drops replies"
-    records = _source_records(insert_captures(issues_md, [rated]))
-    couch = _two_file_vault({"notes": notes_md})
-    with patch.object(vault, "couch_req", couch.req), \
-            patch.object(nova_capture, "board_store", records):
-        ok, message = convert_capture("issues", 0, rated, "notes")
-    assert ok, message
-    notes = couch.text(CAPTURE_TARGETS["notes"])
-    assert "- the runner drops replies" in notes
-    assert "🟠" not in notes
-
-
 def test_convert_refuses_a_stale_address_without_moving_anything(notes_md, ideas_md):
     """The bullet the page addressed is not the bullet in the file.
 
     `replace_capture` refuses rather than resolving, and the destination
     copy is what the message tells him to delete.
     """
-    couch = _two_file_vault({"notes": insert_captures(notes_md, ["one"]), "ideas": ideas_md})
+    couch = _two_file_vault({"projects": insert_captures(notes_md, ["one"]), "ideas": ideas_md})
     with patch.object(vault, "couch_req", couch.req):
-        ok, message = convert_capture("notes", 0, "something else entirely", "ideas")
+        ok, message = convert_capture("projects", 0, "something else entirely", "ideas")
     assert not ok
-    assert "- one" in couch.text(CAPTURE_TARGETS["notes"])
+    assert "- one" in couch.text(CAPTURE_TARGETS["projects"])
 
 
 def test_convert_refuses_unknown_and_identical_targets():
     with patch.object(nova_capture, "vault_read_path_rev") as read:
-        assert convert_capture("notes", 0, "x", "notes")[0] is False
-        assert convert_capture("notes", 0, "x", "kanban")[0] is False
+        assert convert_capture("projects", 0, "x", "projects")[0] is False
+        assert convert_capture("projects", 0, "x", "kanban")[0] is False
         assert convert_capture("kanban", 0, "x", "ideas")[0] is False
-        assert convert_capture("notes", 0, "   ", "ideas")[0] is False
+        assert convert_capture("projects", 0, "   ", "ideas")[0] is False
     assert read.call_count == 0, "a refused conversion must not touch the vault"
 
 
@@ -887,16 +880,16 @@ def test_a_second_convert_of_the_same_line_does_not_claim_it_is_in_both(notes_md
     both, delete the notes one" would send him to the wrong file for a copy
     that is not there. Found by review.
     """
-    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"])})
+    couch = _two_file_vault({"projects": insert_captures(notes_md, ["actually an idea"])})
     ideas = _dest_records(ideas_md)
     with patch.object(vault, "couch_req", couch.req), \
             patch.object(nova_capture, "board_store", ideas):
-        assert convert_capture("notes", 0, "actually an idea", "ideas")[0] is True
-        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+        assert convert_capture("projects", 0, "actually an idea", "ideas")[0] is True
+        ok, message = convert_capture("projects", 0, "actually an idea", "ideas")
     assert not ok
     assert "it is in both" not in message, message
     assert "duplicate" in message, message
-    assert "actually an idea" not in couch.text(CAPTURE_TARGETS["notes"]), \
+    assert "actually an idea" not in couch.text(CAPTURE_TARGETS["projects"]), \
         "the source really is clean, so the message must not point him at it"
     assert _idea_captures(ideas).count("actually an idea") == 2, \
         "the fixture must actually have produced the duplicate this is about"
@@ -918,10 +911,10 @@ def test_a_reply_lands_as_an_indented_bullet_under_his_capture(issues_md):
         "the thing he typed")
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(markdown, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
-        ok, message = comment_on_capture("notes", index, "the thing he typed", "Answered, cycle 430.")
+        ok, message = comment_on_capture("projects", index, "the thing he typed", "Answered, cycle 430.")
     assert ok, message
     path, content = write.call_args[0]
-    assert path == CAPTURE_TARGETS["notes"]
+    assert path == CAPTURE_TARGETS["projects"]
     assert "- the thing he typed\n  - Answered, cycle 430." in content
     # And the reply is not a second capture: his list still reads the same.
     assert list_captures(content) == list_captures(markdown)
@@ -1137,7 +1130,7 @@ def test_a_project_rides_on_the_end_of_the_bullet_as_a_tag():
     with patch.object(nova_capture, "vault_read_path_rev", fake_read), \
             patch.object(nova_capture, "vault_write_path", fake_write):
         ok, _ = nova_capture.capture(
-            "notes", "fix the drag on the tool sheet", project="Nova app")
+            "projects", "fix the drag on the tool sheet", project="Nova app")
     assert ok
     assert "- fix the drag on the tool sheet #nova-app" in written["text"]
 
@@ -1155,7 +1148,7 @@ def test_the_tag_lands_after_the_rating_not_before_it():
             patch.object(nova_capture, "vault_write_path",
                          lambda path, text, if_rev=None: written.update(text=text) or "written"):
         ok, _ = nova_capture.capture(
-            "notes", "one\n\ntwo", priority="High", project="Marcus")
+            "projects", "one\n\ntwo", priority="High", project="Marcus")
     assert ok
     lines = [l for l in written["text"].splitlines() if l.startswith("- ") and l.strip() != "-"]
     assert lines[0] == "- \U0001f7e0 High: one #marcus"
@@ -1176,7 +1169,7 @@ def test_an_unnameable_project_writes_no_tag_rather_than_a_bare_hash():
                       lambda path: ("---\ntype: log\n---\n\n- \n\n## Board\n", "1-a")), \
             patch.object(nova_capture, "vault_write_path",
                          lambda path, text, if_rev=None: written.update(text=text) or "written"):
-        ok, _ = nova_capture.capture("notes", "just a note", project="   ")
+        ok, _ = nova_capture.capture("projects", "just a note", project="   ")
     assert ok
     assert "- just a note\n" in written["text"]
     assert "#" not in written["text"].split("## Board")[0]
