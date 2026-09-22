@@ -11,7 +11,8 @@ there is nothing left on Agora's own app that he opens it for day to day.
 the opposite of `nova_conversations.send`. The internal API on :8081 accepts
 only `lastRunAt`, `lastResult`, `forceRun` and `conversationId` -- it is the
 runner's own bookkeeping surface -- so `enabled` is reachable only on the
-public app on :8080, which carries no token guard and is the exact pair of
+public app on :8080 -- through `agora_public`, so the agent token rides along
+for the guard issue #287 puts there -- and they are the exact pair of
 calls Agora's own page makes (`public/app.js`, `PATCH /heartbeats/:id` with
 `{enabled}` and `POST /heartbeats/:id/run`). Measured live against :8080,
 Cycle 443: a `PATCH` answered 200 with the heartbeat back.
@@ -23,8 +24,7 @@ them is something he does from his phone. Switching one off and pressing run
 are. Agora's own page keeps all four.
 """
 
-from agora_runner.config import AGORA_URL
-from agora_runner.http_util import agora_get, http_json
+from agora_runner.http_util import agora_get, agora_public
 from agora_runner.log import log
 from agora_runner import nova_conversations
 
@@ -202,8 +202,8 @@ def set_enabled(heartbeat_id, enabled):
         return False, "which heartbeat?"
     if not isinstance(enabled, bool):
         return False, "enabled must be true or false"
-    status, body = http_json(
-        "PATCH", f"{AGORA_URL}/heartbeats/{heartbeat_id.strip()}", {"enabled": enabled})
+    status, body = agora_public(
+        "PATCH", f"/heartbeats/{heartbeat_id.strip()}", {"enabled": enabled})
     if status == 404:
         return False, "no heartbeat with that id"
     if status != 200:
@@ -223,8 +223,8 @@ def run_now(heartbeat_id):
     """
     if not isinstance(heartbeat_id, str) or not heartbeat_id.strip():
         return False, "which heartbeat?"
-    status, _ = http_json(
-        "POST", f"{AGORA_URL}/heartbeats/{heartbeat_id.strip()}/run", {})
+    status, _ = agora_public(
+        "POST", f"/heartbeats/{heartbeat_id.strip()}/run", {})
     if status == 404:
         return False, "no heartbeat with that id"
     if status not in (200, 201, 202):

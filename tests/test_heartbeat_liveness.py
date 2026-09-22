@@ -210,3 +210,19 @@ def test_a_cron_this_cannot_read_as_a_slot_falls_back_rather_than_guessing():
     # model; inventing a slot for it would report a miss that never happened.
     assert hl.last_due_slot("cron@0 */4 * * 1", OSLO_MON_1301) is None
     assert hl.last_due_slot("cron@0 7 1 * 1", OSLO_MON_1301) is None
+
+
+def test_the_heartbeat_read_carries_the_agent_token(monkeypatch):
+    """Issue #287: the site's /api/health reads :8080, which is to refuse an
+    untokened read, so the request has to carry the token the site holds."""
+    import agora_runner.http_util as http_util
+    monkeypatch.setattr(http_util, "AGORA_TOKEN", "tok")
+    seen = []
+
+    def open_(request, timeout=None):
+        seen.append(request)
+        return _Response([_hb()])
+
+    hl.liveness(opener=open_, now=NOW)
+    assert seen[0].full_url.endswith("/heartbeats")
+    assert seen[0].get_header("X-agora-token") == "tok"

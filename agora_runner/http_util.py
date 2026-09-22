@@ -52,7 +52,7 @@ def http_json(method, url, payload=None, headers=None, timeout=30):
         return e.code, body
 
 
-def _token_headers():
+def token_headers():
     """The agent token, for every call this repo makes to Agora on either app.
 
     The public app (:8080) checks no token today, and issue #287 is that
@@ -84,7 +84,7 @@ def fetch_attachment_bytes(attachment_id):
     genuinely empty turn, which Gemini rejects outright -- see
     GEMINI_TRANSIENT_STATUSES's docstring for the related fallback fix)."""
     status, data = http_bytes(f"{AGORA_URL}/attachments/{attachment_id}",
-                              headers=_token_headers())
+                              headers=token_headers())
     if status != 200:
         log(f"fetch_attachment_bytes: {attachment_id} returned HTTP {status}")
         return None
@@ -92,12 +92,12 @@ def fetch_attachment_bytes(attachment_id):
 
 
 def agora_get(path):
-    status, body = http_json("GET", f"{AGORA_URL}{path}", headers=_token_headers())
+    status, body = http_json("GET", f"{AGORA_URL}{path}", headers=token_headers())
     return status, body
 
 
 def agora_internal(method, path, payload=None):
-    return http_json(method, f"{AGORA_INTERNAL_URL}{path}", payload, _token_headers())
+    return http_json(method, f"{AGORA_INTERNAL_URL}{path}", payload, token_headers())
 
 
 def agora_public(method, path, payload=None):
@@ -110,7 +110,7 @@ def agora_public(method, path, payload=None):
     internal one is a 404 rather than a permission error, which reads as
     "that conversation is gone" and is the opposite of what happened.
     """
-    return http_json(method, f"{AGORA_URL}{path}", payload, _token_headers())
+    return http_json(method, f"{AGORA_URL}{path}", payload, token_headers())
 
 
 def unauthorized_hint(status):

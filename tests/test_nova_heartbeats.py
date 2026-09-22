@@ -29,6 +29,7 @@ import pytest
 
 import agora_runner.nova_conversations as nova_conversations
 import agora_runner.nova_heartbeats as hb
+import agora_runner.http_util as http_util
 
 
 ROW = {
@@ -80,10 +81,11 @@ def _write(fn, status=200, body=None):
     calls = []
 
     def fake_http(method, url, payload=None, headers=None, timeout=30):
-        calls.append((method, url, payload))
+        calls.append((method, url, payload, headers))
         return status, body if body is not None else {}
 
-    with patch.object(hb, "http_json", side_effect=fake_http):
+    with patch.object(http_util, "AGORA_TOKEN", "tok"), \
+            patch.object(http_util, "http_json", side_effect=fake_http):
         return fn(), calls
 
 
@@ -153,20 +155,20 @@ def test_set_enabled_patches_the_public_app_because_the_internal_one_ignores_ena
         lambda: hb.set_enabled("hb-1", False),
         body={"heartbeat": {"enabled": False}})
     assert ok is True and message == "off"
-    method, url, payload = calls[0]
+    method, url, payload, _ = calls[0]
     assert method == "PATCH"
     assert url.endswith("/heartbeats/hb-1")
-    assert hb.AGORA_URL in url
+    assert http_util.AGORA_URL in url
     assert payload == {"enabled": False}
 
 
 def test_run_now_posts_to_the_run_route_and_calls_it_queued():
     (ok, message), calls = _write(lambda: hb.run_now("hb-1"))
     assert ok is True and message == "queued"
-    method, url, _ = calls[0]
+    method, url, _, _ = calls[0]
     assert method == "POST"
     assert url.endswith("/heartbeats/hb-1/run")
-    assert hb.AGORA_URL in url
+    assert http_util.AGORA_URL in url
 
 
 def test_an_unknown_heartbeat_id_is_told_apart_from_a_broken_store():
@@ -255,3 +257,11 @@ def test_a_failing_conversation_listing_does_not_take_the_page_down():
         "id": "c-1", "name": "", "personaName": "",
         "model": "", "tags": [], "updatedAt": "", "cycleThread": False,
     }]
+
+
+def test_both_writes_carry_the_agent_token_for_the_read_guard():
+    """Issue #287: Agora is to refuse untokened calls on :8080, and these two
+    are the Heartbeats page's switch and run button."""
+    for fn in (lambda: hb.set_enabled("hb-1", True), lambda: hb.run_now("hb-1")):
+        _, calls = _write(fn, body={"heartbeat": {"enabled": True}})
+        assert calls[0][3] == {"x-agora-token": "tok"}

@@ -31,6 +31,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from agora_runner.config import OSLO
+from agora_runner.http_util import token_headers
 
 # How long the site is willing to wait on Agora before calling the read a
 # failure. The CLI tool allows 20 seconds because a human is watching it;
@@ -71,8 +72,11 @@ def _fetch(url=None, opener=None, timeout=20):
     not ask" are the two things this module exists to keep apart.
     """
     target = (url or AGORA_PUBLIC).rstrip("/") + "/heartbeats"
+    # The site asks this from a pod holding the agent token; send it, so the
+    # read survives Agora refusing untokened reads on :8080 (issue #287).
+    request = urllib.request.Request(target, headers=token_headers())
     try:
-        with (opener or urllib.request.urlopen)(target, timeout=timeout) as resp:
+        with (opener or urllib.request.urlopen)(request, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         return [], f"could not read {target}: {e}"
