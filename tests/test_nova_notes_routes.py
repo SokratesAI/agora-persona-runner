@@ -169,3 +169,12 @@ def test_every_note_write_is_audited_whether_or_not_it_landed(monkeypatch):
     assert [k["is_error"] for _, k in seen] == [False, True, False]
     assert seen[0][1]["after"] == "kept"
     assert [n["text"] for n in store.list_notes()] and len(store.list_notes()) == 2
+
+
+def test_a_refused_convert_to_a_note_is_audited(monkeypatch):
+    seen = []
+    monkeypatch.setattr(nova_site, "audit", lambda *a, **k: seen.append((a, k)))
+    with patch.object(nova_site, "amend"):
+        _post("/api/capture/convert", {
+            "from": "issues", "to": "notes", "index": 0, "original": "x"}, owner_port=False)
+    assert [(a[3][:16], k["is_error"]) for a, k in seen] == [("Note create · 40", True)]

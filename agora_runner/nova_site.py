@@ -6454,16 +6454,16 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         """
         author = resolve_caller(self)
         if author is None:
-            self._send_json(403, {"ok": False, "message": "only the owner's own login, through the Tailscale proxy, can write a note"})
+            self._note_answer("create", original, 403, {"ok": False, "message": "only the owner's own login, through the Tailscale proxy, can write a note"})
             return
         _, text = split_capture_priority(original)
         try:
             nova_notes_store.create_note(author, text)
         except ValueError as e:
-            self._send_json(400, {"ok": False, "message": str(e)})
+            self._note_answer("create", text, 400, {"ok": False, "message": str(e)})
             return
         except nova_notes_store.StoreError as e:
-            self._send_json(502, {"ok": False, "message": str(e)})
+            self._note_answer("create", text, 502, {"ok": False, "message": str(e)})
             return
         ok, removal = amend(source, index, original, "")
         _invalidate_capture_target(source)
