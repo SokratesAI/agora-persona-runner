@@ -6410,17 +6410,38 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         """A note from the shared capture box, answered in its `ok` shape."""
         author = resolve_caller(self)
         if author is None:
-            self._send_json(403, {"ok": False, "message": "only the owner's own login, through the Tailscale proxy, can write a note"})
+            self._note_answer("create", text, 403, {"ok": False, "message": "only the owner's own login, through the Tailscale proxy, can write a note"})
             return
         try:
             nova_notes_store.create_note(author, text)
         except ValueError as e:
-            self._send_json(400, {"ok": False, "message": str(e)})
+            self._note_answer("create", text, 400, {"ok": False, "message": str(e)})
             return
         except nova_notes_store.StoreError as e:
-            self._send_json(502, {"ok": False, "message": str(e)})
+            self._note_answer("create", text, 502, {"ok": False, "message": str(e)})
             return
-        self._send_json(200, {"ok": True, "message": "Saved to your notes"})
+        self._note_answer("create", text, 200, {"ok": True, "message": "Saved to your notes"})
+
+    def _note_answer(self, action, text, status, body):
+        """Answer a note write and put it in Agora's audit, refused or not.
+
+        Idea #333 was left open on "see his first phone note arrive", and
+        nothing could show it: nova-site logs no request lines and these
+        routes were the only capture writes that audited nothing, so a 403
+        or a 502 on his phone left no trace anywhere a cycle can read.
+        """
+        ok = status == 200
+        why = body.get("error") or body.get("message") or ""
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Note {action} · {'ok' if ok else f'{status} {why}'}",
+            after=text[:MAX_BODY_BYTES] if isinstance(text, str) else None,
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(status, body)
 
     def _post_convert_to_note(self, source, index, original):
         """A capture moved to notes becomes a note record (idea #333).
@@ -6479,28 +6500,28 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         tab left open cannot overwrite a newer change: a stale one is a 409
         and the page re-reads.
         """
+        text = payload.get("text")
         author = resolve_caller(self)
         if author is None:
-            self._send_json(403, {"error": "only the owner's own login, through the Tailscale proxy, can write a note"})
+            self._note_answer(action, text, 403, {"error": "only the owner's own login, through the Tailscale proxy, can write a note"})
             return
         store = nova_notes_store
-        text = payload.get("text")
         try:
             if action == "create":
                 doc = store.create_note(author, text)
-                self._send_json(200, {"note": shape_note(doc)})
+                self._note_answer(action, text, 200, {"note": shape_note(doc)})
                 return
             note_id = payload.get("id")
             if action == "comment":
                 if store.read_note(note_id) is None:
-                    self._send_json(404, {"error": f"{note_id} does not exist"})
+                    self._note_answer(action, text, 404, {"error": f"{note_id} does not exist"})
                     return
                 comment = store.add_comment(note_id, author, text)
-                self._send_json(200, {"comment": shape_comment(comment)})
+                self._note_answer(action, text, 200, {"comment": shape_comment(comment)})
                 return
             doc = store.read_note(note_id)
             if doc is None:
-                self._send_json(404, {"error": f"{note_id} does not exist"})
+                self._note_answer(action, text, 404, {"error": f"{note_id} does not exist"})
                 return
             doc = dict(doc, _rev=payload.get("rev") or "")
             if action == "edit":
@@ -6509,15 +6530,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 doc = store.set_archived(doc, bool(payload.get("archived", True)))
             else:
                 store.delete_note(doc)
-                self._send_json(200, {"deleted": note_id})
+                self._note_answer(action, text, 200, {"deleted": note_id})
                 return
-            self._send_json(200, {"note": shape_note(doc, store.read_comments(note_id))})
+            self._note_answer(action, text, 200, {"note": shape_note(doc, store.read_comments(note_id))})
         except nova_notes_store.NoteConflict as e:
-            self._send_json(409, {"error": str(e)})
+            self._note_answer(action, text, 409, {"error": str(e)})
         except ValueError as e:
-            self._send_json(400, {"error": str(e)})
+            self._note_answer(action, text, 400, {"error": str(e)})
         except nova_notes_store.StoreError as e:
-            self._send_json(502, {"error": str(e)})
+            self._note_answer(action, text, 502, {"error": str(e)})
 
     def _post_board_archive(self, payload):
         """`/api/board/archive` -- his capture of 2026-09-03.

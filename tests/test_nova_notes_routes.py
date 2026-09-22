@@ -151,3 +151,21 @@ def test_a_convert_to_a_note_whose_removal_failed_says_it_is_in_both():
             "from": "ideas", "to": "notes", "index": 0, "original": "y"})
     assert status == 502 and "duplicate" in answer["message"]
     assert len(store.list_notes()) == 2
+
+
+def test_every_note_write_is_audited_whether_or_not_it_landed(monkeypatch):
+    # nova-site logs no request lines, so the audit is the only place a
+    # cycle can see that his phone tried to write a note and what came back.
+    seen = []
+    monkeypatch.setattr(nova_site, "audit", lambda *a, **k: seen.append((a, k)))
+    _post("/api/notes/create", {"text": "kept"})
+    _post("/api/notes/create", {"text": "refused"}, login="someone@example.com")
+    _post("/api/capture", {"target": "notes", "text": "from the box"})
+    details = [a[3] for a, _ in seen]
+    assert details == ["Note create · ok",
+                       "Note create · 403 only the owner's own login, through the Tailscale proxy, can write a note",
+                       "Note create · ok"]
+    assert [k["output"] for _, k in seen] == [HIM, "someone@example.com", HIM]
+    assert [k["is_error"] for _, k in seen] == [False, True, False]
+    assert seen[0][1]["after"] == "kept"
+    assert [n["text"] for n in store.list_notes()] and len(store.list_notes()) == 2
