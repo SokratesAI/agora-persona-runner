@@ -1000,21 +1000,71 @@ def test_every_fence_becomes_prose_and_none_survives_as_a_code_block():
 
     assert "```" not in PROJECT_GOALS.replace("```", "") + "".join(_paragraphs(doc))
     assert not any("statement:" in text for text in _paragraphs(doc))
-    assert [section["heading"] for section in doc["sections"]] == [None, "Nova"]
+    assert [section["heading"] for section in doc["sections"]] == [
+        None, "Nova", "Nova \u2014 background"]
 
 
 def test_a_block_renders_where_it_stood_not_gathered_at_the_top():
-    """The note explaining where a number came from sits directly under its
-    own block, so order is the only thing tying the two together."""
+    """The blocks keep their order, and the note explaining where a number
+    came from is filed under that block's own name in the background fold
+    -- position no longer ties the two together, so the label has to."""
     texts = _paragraphs(_projects_doc())
     key_result = next(i for i, t in enumerate(texts) if "The work closes your rows" in t)
     note = next(i for i, t in enumerate(texts) if "as of Cycle 1533" in t)
     objective = next(i for i, t in enumerate(texts) if t.startswith("Objective"))
     kpi = next(i for i, t in enumerate(texts) if t.startswith("KPI"))
-    assert objective < key_result < note < kpi
+    assert objective < key_result < kpi < note
+    assert texts[note - 1] == "About \u201cThe work closes your rows\u201d:"
     # And the note is its own paragraph rather than merged into the block
     # above it, which is what happens without the blank line either side.
     assert texts[note].startswith("now")
+
+
+def test_tapping_a_project_opens_its_goals_and_folds_the_reasoning():
+    """Issue #96, one card down: tapping Nova the app opened 3,812 words, of
+    which the objectives and key results were about 550. The goals stay in
+    the project's own section; every other line moves, in order, into a
+    folded `####` section named after the project. Nothing is dropped."""
+    doc = _projects_doc()
+    by_heading = {s["heading"]: s for s in doc["sections"]}
+    lead = "".join(span.get("text", "") for block in by_heading["Nova"]["blocks"]
+                   for span in block.get("spans", ()))
+    background = by_heading["Nova \u2014 background"]
+    assert "The work closes your rows" in lead
+    assert "as of Cycle 1533" not in lead
+    assert background["level"] == 4 and background["open"] is False
+    folded = "".join(span.get("text", "") for block in background["blocks"]
+                     for span in block.get("spans", ()))
+    assert "as of Cycle 1533" in folded
+
+
+def test_a_project_with_its_own_sub_headings_is_left_as_written():
+    """Moving lines across a heading somebody chose changes what sits under
+    it, so a section that already has structure is not refolded."""
+    markdown = """# Project goals
+
+## Nova
+
+```objective
+statement: Trust -- you can see it.
+status: agreed
+```
+Why we argued this.
+
+### A heading of its own
+
+More.
+"""
+    headings = [s["heading"] for s in _projects_doc(markdown)["sections"]]
+    assert headings == ["Nova", "A heading of its own"]
+
+
+def test_only_the_project_goals_card_is_refolded():
+    """`goals.md` and `roadmap.md` have no project sections; a `## ` there
+    is an argument, and folding it would hide the argument."""
+    payload = plan_payload({"roadmap": ROADMAP})
+    assert not any((s["heading"] or "").endswith("background")
+                   for s in _doc(payload, "roadmap")["sections"])
 
 
 def test_a_key_result_carries_its_status_word_and_its_bounds_in_words():

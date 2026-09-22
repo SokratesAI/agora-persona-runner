@@ -812,6 +812,102 @@ def _attach_history(scoreboard, history):
     return scoreboard
 
 
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]")
+_ANY_FENCE_RE = re.compile(r"^[ \t]*```")
+
+
+def _short_statement(statement):
+    """An objective's label: its name before ` -- `, else its first words.
+
+    "Trust -- any time you open the app, ..." is called Trust everywhere
+    he argued it, so that is the name the note is filed under.
+    """
+    words = (statement or "").split(" -- ")[0].split()
+    return " ".join(words[:8]) + ("\u2026" if len(words) > 8 else "")
+
+
+def _fold_project_background(text):
+    """Put each project's prose under a `#### <Project> -- background` fold.
+
+    Issue #96 again, one card down. The Project goals card opens folded,
+    but tapping a project opened all of it: 3,812 words for Nova the app,
+    where the objectives and key results were 547 and the rest was
+    how each number was measured and what was argued in which thread.
+    So a `## ` section keeps its objective, key-result and kpi fences and
+    its `*Type:*` line, in order, and every other line moves, in order,
+    under one `####` heading right after it -- a section `_mark_open`
+    leaves folded, drawn smaller than the project it belongs to. Nothing
+    is dropped or reworded, and the file itself is not touched; the one
+    thing added is an **About "<name>":** line over each note that sat
+    under a block, because position was all that tied the two together.
+
+    A section that already has a sub-heading is left exactly as written,
+    because moving lines across a heading somebody chose would change what
+    sits under it. So is anything before the first `## `.
+    """
+    lines = (text or "").split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        if not lines[i].startswith("## "):
+            out.append(lines[i])
+            i += 1
+            continue
+        end, fenced = i + 1, False
+        while end < len(lines):
+            if _ANY_FENCE_RE.match(lines[end]):
+                fenced = not fenced
+            elif not fenced and _HEADING_RE.match(lines[end]):
+                break
+            end += 1
+        # `end` is the next heading of any level; a deeper one first means
+        # this section has its own structure and is kept whole, up to the
+        # next `## `.
+        if end < len(lines) and len(_HEADING_RE.match(lines[end]).group(1)) > 2:
+            while end < len(lines) and not lines[end].startswith(("# ", "## ")):
+                end += 1
+            out.extend(lines[i:end])
+            i = end
+            continue
+        heading, body = lines[i], lines[i + 1:end]
+        lead, rest, k, label = [], [], 0, None
+        while k < len(body):
+            line = body[k]
+            if _ANY_FENCE_RE.match(line) and not _FENCE_CLOSE_RE.match(line):
+                close = k + 1
+                while close < len(body) and not _FENCE_CLOSE_RE.match(body[close]):
+                    close += 1
+                chunk = body[k:close + 1]
+                owned = [n for n in _GOAL_BLOCK_PROSE if _fence_open_re(n).match(line)]
+                if owned:
+                    lead.extend(chunk + [""])
+                    fields = _block_fields(chunk[1:-1], ("name", "statement"))
+                    label = fields.get("name") or _short_statement(
+                        fields.get("statement")) or owned[0].replace("-", " ").capitalize()
+                else:
+                    rest.extend(chunk + [""])
+                k = close + 1
+            elif line.lstrip().startswith("*Type:"):
+                lead.extend([line, ""])
+                k += 1
+            else:
+                if label and line.strip():
+                    # Order was the only thing tying a note to the block
+                    # above it, and the move breaks order, so name the block.
+                    rest.extend(["**About \u201c" + label + "\u201d:**", ""])
+                    label = None
+                rest.append(line)
+                k += 1
+        out.append(heading)
+        out.append("")
+        out.extend(lead)
+        if any(line.strip() for line in rest):
+            out.append("#### " + heading[3:].strip() + " \u2014 background")
+            out.append("")
+            out.extend(rest)
+        i = end
+    return "\n".join(out)
+
+
 def _document(key, label, text, history=None, seats=None):
     """One markdown document -> one card's worth of payload.
 
@@ -841,6 +937,8 @@ def _document(key, label, text, history=None, seats=None):
     # is still one branch.
     # Before `_fenced`, and it owns three fence names `_fenced` does not,
     # so the two scans cannot fight over a `` ``` `` close.
+    if key == "projects":
+        text = _fold_project_background(text)
     text = _inline_goal_blocks(text, seats)
     blocks, text = _fenced(text, {"goal": _goal, "next": _next})
     scoreboard = _attach_history(blocks["goal"], history)
