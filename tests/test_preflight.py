@@ -573,9 +573,12 @@ def test_the_exempt_checks_are_named_here():
     # finding is his one-word yes to the login reminder, and how long that yes
     # has been sitting there is a timestamp, which `finding_shape` blinds --
     # so every sweep after the first would read as unchanged while the
-    # credential it unblocks kept counting down.
+    # credential it unblocks kept counting down. `shutdown_due` joined on
+    # 2026-09-22 for the same reason in a harder form: its report is the same
+    # list of heartbeat ids every sweep, and the sweeps where it fires are the
+    # last few this loop ever gets before the subscription lapses.
     assert preflight.NEVER_COLLAPSE == frozenset(
-        {"telegram_inbox", "login_handshake", "recap_health"})
+        {"telegram_inbox", "login_handshake", "recap_health", "shutdown_due"})
 
 
 # `tools.recap_health` on a stale card, in the shape it prints: the verdict
