@@ -443,9 +443,12 @@ def nova_health_note(persona, previous_run_at, schedule=None):
     return (
         "## Your own last hours\n"
         f"An automatic check of your journal folder, run just now: {line}. "
-        "You are the first cycle to be told this. Anything a dead cycle left "
-        "behind is still in `/data/workspace` -- prompt.md step 1c sweeps it -- "
-        "and picking that up beats starting something new."
+        "You are the first cycle to be told this. If a run did happen, "
+        "whatever it left behind is still in `/data/workspace` -- prompt.md "
+        "step 1c sweeps it -- and picking that up beats starting something "
+        "new. Check that it happened before you go looking: a run that never "
+        "started still took its number, so a long pause in the loop leaves a "
+        "block of numbers with nothing behind them (idea #335)."
     )
 
 

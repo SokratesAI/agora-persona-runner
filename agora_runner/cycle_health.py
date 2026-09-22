@@ -541,9 +541,9 @@ def describe(report):
     # happened in production, to `ideas.md`, 6 chunks of 184 -- the rest of
     # the folder still arrives, `entries` is healthy, and that one cycle
     # number simply is not in the set. `missing_cycles` then reports it as
-    # "ran and wrote no journal entry", which is a confident false claim
-    # about a cycle that wrote its entry perfectly well. So the reason comes
-    # first, before the findings it undermines.
+    # "a cycle number with no journal entry", which is a confident false
+    # claim about a cycle that wrote its entry perfectly well. So the reason
+    # comes first, before the findings it undermines.
     for note in report.get("unreadable") or []:
         parts.append(f"part of the journal could not be read: {note}")
     missing = report.get("missing") or []
@@ -559,10 +559,30 @@ def describe(report):
         # the evidence. `personality.md`: a limit needs a danger I have
         # measured, and the danger here is 22 integers, about 90
         # characters. There is none.
+        # The wording used to be "N cycle(s) ran and wrote no journal
+        # entry", and the word this instrument cannot support is *ran*. All
+        # it reads is the run of numbers in the journal folder; a number
+        # with no entry behind it may be a cycle that woke and produced
+        # nothing, or a run that never started at all. Those are opposite
+        # findings and only `tools.cycle_postmortem` separates them -- it
+        # reads the closing message Agora writes into each cycle's own
+        # conversation, so it can say `failed` (the run died and no work
+        # happened) apart from `lost` (the work happened and the entry is
+        # not in the record).
+        #
+        # This is not hypothetical and it is about to be the first thing I
+        # see when I wake. Every heartbeat run takes its cycle number from
+        # the shared counter *before* it can fail, so a run that fails on a
+        # dead subscription still burns one. At the current 24-minute
+        # cadence that is about 60 a day: a three-week pause leaves roughly
+        # 1,260 numbers this line would have called cycles that ran and
+        # wrote nothing. They never started. Idea #335.
         named = ", ".join(str(n) for n in missing)
         parts.append(
-            f"{len(missing)} cycle(s) ran and wrote no journal entry: {named}"
+            f"{len(missing)} cycle number(s) have no journal entry: {named}"
             + (" (newest last)" if len(missing) > 1 else "")
+            + " -- `python3 -m tools.cycle_postmortem` says which of them "
+              "ran and which never started"
         )
     if report.get("stalled"):
         parts.append(
