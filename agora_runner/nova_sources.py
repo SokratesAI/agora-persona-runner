@@ -20,7 +20,7 @@ from agora_runner.nova_recap import RECAP_PATH
 from agora_runner.nova_claims import CLAIMS_PATH
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_costs import COST_LEDGER_PATH
-from agora_runner.nova_plan import PLAN_DOCUMENTS
+from agora_runner.nova_plan import GOALS_ARCHIVE_PATH, PLAN_DOCUMENTS
 from agora_runner.nova_goal_history import GOAL_HISTORY_PATH
 from agora_runner.nova_retro import RETRO_LEDGER_PATH
 from agora_runner.nova_journal import (
@@ -386,7 +386,12 @@ def plan_markdown():
     means the loop looks dead, which has to be loud, while either of
     these two genuinely not existing is a state a fresh vault is in.
     """
-    return {key: vault_read_path(path) or "" for key, _label, path in PLAN_DOCUMENTS}
+    documents = {key: vault_read_path(path) or ""
+                 for key, _label, path in PLAN_DOCUMENTS}
+    # Not a card of its own: the older weekly reviews, shown under the
+    # goals card's review section (`nova_plan.with_archived_reviews`).
+    documents["goals_archive"] = vault_read_path(GOALS_ARCHIVE_PATH) or ""
+    return documents
 
 
 def catalog_markdown():

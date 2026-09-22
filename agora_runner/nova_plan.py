@@ -48,7 +48,7 @@ wrong.
 
 import re
 
-from agora_runner.md_sections import outline
+from agora_runner.md_sections import _skippable, outline, section_bounds
 from agora_runner.nova_boards import (
     parse_milestone_keeps, parse_milestone_serves,
 )
@@ -62,6 +62,13 @@ from agora_runner.project_goals import (
 
 ROADMAP_PATH = "projects/sokrates/projects/nova/roadmap.md"
 GOALS_PATH = "projects/sokrates/projects/nova/goals.md"
+# Where weekly reviews older than the newest `REVIEWS_KEPT` go, so
+# `goals.md` stops growing about a thousand words a week (issue #96).
+# `tools.roll_goal_reviews` moves them; `plan_payload` puts them back under
+# the review section for display, so `/plan` still shows every one.
+GOALS_ARCHIVE_PATH = "projects/sokrates/projects/nova/goals-review-archive.md"
+REVIEW_HEADING = "## Weekly review"
+REVIEWS_KEPT = 4
 
 # Order is the reading order he asked for, and it is deliberately goals
 # last. `roadmap.md` answers "what next", which is the question he opens
@@ -1067,6 +1074,9 @@ def plan_payload(documents, history=None, seats=None, rows=None):
     docs = []
     for key, label, _path in PLAN_DOCUMENTS:
         text = (documents or {}).get(key, "")
+        if key == "goals":
+            text = with_archived_reviews(
+                text, (documents or {}).get("goals_archive", ""))
         doc = _document(key, label, text, past, counts)
         # Only on the project-goals card, because it is the only one whose
         # subject is projects. The same sentence over `goals.md` would be a
@@ -1078,6 +1088,95 @@ def plan_payload(documents, history=None, seats=None, rows=None):
                 doc["coverage"] = coverage
         docs.append(doc)
     return {"documents": docs}
+
+
+def _dated_entries(lines, start, end):
+    """Line indices of the dated `###` review headings in `lines[start:end]`."""
+    skip = _skippable(lines)
+    return [i for i in range(start, end)
+            if i not in skip and lines[i].startswith("### ")
+            and _DATED_HEADING_RE.match(lines[i][4:])]
+
+
+def _archived_block(archive):
+    """The archive's review entries as lines, from its first dated heading."""
+    lines = archive.split("\n")
+    found = _dated_entries(lines, 0, len(lines))
+    return lines[found[0]:] if found else []
+
+
+def with_archived_reviews(goals, archive):
+    """`goals.md` with the archived reviews appended to its review section.
+
+    Display only: the site renders this, and nothing writes it back --
+    `set_goal_status` reads `GOALS_PATH` on its own. The archive holds the
+    older entries newest first, so appending them keeps the stack in order
+    and `_mark_open` still opens only the newest.
+    """
+    block = _archived_block(archive or "")
+    if not goals or not block:
+        return goals
+    lines = goals.split("\n")
+    bounds = section_bounds(lines, REVIEW_HEADING)
+    if bounds is None:
+        return goals
+    _start, end = bounds
+    head = lines[:end]
+    while head and not head[-1].strip():
+        head.pop()
+    return "\n".join(head + [""] + block + ([""] if end < len(lines) else [])
+                     + lines[end:])
+
+
+def roll_reviews(goals, archive, keep=REVIEWS_KEPT):
+    """Move every weekly review past the newest `keep` into the archive.
+
+    Returns `(goals, archive, moved)`, `moved` being the headings that
+    left. Nothing is dropped: the moved lines go above the archive's
+    existing entries, since each is newer than anything already there.
+    Raises `ValueError` when `goals.md` has no review section, so a
+    retitled heading is a refusal rather than a silent no-op.
+    """
+    lines = goals.split("\n")
+    bounds = section_bounds(lines, REVIEW_HEADING)
+    if bounds is None:
+        raise ValueError(f"no {REVIEW_HEADING!r} section in goals.md")
+    start, end = bounds
+    entries = _dated_entries(lines, start, end)
+    if len(entries) <= keep:
+        return goals, archive, []
+    cut = entries[keep]
+    moved = lines[cut:end]
+    while moved and not moved[-1].strip():
+        moved.pop()
+    kept = lines[:cut]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    tail = lines[end:]
+    new_goals = "\n".join(kept + ([""] + tail if tail else [""]))
+    if not archive.strip():
+        archive = ARCHIVE_TEMPLATE
+    alines = archive.split("\n")
+    found = _dated_entries(alines, 0, len(alines))
+    at = found[0] if found else len(alines)
+    before = alines[:at]
+    while before and not before[-1].strip():
+        before.pop()
+    after = alines[at:]
+    new_archive = "\n".join(before + [""] + moved + ([""] + after if after else [""]))
+    headings = [lines[i] for i in entries[keep:]]
+    return new_goals, new_archive, headings
+
+
+ARCHIVE_TEMPLATE = """---
+type: log
+tags: [agora, nova, goals, planning]
+status: built
+contract: Weekly reviews rolled off goals.md by tools.roll_goal_reviews, newest first. The /plan page shows them under the goals card's Weekly review, after the ones still in goals.md. Nothing else writes here.
+---
+
+# Goals — weekly review archive
+"""
 
 
 # Bounding the 409 retry, same as `nova_capture.WRITE_ATTEMPTS` and for the
