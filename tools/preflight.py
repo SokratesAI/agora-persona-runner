@@ -132,6 +132,7 @@ from zoneinfo import ZoneInfo
 #: once is safe by construction and not by luck: the second sees the first's
 #: change against a burn rate still earned at the old interval and holds.
 CHECKS = (
+    "shutdown_due",
     "cadence_control",
     "security_alerts",
     "scanning_alerts",
@@ -255,6 +256,10 @@ SOLO = ("cpu_throttle",)
 SUBJECT = {
     "source_revision":   ("on-box",  "this checkout"),
     "cadence_control":   ("on-box",  "my own heartbeat and burn rate"),
+    #: A wall-clock deadline rather than a system: every scheduled
+    #: heartbeat has to be off before the subscription lapses, and only
+    #: one cycle ever gets to do it.
+    "shutdown_due":      ("on-box",  "the clock, against my own heartbeats"),
     "security_alerts":   ("off-box", "GitHub advisories"),
     "scanning_alerts":   ("off-box", "GitHub code- and secret-scanning alerts"),
     "agentic_health":    ("off-box", "GitHub workflow history"),
@@ -395,6 +400,10 @@ SUBJECT = {
 DEFAULT_CADENCE_HOURS = 24.0
 
 CADENCE_HOURS = {
+    # Every sweep, and this one cannot be traded away: it watches a wall-clock
+    # deadline that exactly one cycle gets to act on, and a held check on the
+    # sweep where the deadline passes is the whole failure.
+    "shutdown_due": 0.0,
     # Every sweep -- live cluster state, and a failure here is this cycle's work.
     "workload_health": 0.0,
     "argocd_health": 0.0,
@@ -896,7 +905,13 @@ REPRINT_HOURS = 24.0
 #: blinds**. Everything else -- an alert, a full disk, a stale pin -- is a
 #: standing fact about the cluster that I cannot close from this loop, and a
 #: fact can be read once a day.
-NEVER_COLLAPSE = frozenset({"telegram_inbox", "login_handshake", "recap_health"})
+#: `shutdown_due` meets both clauses for the two days it can fire at all: he
+#: asked for the heartbeats off before the subscription lapses, and its
+#: report is the same list of ids every sweep -- so the fingerprint would
+#: collapse the one instruction that has to be read in full, on the only
+#: sweeps where reading it matters.
+NEVER_COLLAPSE = frozenset({"telegram_inbox", "login_handshake", "recap_health",
+                            "shutdown_due"})
 
 #: Where the "have I already printed this" record lives. Not in the checkout:
 #: concurrent cycles each get their own `git worktree`, so a per-tree file
