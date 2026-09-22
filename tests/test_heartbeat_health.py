@@ -183,3 +183,29 @@ def test_fetch_reads_a_plain_list_body():
     rows, error = hh._fetch(opener=lambda _u, timeout=None: _Resp())
     assert error is None
     assert rows[0]["name"] == "K3s Sentinel"
+
+
+def test_the_conversation_read_carries_the_agent_token(monkeypatch):
+    """Agora is to refuse an untokened read on :8080 (issue #287), and the
+    muteness pass reads each heartbeat's conversation there."""
+    from agora_runner import http_util
+    monkeypatch.setattr(http_util, "AGORA_TOKEN", "tok")
+    seen = []
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"messages": []}'
+
+    def opener(request, timeout=None):
+        seen.append(request)
+        return _Resp()
+
+    payload, error = hh.fetch_conversation("c1", opener=opener)
+    assert error is None and payload == {"messages": []}
+    assert seen[0].get_header("X-agora-token") == "tok"

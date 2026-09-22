@@ -1401,7 +1401,7 @@ def _subscribers_stub(monkeypatch, payload, error=None):
     Patches `_get_json` rather than the fetch helper, so the helper's own
     validation of the payload is the thing under test.
     """
-    def fake(url, timeout=60):
+    def fake(url, timeout=60, **_):
         assert url.endswith("/api/push/subscribers"), url
         return (None, error) if error else (payload, None)
     monkeypatch.setattr(goal_measures, "_get_json", fake)
@@ -1465,7 +1465,7 @@ def _latency_stub(monkeypatch, payload, error=None):
     Patches `_get_json` for the same reason `_subscribers_stub` does: the
     fetch helper's own validation of the payload is part of what is tested.
     """
-    def fake(url, timeout=60):
+    def fake(url, timeout=60, **_):
         assert url.endswith("/api/coach/latency"), url
         return (None, error) if error else (payload, None)
     monkeypatch.setattr(goal_measures, "_get_json", fake)
@@ -1952,7 +1952,7 @@ def _agora_stub(monkeypatch, *, catalog=None, personas=(), heartbeats=(),
         "/conversations?active=true": list(conversations),
     }
 
-    def fake(url, timeout=60):
+    def fake(url, timeout=60, **_):
         for suffix, body in bodies.items():
             if url.endswith(suffix):
                 if error_on and url.endswith(error_on):
@@ -2139,7 +2139,7 @@ def _articles(days):
 def _post_stub(monkeypatch, articles=None, error=None, today="2026-09-14"):
     payload = None if error else {"articles": articles or []}
     monkeypatch.setattr(goal_measures, "_get_json",
-                        lambda url, timeout=60: (payload, error))
+                        lambda url, timeout=60, **_: (payload, error))
     monkeypatch.setattr(goal_measures, "today_oslo", lambda *a, **k: today)
 
 
@@ -2215,7 +2215,7 @@ def test_post_volume_never_turns_an_unreachable_app_into_zero(monkeypatch):
 
 def test_post_volume_refuses_a_payload_that_is_not_a_list_of_articles(monkeypatch):
     monkeypatch.setattr(goal_measures, "_get_json",
-                        lambda url, timeout=60: ({"articles": {"oops": 1}}, None))
+                        lambda url, timeout=60, **_: ({"articles": {"oops": 1}}, None))
     value, detail = goal_measures.measure_post_volume(None, None)
     assert value is None
     assert "nothing here to count" in detail
@@ -3975,7 +3975,7 @@ class TestAgoraUnusedProbes:
 
     def _json(self, monkeypatch, payload, error=None):
         monkeypatch.setattr(gm, "_get_json",
-                            lambda url, timeout=60: (payload, error))
+                            lambda url, timeout=60, **_: (payload, error))
 
     def test_a_disabled_workflow_heartbeat_is_not_a_live_path(self, monkeypatch):
         # Both heartbeats naming a workflow today are my own trials from
@@ -4425,13 +4425,13 @@ class TestMeasurePostEditorAndReadership:
         assert "no open carries a date yet" in detail
 
     def test_open_stats_unwraps_the_live_envelope(self, monkeypatch):
-        monkeypatch.setattr(gm, "_get_json", lambda url, timeout=60: (
+        monkeypatch.setattr(gm, "_get_json", lambda url, timeout=60, **_: (
             {"open_stats": {"total_opens": 7, "opens_in_print": 3, "categories": {}}}, None))
         stats, error = gm.fetch_post_open_stats("http://post")
         assert error is None and stats["total_opens"] == 7
 
     def test_open_stats_without_a_count_is_unreadable(self, monkeypatch):
-        monkeypatch.setattr(gm, "_get_json", lambda url, timeout=60: ({"open_stats": {}}, None))
+        monkeypatch.setattr(gm, "_get_json", lambda url, timeout=60, **_: ({"open_stats": {}}, None))
         stats, error = gm.fetch_post_open_stats("http://post")
         assert stats is None and "total_opens" in error
 
@@ -5345,7 +5345,7 @@ class TestNovaTrustCyclesShown:
     def _site(self, monkeypatch, payload, error=None):
         seen = []
 
-        def fake(url, timeout=60):
+        def fake(url, timeout=60, **_):
             seen.append(url)
             return payload, error
 
@@ -6129,3 +6129,32 @@ def test_a_false_status_sweep_that_compared_nothing_does_not_clear_the_count():
         None, None, heartbeats=none, board=none, running=none)
     assert value is None
     assert not detail.startswith(goal_measures.FALSE_STATUS_NONE_FOUND)
+
+
+def test_the_agora_reads_carry_the_agent_token_and_the_site_reads_do_not(monkeypatch):
+    """Agora is to refuse an untokened read on :8080 (issue #287). Only the
+    Agora-bound callers pass the token; the site's own API never needs it."""
+    gm_mod = goal_measures
+    from agora_runner import http_util
+    monkeypatch.setattr(http_util, "AGORA_TOKEN", "tok")
+    seen = []
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"conversations": [], "entries": []}'
+
+    def fake_urlopen(request, timeout=None):
+        seen.append(request)
+        return _Resp()
+
+    monkeypatch.setattr(gm_mod.urllib.request, "urlopen", fake_urlopen)
+    gm_mod._probe_agora_multi_persona(None, None, site="http://agora.test")
+    gm_mod.fetch_entries(1, site="http://site.test")
+    by_host = {r.host: r.get_header("X-agora-token") for r in seen}
+    assert by_host == {"agora.test": "tok", "site.test": None}
