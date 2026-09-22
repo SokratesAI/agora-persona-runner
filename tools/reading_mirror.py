@@ -23,7 +23,9 @@ out of Obsidian in the first place:
 
 - **A document still being edited is not copied.** Its source must be
   unchanged for `SETTLE_MINUTES`, so a document a cycle is rewriting in
-  bursts lands once, not five times while he may have it open.
+  bursts lands once, not five times while he may have it open. A copy that
+  falls more than `MAX_STALE_MINUTES` behind is written anyway, because a
+  source that changes every cycle never settles at all.
 - **A copy he edited is never overwritten.** Each copy carries the sha256
   of the source it was made from in its frontmatter (`mirror_sha`). If the
   copy no longer matches that sha it has been edited in Obsidian, and it is
@@ -63,6 +65,17 @@ EXTRA_SOURCES = {
     "journal-digest.md": "projects/sokrates/projects/agora/journal-digest.md",
 }
 EXTRA_SETTLE_MINUTES = 5
+# A settle window only postpones a copy if the source eventually stops
+# changing. A document a cycle rewrites *every* cycle never does: a cycle
+# fires every 24 minutes and SETTLE_MINUTES is 30, so the source is always
+# younger than the window and the copy freezes at whatever it last held.
+# Measured Cycle 2058 on `after-hibernation.md` -- five consecutive cycles
+# wrote it, and the copy he reads was three cycles behind, missing an entire
+# section. EXTRA_SETTLE_MINUTES was one document's escape from exactly this;
+# this is the general one. Past MAX_STALE_MINUTES behind, copy it even though
+# it is settling: a copy taken mid-edit is wrong until the next run, and a
+# copy that is never taken is wrong forever.
+MAX_STALE_MINUTES = 60
 SHA_KEY = "mirror_sha"
 SOURCE_KEY = "mirror_of"
 BRIDGE_DIR = "/app/bridge"
@@ -98,8 +111,8 @@ def from_mirror(mirror_text):
 
 def plan(client, now_ms, settle_minutes=SETTLE_MINUTES):
     """[(verdict, name, content_or_None, rev)]. verdict is one of COPY,
-    CURRENT, SETTLING, EDITED, ORPHAN; rev is the copy's revision, or None
-    when there is no copy yet."""
+    STALE, CURRENT, SETTLING, EDITED, ORPHAN; rev is the copy's revision, or
+    None when there is no copy yet."""
     sources = client.file_docs(SOURCE_PREFIX)
     mirrors = client.file_docs(MIRROR_PREFIX)
     todo = []
@@ -113,7 +126,10 @@ def plan(client, now_ms, settle_minutes=SETTLE_MINUTES):
         found = client.file_docs(src_path).get(src_path)
         if found is None:
             raise RuntimeError(f"could not find {src_path}")
-        todo.append((name, src_path, found.get("mtime"), EXTRA_SETTLE_MINUTES))
+        # min(), so --force (settle_minutes=0) reaches these too. The digest
+        # is the document the last cycle before a pause rewrites last.
+        todo.append((name, src_path, found.get("mtime"),
+                     min(settle_minutes, EXTRA_SETTLE_MINUTES)))
     out = []
     names = set()
     for name, src_path, mtime, settle in todo:
@@ -136,7 +152,13 @@ def plan(client, now_ms, settle_minutes=SETTLE_MINUTES):
                 continue
         age_min = (now_ms - (mtime or 0)) / 60000
         if age_min < settle:
-            out.append(("SETTLING", name, None, rev))
+            copy_mtime = mirrors.get(MIRROR_PREFIX + name, {}).get("mtime")
+            behind = ((now_ms - copy_mtime) / 60000
+                      if existing is not None and copy_mtime else 0)
+            if behind < MAX_STALE_MINUTES:
+                out.append(("SETTLING", name, None, rev))
+                continue
+            out.append(("STALE", name, to_mirror(text, src_path), rev))
             continue
         out.append(("COPY", name, to_mirror(text, src_path), rev))
     for doc_id in sorted(mirrors):
@@ -155,11 +177,17 @@ def _client():
 def main(argv=None, client=None, now_ms=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true", help=(
+        "copy every out-of-date document now, however recently it changed. "
+        "For the last run before the loop stops: nothing mirrors while it "
+        "is asleep, so whatever is SETTLING then stays unseen until it "
+        "wakes."))
     args = ap.parse_args(argv)
     try:
         client = client or _client()
         now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        rows = plan(client, now_ms)
+        rows = plan(client, now_ms,
+                    settle_minutes=0 if args.force else SETTLE_MINUTES)
     except Exception as e:  # noqa: BLE001 -- any failure is "no instrument"
         print(f"reading_mirror: COULD NOT READ: {e}")
         return 1
@@ -167,21 +195,24 @@ def main(argv=None, client=None, now_ms=None):
     for verdict, name, content, rev in rows:
         note = {
             "COPY": "copied",
+            "STALE": ("still changing, but the copy was over "
+                      f"{MAX_STALE_MINUTES} min behind -- copied anyway"),
             "CURRENT": "copy is current",
             "SETTLING": f"changed in the last {SETTLE_MINUTES} min, next run",
             "EDITED": "copy was edited in Obsidian -- left alone",
             "ORPHAN": "source is gone -- copy kept",
         }[verdict]
-        if verdict == "COPY" and args.dry_run:
+        if verdict in ("COPY", "STALE") and args.dry_run:
             note = "would copy"
-        elif verdict == "COPY":
+        elif verdict in ("COPY", "STALE"):
             result = client.write(MIRROR_PREFIX + name, content, if_rev=rev)
             if result != "written":
                 failed += 1
                 note = f"WRITE FAILED: {result}"
         print(f"{verdict:8} {name}: {note}")
     counts = {v: sum(1 for r in rows if r[0] == v)
-              for v in ("COPY", "CURRENT", "SETTLING", "EDITED", "ORPHAN")}
+              for v in ("COPY", "STALE", "CURRENT", "SETTLING", "EDITED",
+                        "ORPHAN")}
     print("reading_mirror: " + ", ".join(f"{k.lower()} {v}"
                                          for k, v in counts.items())
           + f" -> {MIRROR_PREFIX}" + (" (dry run)" if args.dry_run else ""))
