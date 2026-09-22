@@ -1850,6 +1850,41 @@ def test_a_verdict_already_settled_is_remembered_instead_of_refetched(
     assert old[0]["remembered"] is True
 
 
+def test_a_settled_verdict_inside_the_window_is_remembered_too(
+        monkeypatch, tmp_path):
+    """Reading the record only *below* the floor would have left the newest
+    `window` numbers re-fetched on every run -- and after a long pause every
+    one of those is a dead number, so the bound would have moved rather than
+    closed. `goal_measures` asks for 240 of them."""
+    calls = []
+    _thousand_gap_world(monkeypatch, tmp_path, calls)
+    results, _newest, _error, _c, _p = cycle_postmortem.collect(
+        window=240, judge_all=True)
+    cycle_postmortem.save_verdicts(results)
+    calls.clear()
+    cycle_postmortem.collect(window=240,
+                             cache=cycle_postmortem.load_verdicts())
+    assert len(calls) <= cycle_postmortem._SETTLING
+
+
+def test_the_newest_few_are_re_read_however_settled_the_record_looks(
+        monkeypatch, tmp_path):
+    """Three cycles overlap, so a verdict on the newest few can still change
+    under them -- remembering one would freeze `still running` into the
+    report for good."""
+    calls = []
+    _thousand_gap_world(monkeypatch, tmp_path, calls)
+    results, newest, _error, _c, _p = cycle_postmortem.collect(
+        window=240, judge_all=True)
+    cycle_postmortem.save_verdicts(results)
+    calls.clear()
+    second, _newest, _error, _c, _p = cycle_postmortem.collect(
+        window=240, cache=cycle_postmortem.load_verdicts())
+    refetched = [row["number"] for row in second if not row.get("remembered")]
+    assert refetched == [n for n in range(newest - cycle_postmortem._SETTLING + 1,
+                                          newest)]
+
+
 def test_a_lost_cycle_is_never_remembered_because_its_row_carries_a_reply(
         tmp_path):
     """A four-key record cannot carry the recovered reply a `lost` row

@@ -697,6 +697,13 @@ _CACHEABLE = ("failed", "absent", "misfiled", "unnumbered", "doubled",
 
 _CACHED_KEYS = ("verdict", "messages", "detail")
 
+#: How many of the newest numbers are never read from the record, however
+#: settled their verdict looks. Three cycles overlap, so the newest few
+#: legitimately have no entry yet and their verdict can still change under
+#: them -- and a remembered one would freeze `still running` or `cut off`
+#: into the report for good.
+_SETTLING = 3
+
 
 def load_verdicts(path=None):
     """Remembered verdicts by cycle number. Unreadable is empty, never fatal."""
@@ -780,16 +787,23 @@ def collect(window=DEFAULT_WINDOW, judge_all=False, cache=None):
             messages = []
         return judge(number, conversation, messages, now=now)
 
+    # The record is consulted by whether a verdict has settled, NOT by
+    # whether the number is inside the window. A closed conversation does
+    # not change its mind, and only the verdicts that cannot need a second
+    # look are ever written down -- so a gap inside the window that has
+    # already been judged costs nothing either. Reading the record below the
+    # floor only would have left the newest 240 numbers re-fetched on every
+    # run, which after a long pause is every dead number in it, every time.
+    settled = newest - _SETTLING
     fetch, remembered, skipped = [], [], []
     for number in gaps:
-        if judge_all or number > floor:
-            fetch.append(number)
-            continue
-        row = cache.get(str(number))
-        if row is None:
-            skipped.append(number)
-        else:
+        row = None if judge_all else cache.get(str(number))
+        if row is not None and number <= settled:
             remembered.append(dict(row, number=number, remembered=True))
+        elif judge_all or number > floor:
+            fetch.append(number)
+        else:
+            skipped.append(number)
 
     # Still concurrent, because `window` is 96 in `preflight` and 96 blocking
     # fetches would walk this check into its 240-second hang ceiling on their
