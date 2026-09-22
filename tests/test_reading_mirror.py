@@ -1,4 +1,6 @@
 """tools.reading_mirror: reading copies of the owner's documents (issue #238)."""
+import pytest
+
 from tools import reading_mirror as rm
 
 SRC = rm.SOURCE_PREFIX
@@ -112,3 +114,41 @@ def test_the_mirror_folder_is_outside_novas_database():
     from agora_runner import vault
     assert not DST.startswith(tuple(vault.NOVA_DB_FOLDERS))
     assert SRC.startswith(tuple(vault.NOVA_DB_FOLDERS))
+
+
+DIGEST = rm.EXTRA_SOURCES["journal-digest.md"]
+
+
+@pytest.fixture(autouse=True)
+def only_his_folder(request, monkeypatch):
+    """The tests above are about his folder alone; the extra sources are
+    opted into by the tests below that name `with_digest`."""
+    if "with_digest" not in request.fixturenames:
+        monkeypatch.setattr(rm, "EXTRA_SOURCES", {})
+
+
+@pytest.fixture
+def with_digest():
+    return DIGEST
+
+
+def test_the_handoff_digest_is_copied_from_outside_his_folder(with_digest):
+    v = FakeVault({DIGEST: ("# Journal — Digest\n", NOW - 10 * 60_000)})
+    assert rm.main([], client=v, now_ms=NOW) == 0
+    assert v.writes == [DST + "journal-digest.md"]
+    assert v.read(DST + "journal-digest.md").startswith(
+        "---\nmirror_of: " + DIGEST + "\n")
+
+
+def test_the_digest_waits_minutes_not_half_an_hour(with_digest):
+    # Rewritten once per 24-minute cycle: a 30-minute settle never lands it.
+    v = FakeVault({DIGEST: ("d\n", NOW - 2 * 60_000)})
+    assert verdicts(v)["journal-digest.md"] == "SETTLING"
+    v = FakeVault({DIGEST: ("d\n", NOW - 10 * 60_000),
+                   SRC + "goals.md": ("g\n", NOW - 10 * 60_000)})
+    assert verdicts(v) == {"journal-digest.md": "COPY", "goals.md": "SETTLING"}
+
+
+def test_a_missing_extra_source_is_no_instrument_not_nothing_to_copy(with_digest):
+    v = FakeVault({})
+    assert rm.main([], client=v, now_ms=NOW) == 1

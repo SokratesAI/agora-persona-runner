@@ -31,6 +31,15 @@ out of Obsidian in the first place:
 
 A copy whose source was deleted is reported, not deleted.
 
+`EXTRA_SOURCES` adds single documents from outside that folder. On
+2026-09-22, two days before the loop hibernates, he asked for my own
+thoughts and plans in the `obsidian` database too: *"I do not have set up
+access to your private Vault, and I do not want to have to do so either.
+So either I need a copy, or move the files."* The handoff digest is the
+plans half and is rewritten by every cycle, so it settles for
+`EXTRA_SETTLE_MINUTES` rather than 30: at one write per cycle and a cycle
+every 24 minutes, a 30-minute settle would leave it SETTLING forever.
+
 Exit 0: every document was copied, current, settling, or deliberately left.
 Exit 1: the folder could not be listed or a read/write failed.
 """
@@ -49,6 +58,11 @@ EXCLUDED = frozenset({
     "_context.md", "issues.md", "ideas.md", "proposed-projects.md",
 })
 SETTLE_MINUTES = 30
+# mirror name -> source path, for documents outside SOURCE_PREFIX.
+EXTRA_SOURCES = {
+    "journal-digest.md": "projects/sokrates/projects/agora/journal-digest.md",
+}
+EXTRA_SETTLE_MINUTES = 5
 SHA_KEY = "mirror_sha"
 SOURCE_KEY = "mirror_of"
 BRIDGE_DIR = "/app/bridge"
@@ -88,14 +102,22 @@ def plan(client, now_ms, settle_minutes=SETTLE_MINUTES):
     when there is no copy yet."""
     sources = client.file_docs(SOURCE_PREFIX)
     mirrors = client.file_docs(MIRROR_PREFIX)
-    out = []
-    names = set()
+    todo = []
     for doc_id in sorted(sources):
         name = doc_id[len(SOURCE_PREFIX):]
         if "/" in name or not name.endswith(".md") or name in EXCLUDED:
             continue
+        todo.append((name, SOURCE_PREFIX + name,
+                     sources[doc_id].get("mtime"), settle_minutes))
+    for name, src_path in sorted(EXTRA_SOURCES.items()):
+        found = client.file_docs(src_path).get(src_path)
+        if found is None:
+            raise RuntimeError(f"could not find {src_path}")
+        todo.append((name, src_path, found.get("mtime"), EXTRA_SETTLE_MINUTES))
+    out = []
+    names = set()
+    for name, src_path, mtime, settle in todo:
         names.add(name)
-        src_path = SOURCE_PREFIX + name
         text = client.read(src_path)
         if text is None:
             raise RuntimeError(f"could not read {src_path}")
@@ -112,8 +134,8 @@ def plan(client, now_ms, settle_minutes=SETTLE_MINUTES):
             if recorded == sha(text):
                 out.append(("CURRENT", name, None, rev))
                 continue
-        age_min = (now_ms - (sources[doc_id].get("mtime") or 0)) / 60000
-        if age_min < settle_minutes:
+        age_min = (now_ms - (mtime or 0)) / 60000
+        if age_min < settle:
             out.append(("SETTLING", name, None, rev))
             continue
         out.append(("COPY", name, to_mirror(text, src_path), rev))
