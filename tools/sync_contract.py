@@ -314,7 +314,7 @@ EXTRA_PROBE_PATHS = (
     "PROJECTS/Sokrates/Projects/Agora/NOVA/journal/191-cycle-169.md",
     "projects/sokrates/projects/agora/nova",
     "projects/sokrates/projects/agora/novaX/file.md",
-    "projects/sokrates/projects/nova/notes.md",
+    "projects/sokrates/projects/nova/ideas.md",
     "unrelated/file.md",
 )
 
@@ -379,7 +379,7 @@ _ROUTING_EXPECTED_PATHS = {
     # slash, so this is not inside it and is not the exact file either.
     "projects/sokrates/projects/agora/nova": "edvard",
     "projects/sokrates/projects/agora/novaX/file.md": "edvard",
-    "projects/sokrates/projects/nova/notes.md": "nova",
+    "projects/sokrates/projects/nova/ideas.md": "nova",
     "unrelated/file.md": "edvard",
 }
 
