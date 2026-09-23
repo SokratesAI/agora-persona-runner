@@ -5058,6 +5058,7 @@
       json: json,
       load: load,
       markNav: markNav,
+      renderBlocks: renderBlocks,
       renderRowConversation: renderRowConversation,
       route: route,
       statusEl: statusEl,

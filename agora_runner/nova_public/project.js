@@ -33,6 +33,7 @@
     var json = shared.json;
     var load = shared.load;
     var markNav = shared.markNav;
+    var renderBlocks = shared.renderBlocks;
     var renderRowConversation = shared.renderRowConversation;
     var route = shared.route;
     var statusEl = shared.statusEl;
@@ -470,6 +471,55 @@
      * along each is: that would put the projects he cares least about at the
      * top on the day they finish.
      */
+    /* His unboarded captures, on the index -- idea #166.
+     *
+     * *"There should be a not boarded yet block on the projects page
+     * aswell, basicly replacing what is in the issues ideas."* A capture
+     * carries no project yet, so it sits above the standings rather than
+     * inside a card, and it is the last thing `/issues` and `/ideas` had
+     * that this page did not.
+     *
+     * Read-only on purpose, and this is the decision worth defending. The
+     * editor for a capture -- edit, delete, rate, "Board it" -- is wired
+     * into the board page's own state, and Cycle 1449 declined to put a
+     * second copy of it on a project page for exactly that reason: a copy
+     * is a second place every future control has to be added. So each
+     * card is a link to the box it came from, where the controls already
+     * are, and the block answers "is anything waiting" rather than trying
+     * to be the place you answer it.
+     *
+     * Nothing is drawn when nothing is waiting -- an empty "Not boarded
+     * yet" heading is a permanent fixture that says nothing, and the
+     * board page omits the block for the same reason.
+     */
+    function renderIndexCaptures(payload) {
+      var captures = (payload && payload.captures) || [];
+      if (!captures.length) return null;
+      var box = el("section", "captures");
+      box.appendChild(el("h2", "captures-title", "Not boarded yet"));
+      captures.forEach(function (capture) {
+        var one = el("div", "capture-item");
+        var body = el("div", "capture-body");
+        renderBlocks(body, capture.blocks || []);
+        one.appendChild(body);
+        var foot = el("div", "capture-edit");
+        if (capture.priority) {
+          foot.appendChild(el("span", "capture-item-status", capture.priority));
+        }
+        // The board it was typed into, and the way to it. `route` is the
+        // app's own navigation, so this does not reload the page.
+        var link = el("button", "capture-act",
+          capture.board === "issue" ? "Issues" : "Ideas");
+        link.addEventListener("click", function () {
+          route(capture.board === "issue" ? "/issues" : "/ideas");
+        });
+        foot.appendChild(link);
+        one.appendChild(foot);
+        box.appendChild(one);
+      });
+      return box;
+    }
+
     function renderProjectStandings(payload) {
       var projects = (payload && payload.projects) || [];
       var summaries = (payload && payload.projectSummary) || {};
@@ -1867,9 +1917,13 @@
         // where each one stands rather than telling him to pick one blind.
         feed.textContent = "";
         feed.novaProjectCards = null;
+        // Above the standings: what is waiting on him outranks how the
+        // projects he already has are going.
+        var waiting = renderIndexCaptures(payload);
+        if (waiting) feed.appendChild(waiting);
         var standings = renderProjectStandings(payload);
         if (standings) feed.appendChild(standings);
-        else feed.appendChild(el("p", "empty", "Pick a project."));
+        else if (!waiting) feed.appendChild(el("p", "empty", "Pick a project."));
         return;
       }
       // Asked for a name no row carries. Said plainly rather than 404'd: he

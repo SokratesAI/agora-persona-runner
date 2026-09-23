@@ -833,3 +833,75 @@ class TestProjectMilestones:
         nova_site.project_payload("Nova")
         # One read for his pins, one for my seats (issue #202).
         assert calls == [1, 1]
+
+
+# --- The "not boarded yet" block on the index (idea #166) -------------------
+#
+# *"There should be a not boarded yet block on the projects page aswell,
+# basicly replacing what is in the issues ideas."* The block is the last
+# thing `/issues` and `/ideas` carried that this page did not, so without
+# it `/projects` cannot be the page he opens instead of those two.
+#
+# The rule these tests are pointed at is the one Cycle 1046's demo of this
+# block found by accident: **both of his live captures were finished work**,
+# marked `DONE (Cycle N):` by the cycle that closed them. A block headed
+# "Not boarded yet" that lists closed captures is the one thing it must not
+# do, and the board page already drops them for the same reason.
+
+
+def _captures(monkeypatch, issues, ideas):
+    payloads = {
+        "issues": {"items": ISSUES, "captures": issues},
+        "ideas": {"items": IDEAS, "captures": ideas},
+    }
+    monkeypatch.setattr(nova_site, "board_payload", lambda name: payloads[name])
+
+
+def _capture(body, done="", priority="🟠 High"):
+    return {
+        "text": body,
+        "body": body,
+        "priority": priority,
+        "priorityKey": "high" if priority else "",
+        "done": done,
+        "blocks": [{"kind": "p", "spans": [{"text": body}]}],
+        "replies": [],
+    }
+
+
+def test_index_carries_his_unboarded_captures_from_both_boxes(monkeypatch):
+    _captures(monkeypatch, [_capture("a broken thing")], [_capture("a new thing")])
+    captures = nova_site.project_payload()["captures"]
+    assert [c["body"] for c in captures] == ["a broken thing", "a new thing"]
+    # Tagged with the box it was typed into, because that is the page its
+    # edit/delete/board controls live on and the card links there rather
+    # than growing a second copy of the editor.
+    assert [c["board"] for c in captures] == ["issue", "idea"]
+    assert captures[0]["priority"] == "🟠 High"
+    assert captures[0]["blocks"]
+
+
+def test_a_finished_capture_is_not_unboarded_work(monkeypatch):
+    _captures(
+        monkeypatch,
+        [_capture("already handled", done="Cycle 251"), _capture("still open")],
+        [],
+    )
+    captures = nova_site.project_payload()["captures"]
+    assert [c["body"] for c in captures] == ["still open"]
+
+
+def test_the_empty_cursor_bullet_is_not_a_capture(monkeypatch):
+    # Every writer of these files leaves one blank bullet at the bottom so
+    # he can start typing immediately. It is a cursor, not something
+    # waiting on him.
+    _captures(monkeypatch, [_capture(""), _capture("   ")], [])
+    assert nova_site.project_payload()["captures"] == []
+
+
+def test_a_single_project_build_carries_no_captures(monkeypatch):
+    # A capture has no project -- boarding it is what gives it one -- so it
+    # belongs to the index and would be the same list repeated on every
+    # project page.
+    _captures(monkeypatch, [_capture("a broken thing")], [])
+    assert "captures" not in nova_site.project_payload("Nova")
