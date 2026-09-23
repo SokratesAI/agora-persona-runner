@@ -113,6 +113,15 @@ def couch(monkeypatch):
                 return 200, doc
         return 404, {}
 
+    # These tests are about tombstones, not about routing, and since the
+    # `CDB_*` fallback landed in config an unset `COUCHDB_NOVA_DB` resolves
+    # to whatever the *ambient* pod exports -- `""` on a CI runner and
+    # `nova` in the bridge pod. With it set, `vault_list_ids("")` asks two
+    # databases, the one fake answers both, and the rows come back doubled.
+    # Pinning it here makes the module answer the same question wherever the
+    # suite runs; `tests/test_vault_database_routing.py` is where routing is
+    # actually pinned.
+    monkeypatch.setattr(vault, "COUCHDB_NOVA_DB", "")
     monkeypatch.setattr(vault, "couch_req", fake_couch_req)
     return puts
 
