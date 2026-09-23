@@ -1438,6 +1438,50 @@ def _project_shares(boards, meta):
     }
 
 
+def _index_captures(boards):
+    """His unboarded bullets from both capture boxes, for `/projects`.
+
+    Idea #166 asks for the "not boarded yet" block to be on this page too,
+    so that opening `/projects` shows everything `/issues` and `/ideas`
+    show between them. A capture carries no project -- boarding it is what
+    gives it one -- so it belongs to the page rather than to a project
+    card, and it is sent only on the index build.
+
+    **A finished capture is not unboarded work and is dropped here.** A
+    cycle that closes one prefixes it `DONE (Cycle N):`, which
+    `board_payload` already splits out into `done`; the board page sinks
+    those cards below the open ones rather than hiding them, because that
+    is the page you go to to delete one. This page is a summary of what is
+    waiting, and Cycle 1046's demo of this block found both of his live
+    captures were already closed -- a block that says "not boarded yet"
+    over finished work is the one thing it must not do.
+
+    Each bullet is tagged with the box it came from, because that is the
+    page the controls for it live on and the block links there rather than
+    growing a second copy of the editor (the reason Cycle 1449 left this
+    slice alone). Rendered blocks come along so the card draws his
+    markdown the same way every other card on the site does.
+    """
+    captures = []
+    for board in ("issues", "ideas"):
+        for capture in (boards[board].get("captures") or []):
+            if capture.get("done"):
+                continue
+            # The trailing empty bullet is his cursor, not a capture --
+            # `nova_capture` says so and every writer keeps it there.
+            if not (capture.get("body") or "").strip():
+                continue
+            captures.append({
+                "board": "issue" if board == "issues" else "idea",
+                "body": capture.get("body") or "",
+                "blocks": capture.get("blocks") or [],
+                "priority": capture.get("priority") or "",
+                "priorityKey": capture.get("priorityKey") or "",
+                "replies": capture.get("replies") or [],
+            })
+    return captures
+
+
 def _project_summaries(boards):
     """Where every project stands, for the index -- idea #228's PM pass.
 
@@ -1722,6 +1766,16 @@ def project_payload(name=None):
         # that tap does not show. `None` means the ledger would not read;
         # see `_project_shares`.
         result["projectShares"] = _project_shares(boards, meta)
+        # What he has typed and nothing has boarded yet, from both capture
+        # boxes at once -- idea #166: *"There should be a not boarded yet
+        # block on the projects page aswell, basicly replacing what is in
+        # the issues ideas."* It is the one thing on `/issues` and `/ideas`
+        # that is not a project row, so without it this page cannot be the
+        # page he opens instead of those two.
+        #
+        # Read off the board payloads already in memory, so it costs
+        # nothing and is exactly as fresh as the rest of this page.
+        result["captures"] = _index_captures(boards)
         return result
     # The thread hangs off the name he asked for, not off `matched`, so a
     # project he has started talking about before filing a row under it

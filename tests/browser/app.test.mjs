@@ -14531,6 +14531,52 @@ describe("the project page", () => {
     assert.doesNotMatch(shareText(window, 1), /floor/);
   });
 
+  /* The "not boarded yet" block on `/projects` -- idea #166.
+   *
+   * *"There should be a not boarded yet block on the projects page aswell,
+   * basicly replacing what is in the issues ideas."* It is the last thing
+   * `/issues` and `/ideas` carried that this page did not.
+   *
+   * Read-only on purpose: the editor for a capture is wired into the board
+   * page's own state, and a copy here would be a second place every future
+   * control has to be added. So the card links to the box it came from. */
+  const capture = (body, board) => ({
+    board, body, priority: "🟠 High", priorityKey: "high", replies: [],
+    blocks: [{ kind: "p", spans: [{ text: body }] }],
+  });
+
+  test("the index draws his unboarded captures above the standings", async () => {
+    const window = await loadSite("/projects", {
+      project: () => ({
+        ...STANDING,
+        captures: [capture("a broken thing", "issue"), capture("a new thing", "idea")],
+      }),
+    });
+    const box = window.document.querySelector(".captures");
+    assert.ok(box, "no 'not boarded yet' block on the projects index");
+    assert.match(box.querySelector(".captures-title").textContent, /Not boarded yet/);
+    const bodies = [...box.querySelectorAll(".capture-body")].map((n) => n.textContent.trim());
+    assert.deepEqual(bodies, ["a broken thing", "a new thing"]);
+    // Above the standings, because what is waiting on him outranks how the
+    // projects he already has are going.
+    const feedKids = [...box.parentNode.children];
+    assert.ok(feedKids.indexOf(box) < feedKids.findIndex(
+      (n) => n.classList.contains("project-standings")),
+      "the unboarded block was drawn under the standings");
+    // Each card says which box it came from and goes there -- the controls
+    // live on that page and are deliberately not copied here.
+    const labels = [...box.querySelectorAll(".capture-act")].map((n) => n.textContent);
+    assert.deepEqual(labels, ["Issues", "Ideas"]);
+  });
+
+  test("no block at all when nothing is waiting", async () => {
+    /* An empty "Not boarded yet" heading is a permanent fixture that says
+     * nothing, and the board page omits it for the same reason. */
+    const window = await loadSite("/projects", { project: () => STANDING });
+    assert.equal(window.document.querySelector(".captures"), null,
+      "an empty 'not boarded yet' block is drawn with no captures");
+  });
+
   test("the standing opens a drawer instead of navigating away", async () => {
     /* His ask, 2026-09-08: *"Instead of being navigated to another page when
      * i click on a project, i want a drawer system where projects contains
