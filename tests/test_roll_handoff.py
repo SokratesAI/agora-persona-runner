@@ -838,3 +838,23 @@ def test_the_roll_names_every_pin_it_kept(capsys, tmp_path):
     out = capsys.readouterr().out
     assert "pinned: 1 item(s) the age rule will not retire" in out
     assert "INSTRUCTION FOR THE FIRST CYCLE AFTER 21:05" in out
+
+
+def test_an_item_that_merely_mentions_the_marker_is_not_pinned():
+    # Measured on the first real roll to use the pin, cycle 2106: it
+    # reported keeping four items when two had been typed. The other two
+    # were the handoff item explaining the pin and the warning telling
+    # the next cycle not to delete it, both quoting the marker in a code
+    # span the way every sentence about it does. A pin nobody typed is
+    # not a small thing -- it arrives on any item that documents this
+    # mechanism, and nothing in the output distinguishes it.
+    talks_about_it = (
+        "**[handoff-pin-shipped-2106]** A handoff item can now be "
+        "exempted from the age roll: the marker is `" + PIN_MARKER + "` "
+        "anywhere in the item's text."
+    )
+    assert not is_pinned(talks_about_it)
+    assert roll_handoff.select_older_than([talks_about_it], 2200) == [0]
+    # And the bare marker in the same sentence still pins it, so an item
+    # can explain the mechanism and be pinned on purpose.
+    assert is_pinned(talks_about_it + " " + PIN_MARKER)
