@@ -707,3 +707,67 @@ def test_the_two_volumes_that_were_unprotected_are_each_accounted_for_once():
     covered = {b.covers for b in BACKUPS} | {b.covers for b in bh.NAS_BACKUPS}
     assert "agents/sokrates-post-data" in covered
     assert "agents/lyceum-data" in ACKNOWLEDGED
+
+
+# --- a missed run that a later success hid -------------------------------------
+#: `judge_nas` reads the newest archive, so one skipped night is stale for a few
+#: hours and clean forever after. Agora's backup missed 2026-09-20 and every run
+#: of this check since said `inside the 26-hour threshold`, truthfully. These
+#: tests are about the series instead of the level.
+
+
+def test_a_consecutive_series_has_no_gap():
+    archives = [_archive(AGORA, hours) for hours in (1.0, 25.0, 49.0, 73.0)]
+    assert bh.judge_nas_gaps(AGORA, archives) == []
+    assert bh.format_nas_gaps(AGORA, []) is None
+
+
+def test_a_skipped_nightly_run_is_a_gap_even_though_the_newest_is_fresh():
+    #: The real 2026-09-20 shape: 09-19, nothing, 09-21, 09-22, 09-23.
+    archives = [_archive(AGORA, hours) for hours in (1.0, 25.0, 49.0, 97.0)]
+    gaps = bh.judge_nas_gaps(AGORA, archives)
+    assert len(gaps) == 1
+    previous, following, hours = gaps[0]
+    assert round(hours) == 48
+    assert previous.mtime < following.mtime
+    #: The level check is clean at the same time, which is the whole point.
+    assert bh.judge_nas(AGORA, archives, NAS_NOW)[0] == "fresh"
+
+
+def test_the_gap_threshold_is_the_backup_s_own_and_not_a_new_number():
+    #: 8 hours for a six-hourly job, 26 for a nightly one. A 9-hour hole is a
+    #: missed run for WhatsApp and an ordinary night for Agora.
+    whatsapp = [_archive(WHATSAPP, hours) for hours in (1.0, 10.0)]
+    agora = [_archive(AGORA, hours) for hours in (1.0, 10.0)]
+    assert len(bh.judge_nas_gaps(WHATSAPP, whatsapp)) == 1
+    assert bh.judge_nas_gaps(AGORA, agora) == []
+
+
+def test_another_backup_s_archives_are_not_read_as_this_one_s_gaps():
+    #: `find` prints one directory of every prefix mixed together.
+    archives = [_archive(AGORA, hours) for hours in (1.0, 25.0)]
+    archives += [_archive(WHATSAPP, hours) for hours in (1.0, 200.0)]
+    assert bh.judge_nas_gaps(AGORA, archives) == []
+
+
+def test_archives_out_of_order_still_measure_the_same_gaps():
+    #: `backup_archives` sorts, `find` does not, and this function is judged on
+    #: its own inputs — the same reason `judge_nas` takes a max rather than [-1].
+    ordered = [_archive(AGORA, hours) for hours in (1.0, 25.0, 73.0)]
+    assert len(bh.judge_nas_gaps(AGORA, ordered)) == 1
+    assert len(bh.judge_nas_gaps(AGORA, list(reversed(ordered)))) == 1
+
+
+def test_a_gap_is_reported_and_is_actionable():
+    gaps = bh.judge_nas_gaps(AGORA, [_archive(AGORA, hours) for hours in (1.0, 49.0)])
+    line = bh.format_nas_gaps(AGORA, gaps)
+    assert line.startswith("MISSED RUN(S) — agora-backup")
+    assert "1 hole(s)" in line
+    assert "26-hour" in line
+    assert bh.status_for_nas_gaps(gaps) == 2
+    assert bh.status_for_nas_gaps([]) == 0
+
+
+def test_a_single_archive_cannot_produce_a_gap():
+    assert bh.judge_nas_gaps(AGORA, [_archive(AGORA, 1.0)]) == []
+    assert bh.judge_nas_gaps(AGORA, []) == []

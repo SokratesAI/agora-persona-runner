@@ -639,6 +639,57 @@ def judge_nas(backup, archives, nas_now):
     return "fresh", age, newest
 
 
+def judge_nas_gaps(backup, archives):
+    """Every missed run still visible in the archive series this backup has on the NAS.
+
+    `judge_nas` reads the newest archive only, which makes every verdict here a
+    *level*: one missed night is stale for a few hours and then a later run ships
+    a fresh archive and the level is clean again. Agora's backup missed
+    2026-09-05 and 2026-09-20 and `backup_health` said `inside the 26-hour
+    threshold` on every run after each of them, because by the time anything
+    looked, it was true. The only trace either miss left was a pair of Error Pods
+    in `agents`, and nothing reads those.
+
+    So this reads the series instead. Two consecutive archives further apart than
+    `stale_after_hours` means the job did not ship one in between, and that fact
+    stays readable for as long as the NAS keeps both sides of the hole. The
+    threshold is the same one `judge_nas` already derives per backup -- one
+    scheduled interval plus grace -- rather than a second number invented here.
+
+    Retention prunes the *oldest* archive, so two retained neighbours are always
+    consecutive runs and a prune cannot fake a gap; what it does do is retire a
+    gap once its older side rotates off, which is why a miss is worth saying
+    loudly while the evidence is still there.
+    """
+    mine = sorted(
+        (a for a in archives if a.name.startswith(backup.prefix)),
+        key=lambda a: a.mtime,
+    )
+    gaps = []
+    for previous, following in zip(mine, mine[1:]):
+        hours = (following.mtime - previous.mtime) / 3600.0
+        if hours > backup.stale_after_hours:
+            gaps.append((previous, following, hours))
+    return gaps
+
+
+def format_nas_gaps(backup, gaps):
+    """One line naming every missed run, or `None` when the series has no hole."""
+    if not gaps:
+        return None
+    holes = ", ".join(
+        "%s → %s (%.1fh)" % (oslo_epoch(previous.mtime), oslo_epoch(following.mtime), hours)
+        for previous, following, hours in gaps
+    )
+    return (
+        "MISSED RUN(S) — %s: %d hole(s) in the archive series the NAS still holds, "
+        "each longer than the %d-hour threshold, so the %s job skipped at least one "
+        "run and then started succeeding again: %s. The newest archive is judged "
+        "separately above and can be fresh while this is true. %s"
+        % (backup.name, len(gaps), backup.stale_after_hours, backup.name, holes, backup.fix)
+    )
+
+
 def format_nas_report(backup, verdict, age, newest, error):
     """One line for one NAS backup, plus the fix when there is something to fix."""
     if error:
@@ -703,6 +754,11 @@ def status_for_nas(verdict, error):
     return 2 if verdict in ("never", "stale", "runt") else 0
 
 
+def status_for_nas_gaps(gaps):
+    """A hole in the series is actionable, the same as a stale newest archive."""
+    return 2 if gaps else 0
+
+
 def status_for(verdict, error):
     """The exit status one backup contributes: 2 actionable, 1 unreadable, 0 clean."""
     if error or verdict == "unreadable":
@@ -735,6 +791,13 @@ def main(argv=None):
         )
         nas_reports.append(format_nas_report(backup, verdict, age, newest, nas_error))
         statuses.append(status_for_nas(verdict, nas_error))
+        if nas_error:
+            continue
+        gaps = judge_nas_gaps(backup, archives)
+        gap_report = format_nas_gaps(backup, gaps)
+        if gap_report:
+            nas_reports.append(gap_report)
+        statuses.append(status_for_nas_gaps(gaps))
     print("\n".join(nas_reports))
     if nas_error:
         print(
