@@ -223,14 +223,40 @@ NOVA_SITE_SELF_URL = os.environ.get(
     "NOVA_SITE_SELF_URL", "http://nova-site.agents.svc.cluster.local:8083"
 )
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "5"))
-COUCHDB_URL = os.environ.get("COUCHDB_URL", "http://couchdb.obsidian.svc.cluster.local:5984")
-COUCHDB_USER = os.environ.get("COUCHDB_USER", "")
-COUCHDB_PASSWORD = os.environ.get("COUCHDB_PASSWORD", "")
-COUCHDB_DB = os.environ.get("COUCHDB_DB", "obsidian")
+
+
+def _couchdb_env(couchdb_name, bridge_name, default=""):
+    """Read a CouchDB setting under either pod's name for it.
+
+    The runner pod exports `COUCHDB_*`; the bridge pod exports the identical
+    values under `CDB_*` (same host, same `obsidian`/`nova` databases, same
+    admin user -- compared in both pods' environments, Cycle 2066). Anything
+    in `agora_runner` that touches the vault therefore worked in the runner
+    and 401'd in the bridge, and the two failures that caused are opposite
+    shapes: `ask_push_log.record` reported the write it could not do, while
+    `cycle_health` read an empty journal, found no gaps in it and certified a
+    healthy loop. A blind instrument that says "clean" is the worse of the
+    two, which is why this is a fallback in config rather than a rule in
+    prose telling each cycle which shell to use.
+
+    `COUCHDB_*` still wins wherever it is set, so the runner is unchanged.
+    """
+    value = os.environ.get(couchdb_name)
+    if value:
+        return value
+    return os.environ.get(bridge_name, default)
+
+
+COUCHDB_URL = _couchdb_env(
+    "COUCHDB_URL", "CDB_BASE", "http://couchdb.obsidian.svc.cluster.local:5984"
+)
+COUCHDB_USER = _couchdb_env("COUCHDB_USER", "CDB_USER")
+COUCHDB_PASSWORD = _couchdb_env("COUCHDB_PASSWORD", "CDB_PASS")
+COUCHDB_DB = _couchdb_env("COUCHDB_DB", "CDB_DB", "obsidian")
 # Nova's own database. Empty (the default) means every path resolves to
 # COUCHDB_DB exactly as before, so this file is inert until the migrated
 # documents are actually in place — see vault.db_for.
-COUCHDB_NOVA_DB = os.environ.get("COUCHDB_NOVA_DB", "")
+COUCHDB_NOVA_DB = _couchdb_env("COUCHDB_NOVA_DB", "CDB_NOVA_DB")
 # Deliberately separate from GH_TOKEN/GITHUB_TOKEN (the broadly-scoped bot
 # credential used elsewhere on this platform for repo/PR writes) -- falls
 # back to whatever's already in the environment only so the tool degrades

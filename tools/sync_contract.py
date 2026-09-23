@@ -436,6 +436,25 @@ _PROBE_MODULES = ("_sync_contract_runner", "_sync_contract_bridge",
                   "_sync_contract_bridge_health")
 
 
+def _configure_runner_env(db, nova_db):
+    """Configure the runner copy the way the runner pod configures it.
+
+    Setting `COUCHDB_*` is not enough on its own any more. Since the `CDB_*`
+    fallback landed in `agora_runner/config.py`, an empty `COUCHDB_NOVA_DB`
+    -- which is exactly how `ROUTING_CONFIGS` expresses "routing off" --
+    falls through to `CDB_NOVA_DB`, and the bridge probe earlier in the same
+    loop has already set that. The runner pod does not export `CDB_*` at
+    all, so the faithful configuration is to remove them rather than to rely
+    on the two name sets happening to be disjoint. `_PROBE_ENV` already
+    restores every name this touches.
+    """
+    os.environ["COUCHDB_DB"] = db
+    os.environ["COUCHDB_NOVA_DB"] = nova_db
+    for name in _PROBE_ENV:
+        if name.startswith("CDB_"):
+            os.environ.pop(name, None)
+
+
 @contextlib.contextmanager
 def _process_state_restored():
     """Put the environment, `sys.modules` and `agora_runner.config` back.
@@ -514,8 +533,7 @@ def _runner_router(path, db, nova_db):
     environment at *its* import. So both have to be re-executed, in that
     order, or the second configuration below silently reuses the first.
     """
-    os.environ["COUCHDB_DB"] = db
-    os.environ["COUCHDB_NOVA_DB"] = nova_db
+    _configure_runner_env(db, nova_db)
     importlib.reload(importlib.import_module("agora_runner.config"))
     module = _load_module(path, "_sync_contract_runner")
     try:
@@ -824,8 +842,7 @@ def _runner_assembler(path, db, nova_db):
     `agora_runner.config` and the module reading it copy their values at
     import time.
     """
-    os.environ["COUCHDB_DB"] = db
-    os.environ["COUCHDB_NOVA_DB"] = nova_db
+    _configure_runner_env(db, nova_db)
     importlib.reload(importlib.import_module("agora_runner.config"))
     module = _load_module(path, "_sync_contract_runner_assemble")
     for name in ("vault_assemble", "_fetch_chunks", "_SRC_DB_KEY"):
@@ -1234,8 +1251,7 @@ def _write_clock_frozen():
 
 def _runner_writer(path, db, nova_db):
     """`(ask, chunk_id)` for the runner copy, configured as its own process."""
-    os.environ["COUCHDB_DB"] = db
-    os.environ["COUCHDB_NOVA_DB"] = nova_db
+    _configure_runner_env(db, nova_db)
     importlib.reload(importlib.import_module("agora_runner.config"))
     module = _load_module(path, "_sync_contract_runner_write")
     for name in ("_vault_put_raw", "couch_req", "_chunk_id_for", "_ANY_REV"):
@@ -1602,8 +1618,7 @@ class _FakeInfo:
 
 def _runner_health(path, db, nova_db):
     """`(ask, timeout)` for the runner copy, configured as its own process."""
-    os.environ["COUCHDB_DB"] = db
-    os.environ["COUCHDB_NOVA_DB"] = nova_db
+    _configure_runner_env(db, nova_db)
     importlib.reload(importlib.import_module("agora_runner.config"))
     module = _load_module(path, "_sync_contract_runner_health")
     for name in ("database_health", "couch_req", "HEALTH_TIMEOUT_SECONDS"):
