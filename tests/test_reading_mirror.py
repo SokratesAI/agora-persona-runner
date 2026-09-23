@@ -186,3 +186,22 @@ def test_the_digest_waits_minutes_not_half_an_hour(with_digest):
 def test_a_missing_extra_source_is_no_instrument_not_nothing_to_copy(with_digest):
     v = FakeVault({})
     assert rm.main([], client=v, now_ms=NOW) == 1
+
+
+def test_a_document_in_a_subfolder_is_mirrored_at_the_same_relative_path():
+    # Measured on the live vault 2026-09-23: `resources/research/` held one
+    # document and nothing in the mirror. A bare `"/" in name` skip dropped
+    # it with no verdict, so the report read clean while he could not open it.
+    name = "resources/research/shared-chat-prfaq-2026-09-21.md"
+    v = FakeVault({SRC + name: ("# PR-FAQ\n", OLD)})
+    assert rm.main([], client=v, now_ms=NOW) == 0
+    assert v.writes == [DST + name]
+    assert v.read(DST + name).endswith("# PR-FAQ\n")
+
+
+def test_a_capture_file_name_reused_inside_a_subfolder_is_still_mirrored():
+    # EXCLUDED names his four capture files at the folder root. A different
+    # document that happens to share one of those names is not one of them.
+    v = FakeVault({SRC + "resources/ideas.md": ("# not his board\n", OLD)})
+    assert rm.main([], client=v, now_ms=NOW) == 0
+    assert v.writes == [DST + "resources/ideas.md"]
