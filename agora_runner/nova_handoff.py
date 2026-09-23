@@ -463,6 +463,11 @@ def stamp_unseen(live, cycle):
 
 PIN_MARKER = "<!-- pin -->"
 
+# Backtick-delimited inline code, so `is_pinned` can ignore a marker an
+# item is talking *about*. Non-greedy and single-line: a run of backticks
+# never spans a paragraph break in this section.
+_CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
+
 
 def is_pinned(item):
     """True when the item carries `<!-- pin -->` and the age roll must keep it.
@@ -496,8 +501,22 @@ def is_pinned(item):
 
     An HTML comment for the same reason `stamp_unseen` uses one: it is
     invisible in Obsidian and on the site, so the owner never sees it.
+
+    **A mention of the marker is not a pin, and the first roll to use
+    this taught me that.** Cycle 2106 pinned the two standing items and
+    wrote a handoff item explaining the pin -- quoting the marker in a
+    code span, the way every sentence about it here does. The roll then
+    reported keeping *four* items: the two I meant, plus the two that
+    merely talked about it. That is a pin nobody typed, which is the
+    same shape as a guard that guards nothing read from the other end,
+    and it would arrive silently on any item that ever documents this
+    mechanism. So inline code spans are stripped before the check. A pin
+    has to be written as bare text, which is also the only way it is
+    invisible to a reader -- a marker inside backticks renders as
+    literal text in Obsidian, so an item pinned that way would have been
+    showing the owner an HTML comment.
     """
-    return PIN_MARKER in item
+    return PIN_MARKER in _CODE_SPAN_RE.sub("", item)
 
 
 def select_older_than(items, cutoff):
