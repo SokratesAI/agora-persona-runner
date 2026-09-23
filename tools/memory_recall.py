@@ -38,16 +38,35 @@ Exit 0 means the search ran, hits or none, and the report says which.
 confused with "you remember nothing about this" -- that is the whole
 failure this tool exists to stop, one level up.
 
+**Every recall writes one line to `/data/nova-memory-recall.jsonl`**, and
+`--usage` reads it back. That is idea #186's other half: a brain that
+*can* look things up says nothing about whether looking up ever happens,
+and until now nothing counted. The line carries the terms, how many hits
+came back, how many of those were archive-only, and the working
+directory -- which is the only caller signal there is, since every
+surface that runs this shares one pod. A ledger that cannot be written
+says so in the report rather than failing the recall or going quiet;
+`--usage` against a missing ledger is exit 1 and "no instrument", never
+a measured zero.
+
 Runs on the bridge pod: the store is on its PVC. From the runner pod
 there is no `/data/claude-home` and this exits 1, correctly.
 """
 import argparse
+import datetime
+import json
 import os
 import re
 import sys
 
 DEFAULT_STORE = os.path.join(
     os.environ.get("CLAUDE_HOME", "/data/claude-home"), "nova-memory")
+
+# One line per recall, on the bridge PVC beside the host-memory ledgers.
+# Idea #186's unanswered half: a brain that can look things up still tells
+# you nothing about whether looking up ever happens.
+DEFAULT_LEDGER = os.environ.get(
+    "NOVA_RECALL_LEDGER", "/data/nova-memory-recall.jsonl")
 
 LOADED_INDEX = "MEMORY.md"
 ARCHIVE_INDEX = "MEMORY-archive.md"
@@ -150,7 +169,77 @@ def search(records, terms, require_all=True):
     return hits
 
 
-def report(terms, store=DEFAULT_STORE, require_all=True, full=5, out=None):
+def record_use(terms, require_all, hits, archive_only, ledger, out):
+    """Append one line saying this recall happened. Never fails the recall.
+
+    Attribution is `cwd` and nothing cleverer: every surface that can run
+    this shares one pod, so there is no caller identity to read. The chat
+    Nova is told to run from `/data/workspace/agora-persona-runner` and a
+    cycle runs from its own `$NOVA_WORKSPACE` checkout, so the raw path
+    discriminates them without this function deciding which is which.
+    """
+    if not ledger:
+        return
+    line = {
+        "ts": datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0).isoformat(),
+        "cwd": os.getcwd(),
+        "terms": list(terms),
+        "match": "all" if require_all else "any",
+        "hits": len(hits),
+        "archive_only": archive_only,
+        "top": hits[0][1]["file"] if hits else None,
+    }
+    try:
+        with open(ledger, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line) + "\n")
+    except OSError as err:
+        # Said out loud rather than swallowed: a ledger that stopped
+        # recording looks exactly like a recall nobody ran.
+        print("(not recorded in %s -- %s)" % (ledger, err), file=out)
+
+
+def summarise_usage(ledger=DEFAULT_LEDGER, out=None):
+    """Was recall actually used, and did it surface what the index withheld?"""
+    out = out if out is not None else sys.stdout
+    try:
+        with open(ledger, encoding="utf-8") as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+    except OSError as err:
+        print("NO RECALL LEDGER at %s -- %s." % (ledger, err), file=out)
+        print("That is no instrument, not a measured zero: this reads the "
+              "same as a month in which recall was never run.", file=out)
+        return 1
+    except ValueError as err:
+        print("RECALL LEDGER UNREADABLE at %s -- %s." % (ledger, err), file=out)
+        return 1
+
+    if not rows:
+        print("Recall ledger %s is empty: 0 recall(s) recorded." % ledger,
+              file=out)
+        return 0
+
+    found = [r for r in rows if r.get("hits")]
+    surfaced = [r for r in rows if r.get("archive_only")]
+    print("%d recall(s) recorded in %s, %s .. %s."
+          % (len(rows), ledger, rows[0].get("ts"), rows[-1].get("ts")),
+          file=out)
+    print("  %d found something, %d found nothing."
+          % (len(found), len(rows) - len(found)), file=out)
+    print("  %d surfaced at least one archive-only memory -- a fact the "
+          "index never handed the session." % len(surfaced), file=out)
+    by_cwd = {}
+    for row in rows:
+        by_cwd[row.get("cwd") or "?"] = by_cwd.get(row.get("cwd") or "?", 0) + 1
+    print("  by working directory (the only caller signal there is):",
+          file=out)
+    for cwd, n in sorted(by_cwd.items(), key=lambda kv: -kv[1]):
+        print("    %4d  %s" % (n, cwd), file=out)
+    return 0
+
+
+def report(terms, store=DEFAULT_STORE, require_all=True, full=5, out=None,
+           ledger=DEFAULT_LEDGER):
     out = out if out is not None else sys.stdout
     try:
         records = load(store)
@@ -164,6 +253,8 @@ def report(terms, store=DEFAULT_STORE, require_all=True, full=5, out=None):
     loaded = index_targets(store, LOADED_INDEX)
     archived = index_targets(store, ARCHIVE_INDEX)
     hits = search(records, terms, require_all)
+    archive_only = sum(1 for _, rec in hits if rec["file"] in archived)
+    record_use(terms, require_all, hits, archive_only, ledger, out)
 
     print("%d memory file(s) in %s; %d indexed in %s (loaded into every "
           "session), %d only in %s (loaded by nothing)."
@@ -204,7 +295,7 @@ def report(terms, store=DEFAULT_STORE, require_all=True, full=5, out=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("terms", nargs="+", help="search terms")
+    ap.add_argument("terms", nargs="*", help="search terms")
     ap.add_argument("--store", default=DEFAULT_STORE)
     ap.add_argument("--any", action="store_true",
                     help="match any term instead of all of them")
@@ -212,10 +303,19 @@ def main(argv=None):
                     help="how many hits to print in full (default 5)")
     ap.add_argument("--all", action="store_true",
                     help="print every hit in full")
+    ap.add_argument("--ledger", default=DEFAULT_LEDGER,
+                    help="where each recall is recorded (empty = do not record)")
+    ap.add_argument("--usage", action="store_true",
+                    help="report on the ledger instead of searching: was "
+                         "recall used, and did it surface archive-only facts")
     args = ap.parse_args(argv)
+    if args.usage:
+        return summarise_usage(ledger=args.ledger)
+    if not args.terms:
+        ap.error("give search terms, or --usage to read the ledger")
     terms = [t.lower() for t in args.terms]
     return report(terms, store=args.store, require_all=not args.any,
-                  full=None if args.all else args.full)
+                  full=None if args.all else args.full, ledger=args.ledger)
 
 
 if __name__ == "__main__":
