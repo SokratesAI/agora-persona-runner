@@ -38,6 +38,7 @@ would be putting a machine's guess into an append-only record that the owner
 reads as mine.
 """
 
+import json
 from datetime import datetime, timedelta
 
 from agora_runner.config import OSLO
@@ -354,7 +355,47 @@ def stalled_for(mtimes, now, minutes=HEARTBEAT_MINUTES):
     return int(elapsed.total_seconds() // (minutes * 60))
 
 
-def findings(paths, mtimes, now, minutes=HEARTBEAT_MINUTES, unreadable=()):
+#: Where `tools.cycle_postmortem` leaves the verdicts it has already settled.
+#: It caches them on the bridge pod's own disk as well, and that copy cannot
+#: be the one read here: the runner pod has no `/data` at all and its `$HOME`
+#: is recreated on every deploy (measured 2026-09-23, from `terminal_exec`).
+#: The vault is the only store both pods reach, so the answer travels through
+#: it or it does not travel.
+VERDICTS_PATH = (
+    "projects/sokrates/projects/agora/nova/resources/cycle-verdicts.json"
+)
+
+
+def read_verdicts(text):
+    """`{cycle number: verdict}` out of the JSON document, `{}` on anything else.
+
+    Deliberately total: a missing, empty or malformed document means this
+    line prints exactly what it printed before, which is a bare list of
+    numbers. An explanation that fails to load must never be able to
+    suppress the gap it was going to explain.
+    """
+    if not text:
+        return {}
+    try:
+        state = json.loads(text)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(state, dict):
+        return {}
+    out = {}
+    for key, row in state.items():
+        try:
+            number = int(key)
+        except (TypeError, ValueError):
+            continue
+        verdict = row.get("verdict") if isinstance(row, dict) else row
+        if isinstance(verdict, str) and verdict:
+            out[number] = verdict
+    return out
+
+
+def findings(paths, mtimes, now, minutes=HEARTBEAT_MINUTES, unreadable=(),
+             verdicts=None):
     """`{"entries": n, "missing": [...], "silent_intervals": n | None, "stalled": bool}`.
 
     `missing` is history and never shrinks; `stalled` is about right now.
@@ -379,6 +420,7 @@ def findings(paths, mtimes, now, minutes=HEARTBEAT_MINUTES, unreadable=()):
     silent = stalled_for(mtimes, now, minutes)
     return {
         "unreadable": list(unreadable),
+        "verdicts": dict(verdicts or {}),
         "entries": len(cycles_written(paths)),
         "missing": missing_cycles(paths),
         "silent_intervals": silent,
@@ -480,7 +522,7 @@ def gaps_since(paths, mtimes, since):
 
 
 def heartbeat_findings(paths, mtimes, now, since, minutes=HEARTBEAT_MINUTES,
-                       unreadable=()):
+                       unreadable=(), verdicts=None):
     """`findings`, but reporting only the gaps this run is the first to see.
 
     Same dict, same renderer (`describe`), one substitution -- the two
@@ -488,7 +530,7 @@ def heartbeat_findings(paths, mtimes, now, since, minutes=HEARTBEAT_MINUTES,
     stall and the blind-read are unchanged, because both are already
     statements about right now.
     """
-    report = findings(paths, mtimes, now, minutes, unreadable)
+    report = findings(paths, mtimes, now, minutes, unreadable, verdicts)
     report["missing"] = gaps_since(paths, mtimes, since)
     return report
 
@@ -577,12 +619,34 @@ def describe(report):
         # cadence that is about 60 a day: a three-week pause leaves roughly
         # 1,260 numbers this line would have called cycles that ran and
         # wrote nothing. They never started. Idea #335.
-        named = ", ".join(str(n) for n in missing)
+        # Idea #335: half of these numbers usually have a settled answer
+        # already, and printing them bare asks me to go and re-derive it.
+        # `tools.cycle_postmortem` judged them once and remembers; the
+        # verdict rides in on the report so the number carries its own
+        # explanation -- `2113 (failed)` is a run that died before it could
+        # work, which needs nothing from me, and a bare number is the only
+        # kind still worth a command.
+        verdicts = report.get("verdicts") or {}
+        named = ", ".join(
+            f"{n} ({verdicts[n]})" if n in verdicts else str(n)
+            for n in missing
+        )
+        unjudged = [n for n in missing if n not in verdicts]
+        if unjudged and len(unjudged) < len(missing):
+            advice = (
+                f" -- {len(unjudged)} of them are unjudged; "
+                "`python3 -m tools.cycle_postmortem` says which ran and "
+                "which never started"
+            )
+        elif unjudged:
+            advice = (" -- `python3 -m tools.cycle_postmortem` says which of "
+                      "them ran and which never started")
+        else:
+            advice = " -- all of them are already judged; nothing to re-derive"
         parts.append(
             f"{len(missing)} cycle number(s) have no journal entry: {named}"
             + (" (newest last)" if len(missing) > 1 else "")
-            + " -- `python3 -m tools.cycle_postmortem` says which of them "
-              "ran and which never started"
+            + advice
         )
     if report.get("stalled"):
         parts.append(
