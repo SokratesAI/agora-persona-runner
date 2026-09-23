@@ -360,6 +360,54 @@ def goal_discussions(markdown):
     return discussion_threads(parse_project_goals(markdown))
 
 
+def archived_rows():
+    """Every archived conversation in the store, by id.
+
+    The sweep above asks for `?active=true` on purpose -- an archived ask is
+    his "I am done with this" and clears the thread. A goal objective is not
+    an ask, though: `project-goals.md` writes the thread an objective was
+    argued in as a permanent citation, and archiving that thread does not
+    decide the key results underneath it. Until Cycle 2090 the two cases went
+    down the same path, so four projects with five undecided key results
+    printed as `CANNOT SEE THE THREAD ... nothing here can say whether he has
+    answered` -- which read as a broken instrument and was really a readable
+    thread he had closed. Both threads (`0af15d7d`, `3f42afbc`) answer
+    `/conversations/<id>/messages` in full today.
+
+    Costs one extra listing call, and only when something failed to resolve
+    against the active rows. Returns {} rather than raising when the listing
+    will not answer: an unresolved row then stays unresolved, which is the
+    honest reading and the behaviour that stood before.
+    """
+    status, body = agora_get("/conversations")
+    if status != 200:
+        return {}
+    return {str(row.get("id")): row
+            for row in (body or {}).get("conversations") or []
+            if row.get("id") and row.get("archived")}
+
+
+def _separate_archived(goals):
+    """Move every unresolved goal row that names an archived thread.
+
+    An archived goal thread is a finding with an action under it -- re-ask
+    those key results somewhere he will answer -- rather than a blindness, so
+    it is deliberately not counted as `blind` by `_reconcile`.
+    """
+    rows = archived_rows()
+    if not rows:
+        return
+    still, moved = [], goals.setdefault("archived", [])
+    for project, written, pending in goals["unresolved"]:
+        resolved = match_thread_id(written, rows)
+        if resolved is None:
+            still.append((project, written, pending))
+            continue
+        moved.append((project, written, pending, resolved,
+                      rows[resolved].get("name") or "(unnamed)"))
+    goals["unresolved"] = still
+
+
 def check(now=None, goals_markdown=None, goals_problem=None,
           goals_unreadable=None):
     """Returns (answered, waiting, silenced, settled, unreadable, elsewhere).
@@ -395,6 +443,7 @@ def check(now=None, goals_markdown=None, goals_problem=None,
     if goals_markdown or goals_problem or goals_unreadable:
         goals = {"problem": goals_problem, "unreadable": goals_unreadable,
                  "rows": goal_rows, "unargued": [], "unresolved": [],
+                 "archived": [],
                  "by_thread": {}}
     for project, written, pending in goal_rows if goals else ():
         if not written:
@@ -405,6 +454,8 @@ def check(now=None, goals_markdown=None, goals_problem=None,
             goals["unresolved"].append((project, written, pending))
             continue
         goals["by_thread"].setdefault(resolved, []).append((project, pending))
+    if goals and goals["unresolved"]:
+        _separate_archived(goals)
 
     by_thread = goals["by_thread"] if goals else {}
     for cid, row in rows_by_id.items():
@@ -491,16 +542,25 @@ def _reconcile(goals, out):
     instrument rather than no answer.
     """
     if goals is None:
-        return "", False
+        return "", False, False
     if goals.get("problem"):
         # The vault client is simply absent on the runner pod; say so and do
         # not raise, the same call `nas_health` makes.
         print(f"CANNOT SEE THE GOALS — {goals['problem']}", file=out)
-        return " Goals not read, so nothing here reconciles against them.", False
+        return (" Goals not read, so nothing here reconciles "
+                "against them."), False, False
     if goals.get("unreadable"):
         print(f"COULD NOT READ THE GOALS — {goals['unreadable']}", file=out)
-        return " Goals unreadable.", True
+        return " Goals unreadable.", True, False
 
+    for project, written, pending, cid, name in goals.get("archived", ()):
+        print(f"ARCHIVED GOAL THREAD — {project}", file=out)
+        print(f"  its objective names {written}, which is {cid} — you have "
+              f"archived it, so it is off the active listing and off your "
+              f"screen; {pending} key result(s) under it are still undecided. "
+              f"Readable in full ({name!r}); answering it where it is would "
+              "not reach you, so re-ask those key results in a live thread.",
+              file=out)
     for project, written, pending in goals.get("unresolved", ()):
         print(f"CANNOT SEE THE THREAD — {project}", file=out)
         print(f"  its objective names {written}, which the active "
@@ -518,9 +578,11 @@ def _reconcile(goals, out):
     judged = len(goals.get("by_thread", {}))
     clause = (f" Of {undecided} project(s) still discussing their goals, "
               f"{judged} thread(s) were judged above, "
-              f"{len(goals.get('unargued', ()))} are argued nowhere and "
+              f"{len(goals.get('unargued', ()))} are argued nowhere, "
+              f"{len(goals.get('archived', ()))} name a thread you have "
+              f"archived and "
               f"{len(goals.get('unresolved', ()))} name a thread I cannot see.")
-    return clause, bool(goals.get("unresolved"))
+    return clause, bool(goals.get("unresolved")), bool(goals.get("archived"))
 
 
 def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
@@ -570,7 +632,7 @@ def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
         print("  Read that thread before writing that he is silent — the "
               "answer to an ask of mine has landed there before.", file=out)
 
-    reconcile, blind = _reconcile(goals, out)
+    reconcile, blind, stranded = _reconcile(goals, out)
 
     if unreadable:
         print(f"Could not read {len(unreadable)} open ask(s) — that is no "
@@ -595,7 +657,7 @@ def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
     print(f"Nothing he answered is sitting unread; {len(waiting)} open ask(s) "
           f"still waiting on him and {len(settled)} answered and closed "
           f"out.{reconcile}", file=out)
-    return 0
+    return 2 if stranded else 0
 
 
 #: How long an ask of mine may wait on him before it is worth a Telegram

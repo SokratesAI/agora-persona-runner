@@ -25,7 +25,10 @@ def _fake_get(listing, threads, calls=None):
     def get(path):
         if calls is not None:
             calls.append(path)
-        if path.startswith("/conversations?"):
+        if path == "/conversations" or path.startswith("/conversations?"):
+            # The bare path is the full listing, archived rows included;
+            # `?active=true` is the one the sweep uses. The fake serves the
+            # same rows to both and lets ask_watch do its own filtering.
             return 200, {"conversations": listing}
         cid = path.split("/conversations/")[1].split("/")[0]
         status, body = threads[cid]
@@ -568,7 +571,10 @@ def test_a_goal_thread_posted_in_quiet_hours_never_reached_his_phone(monkeypatch
 
 
 def test_a_thread_the_listing_does_not_carry_is_no_instrument(monkeypatch):
-    """Archived, deleted or renamed away — the one thing that must not read 0."""
+    """Deleted or renamed away — the one thing that must not read 0.
+
+    Archived is no longer in this bucket; see the two tests below.
+    """
     code, text = _goal_run(monkeypatch, [_plain("ffffffff-0000-0000-0000-000000000000")],
                            {"ffffffff-0000-0000-0000-000000000000": (
                                200, {"messages": [_msg("Nova")]})})
@@ -744,3 +750,52 @@ def test_preflight_does_not_page_on_a_waiting_ask():
     # him about it (his Telegram reply, 2026-09-21).
     from tools import preflight
     assert "--notify" not in preflight.CHECK_ARGS.get("ask_watch", [])
+
+
+def _archived(cid, name="Manual feedback & improvements"):
+    return {"id": cid, "name": name, "tags": [], "archived": True}
+
+
+def test_a_goal_thread_he_archived_is_named_rather_than_unseeable(monkeypatch):
+    """The four projects this was written for, in miniature.
+
+    `?active=true` drops an archived conversation, which is right for an ask
+    -- archiving it is his "I am done with this". A goal objective is a
+    citation rather than an ask, so archiving the thread does not decide the
+    key results under it, and printing "nothing here can say whether he has
+    answered" made a readable thread look like a broken instrument.
+    """
+    code, text = _goal_run(
+        monkeypatch, [_archived("0af15d7d-0000-0000-0000-000000000000")], {})
+    assert code == 2
+    assert "ARCHIVED GOAL THREAD — Cycles" in text
+    assert "0af15d7d-0000-0000-0000-000000000000" in text
+    assert "1 key result(s) under it are still undecided" in text
+    assert "CANNOT SEE THE THREAD" not in text
+    assert "1 name a thread you have archived" in text
+
+
+def test_an_archived_goal_thread_raises_on_its_own(monkeypatch):
+    """With no open ask anywhere, this is the only thing left to report.
+
+    It must not come back 0: five key results stranded in threads off his
+    screen is exactly the silence this check exists to break.
+    """
+    code, text = _goal_run(
+        monkeypatch, [_archived("0af15d7d-0000-0000-0000-000000000000")], {})
+    assert code == 2
+    assert "Nothing he answered is sitting unread" in text
+
+
+def test_the_full_listing_is_only_asked_for_when_something_failed(monkeypatch):
+    """One extra call, and only on the path that needs it."""
+    calls = []
+    monkeypatch.setattr(ask_watch, "agora_get", _fake_get(
+        [_plain("0af15d7d-0000-0000-0000-000000000000")],
+        {"0af15d7d-0000-0000-0000-000000000000": (
+            200, {"messages": [_msg("Nova")]})}, calls))
+    out = io.StringIO()
+    ask_watch.report(*ask_watch.check(now=NOW, goals_markdown=GOALS),
+                     out=out, now=NOW)
+    assert "/conversations" not in calls
+    assert "/conversations?active=true" in calls
