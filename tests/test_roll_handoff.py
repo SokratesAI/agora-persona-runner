@@ -13,6 +13,8 @@ import pytest
 
 from agora_runner.nova_handoff import (
     ARCHIVE_TITLE,
+    PIN_MARKER,
+    is_pinned,
     archive_retired,
     item_slug,
     live_items,
@@ -738,3 +740,101 @@ def test_a_slugged_item_citing_no_cycle_stops_being_immortal():
     item = "**[quiet-finding-2000]** No citation anywhere in this prose."
     assert newest_cycle(item) == 2000
     assert roll_handoff.select_older_than([item], 2071) == [0]
+
+
+# --- the pin -------------------------------------------------------------
+#
+# These four use the real text of the two standing items the age roll
+# retired on cycles 2084, 2100, 2103 and 2105, copied off the live
+# handoff rather than paraphrased. A fixture I write myself would date
+# the way I expect it to; the failure was that real prose dates itself
+# by whatever cycle it happens to quote, and only the real prose has
+# that property.
+
+STANDING_WAKE = (
+    "**READ THIS FIRST — no slug on purpose, so no roll can retire it.** "
+    "**If today's date in Oslo is later than 2026-09-23, you are the first "
+    "cycle after the pause — do not work down this list.** ... **Cycle 2084 "
+    "re-added this after the age roll retired it** — it carried the slug "
+    "`[read-this-first-if-you-just-woke-2074]`, cited only cycle 2074, and "
+    "`--retire-older-than-digest` cut at 2075 on the very next roll."
+)
+
+STANDING_BACKUP = (
+    "**INSTRUCTION FOR THE FIRST CYCLE AFTER 21:05 OSLO TONIGHT, and there "
+    "will be several before the 01:00 pause: run `python3 -m "
+    "tools.backup_health` and read the `sokrates-post-backup` line.** "
+    "<!-- first seen: cycle 2087 -->"
+)
+
+
+def test_the_two_standing_items_are_retired_by_age_without_a_pin():
+    # The bug, reproduced. Both cite only old cycles -- 2074 and 2087 --
+    # so the age rule dates them there and cuts them, and neither is
+    # protected by having no slug: `STANDING_WAKE` deliberately carries
+    # none and is selected anyway. A fix whose test does not first show
+    # this is testing the fix rather than the failure.
+    items = [STANDING_WAKE, STANDING_BACKUP]
+    assert item_slug(STANDING_WAKE) is None
+    assert newest_cycle(STANDING_WAKE) == 2084
+    assert newest_cycle(STANDING_BACKUP) == 2087
+    assert roll_handoff.select_older_than(items, 2094) == [0, 1]
+
+
+def test_a_pinned_item_survives_the_age_roll():
+    items = [STANDING_WAKE + " " + PIN_MARKER, STANDING_BACKUP + " " + PIN_MARKER]
+    assert [is_pinned(i) for i in items] == [True, True]
+    assert roll_handoff.select_older_than(items, 2094) == []
+
+
+def test_a_pin_does_not_protect_the_item_beside_it():
+    # The pin is per item, not a mode the file goes into. An ordinary
+    # stale finding sitting next to a pinned instruction still rolls --
+    # otherwise the first pin written would disconnect the only
+    # automatic brake this section has, which is the failure
+    # `stamp_unseen` exists to remember.
+    stale = "**[an-ordinary-finding-2001]** Cycle 2001 measured it; done."
+    items = [STANDING_WAKE + " " + PIN_MARKER, stale]
+    assert roll_handoff.select_older_than(items, 2094) == [1]
+
+
+def test_a_pinned_item_is_still_retirable_by_hand():
+    # `--retire <slug>` is a person naming one thing on purpose, which is
+    # how a pin is meant to end. Blocking that would make a pin
+    # permanent and the section would fill with instructions nobody can
+    # remove without editing the file by hand.
+    pinned = "**[done-instruction-2087]** Carried out. " + PIN_MARKER
+    live = _live("## Next cycle\n\n" + pinned + "\n")
+    assert select_slugs(live_items(live), ["done-instruction-2087"]) == [0]
+
+
+def test_the_roll_names_every_pin_it_kept(capsys, tmp_path):
+    # A pin nobody is reminded of is the same failure as no pin: the
+    # section fills with instructions that were true in September and
+    # nothing asks whether they still are. So the CLI prints them on
+    # every age roll, including a roll that then moves nothing.
+    live = tmp_path / "live.md"
+    archive = tmp_path / "archive.md"
+    live.write_text(
+        "## Next cycle\n\n"
+        + STANDING_BACKUP
+        + " "
+        + PIN_MARKER
+        + "\n\n## Digest\n\n**Cycle 2094** (2026-09-23 14:36) — did a thing.\n"
+    )
+    archive.write_text("")
+    roll_handoff.main(
+        [
+            "--live",
+            str(live),
+            "--archive",
+            str(archive),
+            "--retire-older-than-digest",
+            "--max-age-minutes",
+            "0",
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "pinned: 1 item(s) the age rule will not retire" in out
+    assert "INSTRUCTION FOR THE FIRST CYCLE AFTER 21:05" in out

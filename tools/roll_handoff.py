@@ -30,6 +30,7 @@ from agora_runner.nova_handoff import (  # noqa: F401 -- re-exported for callers
     archive_older_than,
     archive_retired,
     explain_none_older_than,
+    is_pinned,
     item_slug,
     oldest_digest_cycle,
     select_older_than,
@@ -150,6 +151,21 @@ def main(argv=None):
                     f"stamped {stamped} undated item(s) as first seen at "
                     f"cycle {stamp_at}; they age out a window from now"
                 )
+
+        # Say out loud what the age rule will not touch, on every roll and
+        # before it runs. A pin that nobody is reminded of is the same
+        # failure as no pin: the section fills up with instructions that
+        # were true in September and nothing ever asks whether they still
+        # are. This prints even when the roll then moves nothing.
+        pinned = [item for item in items if is_pinned(item)]
+        if pinned:
+            print(
+                f"pinned: {len(pinned)} item(s) the age rule will not "
+                "retire, whatever their age -- retire one by hand with "
+                "--retire '<slug>' when it is done"
+            )
+            for item in pinned:
+                print(f"  pinned: {' '.join(item.split())[:120]}")
 
         rolled = archive_older_than(live, archive, cutoff, today)
         if rolled is None:

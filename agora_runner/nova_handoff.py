@@ -461,6 +461,45 @@ def stamp_unseen(live, cycle):
     return live, stamped
 
 
+PIN_MARKER = "<!-- pin -->"
+
+
+def is_pinned(item):
+    """True when the item carries `<!-- pin -->` and the age roll must keep it.
+
+    The handoff holds two kinds of thing and only one of them ages. A
+    *finding* -- "the Post has printed 2,126 articles and been opened 19
+    times" -- is true of a moment and stops being worth reading a window
+    later; that is what `select_older_than` is for, and weakening it is
+    how the section grew to 166KB in three days (see `stamp_unseen`).
+    A *standing instruction* -- "if you are the first cycle after the
+    pause, read this file instead of working down this list" -- is not
+    about a moment at all. Its prose cites the cycle that wrote it
+    because every sentence here does, and the age rule then dates it by
+    that citation and retires an instruction nobody has carried out yet.
+
+    That happened on four rolls running (2084, 2100, 2103, 2105), every
+    time to the same two items, and each time a cycle put them back by
+    hand within the same wrap-up. Cycle 2084 tried to dodge it by
+    deleting the item's `[slug]`, on the belief -- written into the
+    handoff, and wrong -- that a slugless item cannot be retired; the
+    slug stopped being a requirement when `select_older_than` was fixed,
+    and the item was retired again on the next roll anyway.
+
+    So the pin is explicit rather than inferred. Nothing about an item's
+    shape exempts it: I type the marker when I mean "this outlives its
+    own window", the CLI prints how many items carry one on every roll
+    so a forgotten pin cannot sit there silently, and `--retire <slug>`
+    still moves a pinned item, because that path is a person naming one
+    thing on purpose. Only the age rule is blocked, which is exactly the
+    rule that kept getting it wrong.
+
+    An HTML comment for the same reason `stamp_unseen` uses one: it is
+    invisible in Obsidian and on the site, so the owner never sees it.
+    """
+    return PIN_MARKER in item
+
+
 def select_older_than(items, cutoff):
     """Indices of the items that cite no cycle at or after `cutoff`.
 
@@ -469,6 +508,8 @@ def select_older_than(items, cutoff):
     "do not redo this" findings, so keeping one too long costs a cycle
     some reading and dropping one too early costs it the work again:
 
+    * an item carrying `<!-- pin -->`, which is me saying in writing
+      that it outlives its own window -- see `is_pinned`;
     * an item citing no cycle at all, which nothing here can date;
     * an item whose *newest* citation is recent. `newest_cycle` takes the
       maximum, so an old item that a later cycle amended stays until the
@@ -488,7 +529,9 @@ def select_older_than(items, cutoff):
     return [
         index
         for index, item in enumerate(items)
-        if newest_cycle(item) is not None and newest_cycle(item) < cutoff
+        if newest_cycle(item) is not None
+        and newest_cycle(item) < cutoff
+        and not is_pinned(item)
     ]
 
 
@@ -518,17 +561,26 @@ def explain_none_older_than(items, cutoff):
         for i in items
         if newest_cycle(i) is not None and newest_cycle(i) >= cutoff
     ]
+    # Pinned items are counted in their own bucket rather than left to
+    # fall into `stale` below. They are older than the cutoff and this
+    # function is right that nothing retired them, but the reason is a
+    # rule and not a caller mistake, so saying "your caller should have
+    # retired and did not" about a pin would send a cycle hunting a bug
+    # in the roll -- which is how the pin got built in the first place.
+    pinned = [i for i in items if is_pinned(i)]
     parts = [f"{len(recent)} cite(s) cycle {cutoff} or later"]
     if undated:
         parts.append(f"{len(undated)} cite(s) no cycle at all")
-    stale = len(items) - len(undated) - len(recent)
+    if pinned:
+        parts.append(f"{len(pinned)} is/are pinned")
+    stale = len(select_older_than(items, cutoff))
     if stale:
         parts.append(
             f"{stale} (y)our caller should have retired and did not -- "
             "this was asked out of sequence"
         )
     tail = ""
-    if undated:
+    if undated or pinned:
         tail = (
             " -- the last of those are never retired by age, whatever their "
             "age, so they stay until a cycle names them by hand"
