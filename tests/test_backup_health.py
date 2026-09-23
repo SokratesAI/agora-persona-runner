@@ -688,3 +688,22 @@ def test_neither_observability_volume_is_also_declared_as_backed_up():
     declared = {b.covers for b in BACKUPS} | {b.covers for b in bh.NAS_BACKUPS}
     assert "infra/prometheus-data" not in declared
     assert "infra/tempo-data" not in declared
+
+
+def test_no_claim_is_both_backed_up_and_acknowledged():
+    """A claim in both lists reads as covered twice and is judged by whichever
+    branch the report reaches first. It is also how an acknowledgement outlives the
+    measurement under it: `agents/lyceum-data` is acknowledged because a read-only
+    `du` Job measured it empty, and the day something writes there it needs a job
+    and the entry has to go, not sit beside one."""
+    covered = {b.covers for b in BACKUPS} | {b.covers for b in bh.NAS_BACKUPS}
+    assert covered.isdisjoint(ACKNOWLEDGED), covered & set(ACKNOWLEDGED)
+
+
+def test_the_two_volumes_that_were_unprotected_are_each_accounted_for_once():
+    """2026-09-23, before the pause: `backup_health` exited 2 on exactly these two.
+    One got a job and one got an acknowledgement, and this is what stops either
+    decision from being quietly dropped by a later edit to a registry above."""
+    covered = {b.covers for b in BACKUPS} | {b.covers for b in bh.NAS_BACKUPS}
+    assert "agents/sokrates-post-data" in covered
+    assert "agents/lyceum-data" in ACKNOWLEDGED
