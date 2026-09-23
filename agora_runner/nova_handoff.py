@@ -187,9 +187,42 @@ def item_slug(item):
     return match.group("slug") if match else None
 
 
+def slug_cycle(item):
+    """The cycle number in the item's own `[slug]`, or None.
+
+    Every slug this loop writes ends in the cycle that wrote the item --
+    `[post-user-agent-fixed-2081]` -- so this is the item's own stamp
+    rather than something its prose happens to mention. `_CYCLE_RE` does
+    not see it: it needs the literal word `cycle` before the number, and
+    a slug carries a hyphen there.
+    """
+    slug = item_slug(item)
+    if slug is None:
+        return None
+    match = re.search(r"-(?P<n>\d+)\Z", slug)
+    return int(match.group("n")) if match else None
+
+
 def newest_cycle(item):
-    """The highest cycle number the item cites, or None if it cites none."""
+    """The newest cycle the item is dated by: its slug, or its prose.
+
+    The maximum of the two, not the slug alone, and the difference is
+    the whole point of taking both. An item's slug carries the cycle
+    that *wrote* it and its prose can carry a later cycle that *amended*
+    it, so preferring either one on its own loses the other -- and
+    losing it means retiring an item early, which `select_older_than`
+    explains is the expensive direction.
+
+    Reading the slug at all is the fix for a real retirement. Until
+    2026-09-23 this read the prose only, so an item whose body cited a
+    cycle older than its own -- quoting an earlier finding as evidence,
+    which is the normal way to write one -- was dated by the thing it
+    quoted and retired on the run that wrote it.
+    """
     numbers = [int(m.group("n")) for m in _CYCLE_RE.finditer(item)]
+    from_slug = slug_cycle(item)
+    if from_slug is not None:
+        numbers.append(from_slug)
     return max(numbers) if numbers else None
 
 

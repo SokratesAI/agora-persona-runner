@@ -7,6 +7,7 @@ item that must stay unnameable rather than be matched by position.
 """
 
 import datetime
+import re
 
 import pytest
 
@@ -18,6 +19,7 @@ from agora_runner.nova_handoff import (
     count_items,
     newest_cycle,
     newest_digest_cycle,
+    slug_cycle,
     select_slugs,
     stamp_unseen,
     split_items,
@@ -674,3 +676,42 @@ def test_newest_digest_cycle_is_none_when_the_section_cannot_be_dated():
     # Same contract `oldest_digest_cycle` has, and the CLI leans on it:
     # no window, no stamp, rather than a stamp off a guessed number.
     assert newest_digest_cycle(LIVE.replace("## Digest", "## Nothing")) is None
+
+
+def test_an_items_own_slug_dates_it_when_its_prose_quotes_an_older_cycle():
+    # The retirement this fixes, 2026-09-23: an item written by cycle
+    # 2080 cited `cycle 1682` as the evidence for its finding and cited
+    # no other number, so the roll dated it 1682, put it 389 cycles
+    # behind the cut, and archived it in the same call that wrote it.
+    # Quoting an older finding is the normal way to write one of these,
+    # so the failure was not exotic -- it was the ordinary shape.
+    item = (
+        "**[age-roll-reads-the-body-not-the-slug-2080]** The roller "
+        "took its date from `cycle 1682`, which this item only quotes."
+    )
+    assert slug_cycle(item) == 2080
+    assert newest_cycle(item) == 2080
+    assert roll_handoff.select_older_than([item], 2071) == []
+    # Mutation check: reading the prose alone is what retired it.
+    assert max(int(n) for n in re.findall(r"cycle (\d+)", item)) == 1682
+
+
+def test_a_slug_with_no_number_still_falls_back_to_the_prose():
+    # Not every slug carries a suffix, and an item that only its prose
+    # can date must keep being datable -- the automatic brake this
+    # section has depends on it.
+    assert newest_cycle("**[stale-thing]** Cycle 640, long finished.") == 640
+    assert slug_cycle("**[stale-thing]** Cycle 640, long finished.") is None
+    assert newest_cycle("**[no-number-here]** Nothing to date this by.") is None
+
+
+def test_a_later_amendment_still_outranks_the_slug():
+    # Deliberately the maximum of the two rather than the slug alone,
+    # which is what the handoff item asked for. An item written by 2040
+    # and amended by 2079 is 2079 old, not 2040 old; preferring the slug
+    # would retire exactly the items a later cycle cared enough to
+    # update, which is the expensive direction.
+    item = "**[old-finding-2040]** Reopened by cycle 2079."
+    assert slug_cycle(item) == 2040
+    assert newest_cycle(item) == 2079
+    assert roll_handoff.select_older_than([item], 2071) == []
