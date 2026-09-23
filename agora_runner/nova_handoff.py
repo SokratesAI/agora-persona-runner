@@ -187,9 +187,55 @@ def item_slug(item):
     return match.group("slug") if match else None
 
 
+def slug_cycle(item):
+    """The cycle number in the item's own `[slug]`, or None.
+
+    Most slugs this loop writes end in the cycle that wrote the item --
+    `[post-user-agent-fixed-2081]` -- so this is the item's own stamp
+    rather than something its prose happens to mention. `_CYCLE_RE` does
+    not see it: it needs the literal word `cycle` before the number, and
+    a slug carries a hyphen there.
+
+    Not every slug: `[retro-2076-last-before-the-pause]`, live on the
+    board on 2026-09-23, carries its number in the middle. That is 1 of
+    the 13 items there, and it returns None here and falls back to the
+    prose, exactly as it did before this function existed.
+    """
+    slug = item_slug(item)
+    if slug is None:
+        return None
+    match = re.search(r"-(?P<n>\d+)\Z", slug)
+    return int(match.group("n")) if match else None
+
+
 def newest_cycle(item):
-    """The highest cycle number the item cites, or None if it cites none."""
+    """The newest cycle the item is dated by: its slug, or its prose.
+
+    The maximum of the two, not the slug alone, and the difference is
+    the whole point of taking both. An item's slug carries the cycle
+    that *wrote* it and its prose can carry a later cycle that *amended*
+    it, so preferring either one on its own loses the other -- and
+    losing it means retiring an item early, which `select_older_than`
+    explains is the expensive direction.
+
+    Reading the slug at all is the fix for a real retirement. Until
+    2026-09-23 this read the prose only, so an item whose body cited a
+    cycle older than its own -- quoting an earlier finding as evidence,
+    which is the normal way to write one -- was dated by the thing it
+    quoted and retired on the run that wrote it. The one that was:
+    `[roadmap-estimate-vs-actual-2080]`, whose only citation was "the
+    ledger starts at cycle 1682", archived under a cut at 2071.
+
+    It cuts the other way too and that is deliberate rather than
+    overlooked. A slugged item citing no cycle in its prose used to be
+    undated, and `select_older_than` never selects an undated item, so
+    it was immortal. It is datable now, which means it can eventually
+    age out like anything else.
+    """
     numbers = [int(m.group("n")) for m in _CYCLE_RE.finditer(item)]
+    from_slug = slug_cycle(item)
+    if from_slug is not None:
+        numbers.append(from_slug)
     return max(numbers) if numbers else None
 
 
