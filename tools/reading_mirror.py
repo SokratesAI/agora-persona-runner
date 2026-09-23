@@ -118,7 +118,12 @@ def plan(client, now_ms, settle_minutes=SETTLE_MINUTES):
     todo = []
     for doc_id in sorted(sources):
         name = doc_id[len(SOURCE_PREFIX):]
-        if "/" in name or not name.endswith(".md") or name in EXCLUDED:
+        # Subfolders are mirrored at the same relative path. They used to be
+        # dropped by a bare `"/" in name`, silently: on 2026-09-23 the only
+        # document in one -- the shared-chat PR-FAQ under `resources/research/`
+        # -- was unreadable in Obsidian and nothing in the report said so,
+        # four hours before a month with no cycles to notice.
+        if not name.endswith(".md") or name in EXCLUDED:
             continue
         todo.append((name, SOURCE_PREFIX + name,
                      sources[doc_id].get("mtime"), settle_minutes))
