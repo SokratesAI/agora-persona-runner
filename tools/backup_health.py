@@ -285,6 +285,34 @@ NAS_BACKUPS = (
             "line moves with it or the job dies on 'found 0 directories'."
         ),
     ),
+    NasBackup(
+        name="sokrates-post-backup",
+        covers="agents/sokrates-post-data",
+        prefix="agents_sokrates-post-data-",
+        schedule="nightly at 21:05 Oslo",
+        # One nightly run plus two, the same derivation as agora-backup: a single
+        # skipped run must read as stale, and the run itself takes seconds.
+        stale_after_hours=26,
+        # The same case as the Telegram state above, and for the same reason: the
+        # volume was 8.2 KB when the job was written and `events.jsonl` held one
+        # row, so a floor derived from it would fail a volume that is perfectly
+        # fine on any quiet week. This one only has to sit above the gzip floor of
+        # an empty directory. What judges the contents is the CronJob's own
+        # REQUIRE_FILES=events.jsonl, which refuses to ship a log the app has
+        # recreated empty on a fresh disk -- the failure a byte floor cannot see.
+        min_bytes=120,
+        subject=(
+            "the Post's reading log -- every article the owner opened, and the "
+            "only record of it anywhere"
+        ),
+        fix=(
+            "Read the CronJob's pods: kubectl logs -n agents "
+            "job/sokrates-post-backup-<n>. The volume is bound on server1 and the "
+            "job carries a nodeSelector to match; if the claim is moved, that "
+            "line moves with it or the job dies on 'found 0 directories'. An "
+            "ABORT naming events.jsonl is the log gone or emptied, not the job."
+        ),
+    ),
 )
 
 #: How far the NAS's own clock may sit from this one before every age below is a
@@ -303,6 +331,14 @@ ACKNOWLEDGED = {
     "agents/sokrates-docs-data": (
         "measured at 0 bytes, 0 files by a read-only Job on server1 (Cycle 872) "
         "before it was moved to server2"
+    ),
+    "agents/lyceum-data": (
+        "measured at 4.1 KB by a read-only `du` Job on server2 (Cycle 2086, "
+        "2026-09-23) -- the directory exists and holds nothing. Lyceum mounts it "
+        "as DATA_DIR and keeps its state in Agora instead, so there is no file "
+        "here to lose. If Lyceum ever writes to this disk, this entry is wrong "
+        "and the volume needs a job: re-measure with `tools.volume_size` rather "
+        "than trusting this line"
     ),
     "agents/data-redis-0": (
         "one 14-member sorted set whose newest entry is dated 2026-05-12, with no "
