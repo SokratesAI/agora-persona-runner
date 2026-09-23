@@ -38,11 +38,41 @@ def test_backup_records_reads_the_record_folder(tmp_path):
     assert vault_restore.backup_records(root, "no_such_db") == []
 
 
-def test_live_database_needs_the_explicit_flag(tmp_path):
-    root = _tree(tmp_path)
+@pytest.mark.parametrize(
+    "db",
+    [
+        "obsidian",             # a live database the constant happens to name
+        "_users",               # CouchDB's own credential store, which it never named
+        "_replicator",
+        "obsidian_restored",    # a name nobody has thought of yet
+    ],
+)
+def test_any_database_but_the_drill_needs_the_explicit_flag(db):
+    """The guard is an allowlist of one, not a denylist of seven.
+
+    It was the other way round when this tool was opened. `_users` and
+    `obsidian_restored` both pass a denylist and both must be refused here;
+    if either stops failing, the guard has gone back to enumerating live
+    databases, and the one that holds every credential in the estate is
+    unguarded again.
+    """
     with pytest.raises(SystemExit) as exc:
-        vault_restore.main(["--backup", str(root), "--db", "obsidian"])
-    assert "live database" in str(exc.value)
+        vault_restore.check_target(db, False)
+    assert "--i-mean-it" in str(exc.value)
+    assert db in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "db,i_mean_it",
+    [
+        (vault_restore.DRILL_DB, False),   # the scratch database, always allowed
+        ("obsidian", True),                # a live one, but asked for on purpose
+        (None, False),                     # a drill run, which names no --db at all
+    ],
+)
+def test_what_the_guard_lets_through(db, i_mean_it):
+    """The positive control. Without it, a guard that refuses everything passes."""
+    assert vault_restore.check_target(db, i_mean_it) is None
 
 
 def test_a_target_is_required(tmp_path):

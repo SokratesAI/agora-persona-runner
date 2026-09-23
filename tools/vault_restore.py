@@ -22,7 +22,7 @@ Drill it against a scratch database, never a live one::
 `--drill` creates `nova_restore_drill`, restores a sample of files and
 records into it, reads every one back through the same client, compares
 bytes, prints a rate, and deletes the database again. It refuses to write
-to `obsidian`, `nova` or any other live database unless `--db` names one
+to any database other than that scratch one unless `--db` names it
 explicitly *and* `--i-mean-it` is passed, because the failure this guards
 against is a half-restore over live data that nobody asked for.
 """
@@ -36,11 +36,17 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 BRIDGE_VAULT_TOOL = "/app/bridge/vault_tool.py"
 DRILL_DB = "nova_restore_drill"
+# Only used to make the refusal below louder. It is deliberately NOT what
+# decides the refusal: a hardcoded list of live databases goes stale the day
+# somebody adds one, and it never held CouchDB's own `_users`, `_replicator`
+# and `_global_changes` at all -- a restore into `_users` would take the
+# credentials out from under every client in the estate.
 LIVE_DBS = {"obsidian", "nova", "lyceum", "marcus", "newspaper", "nova_tickets", "claude-config"}
 
 
@@ -169,6 +175,27 @@ def verify_records(files, db):
     return bad
 
 
+def check_target(db, i_mean_it):
+    """Refuse any database but the drill's own unless `--i-mean-it` is passed.
+
+    An allowlist of one, deliberately, and it was a denylist of seven when
+    this tool was written. A list of live databases goes stale the day
+    somebody adds one, and that list never held CouchDB's own `_users`,
+    `_replicator` or `_global_changes` -- so a restore into the database
+    that holds every credential in the estate was a single unguarded
+    command. Nothing here needs to know which databases are live; it only
+    needs to know which one is the scratch one.
+    """
+    if not db or db == DRILL_DB or i_mean_it:
+        return
+    named = " It is one of this estate's live databases." if db in LIVE_DBS else ""
+    raise SystemExit(
+        f"--db {db} is not the drill's own {DRILL_DB}.{named} A half-restore over "
+        "live data is worse than no restore. Pass --i-mean-it if that is genuinely "
+        "what you want."
+    )
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--backup", default="/tmp/vault-backup",
@@ -181,7 +208,7 @@ def main(argv=None):
                     help="record database to sample in a drill")
     ap.add_argument("--db", help="restore into this database for real")
     ap.add_argument("--i-mean-it", action="store_true",
-                    help="required with --db when --db names a live database")
+                    help="required with any --db other than the drill database")
     args = ap.parse_args(argv)
 
     root = Path(args.backup)
@@ -190,11 +217,7 @@ def main(argv=None):
 
     if not args.drill and not args.db:
         raise SystemExit("pass --drill (safe) or --db <name> (writes).")
-    if args.db and args.db in LIVE_DBS and not args.i_mean_it:
-        raise SystemExit(
-            f"{args.db} is a live database. A half-restore over live data is worse "
-            "than no restore. Pass --i-mean-it if that is genuinely what you want."
-        )
+    check_target(args.db, args.i_mean_it)
 
     db = DRILL_DB if args.drill else args.db
     all_files = list(backup_files(root))
