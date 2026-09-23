@@ -685,9 +685,12 @@ def test_an_items_own_slug_dates_it_when_its_prose_quotes_an_older_cycle():
     # behind the cut, and archived it in the same call that wrote it.
     # Quoting an older finding is the normal way to write one of these,
     # so the failure was not exotic -- it was the ordinary shape.
+    # This is the archived text of the item that was retired, shortened:
+    # `[roadmap-estimate-vs-actual-2080]`, whose only citation was the
+    # ledger's own start.
     item = (
-        "**[age-roll-reads-the-body-not-the-slug-2080]** The roller "
-        "took its date from `cycle 1682`, which this item only quotes."
+        "**[roadmap-estimate-vs-actual-2080]** Every number there is a "
+        "FLOOR -- the ledger starts at cycle 1682 (2026-09-16)."
     )
     assert slug_cycle(item) == 2080
     assert newest_cycle(item) == 2080
@@ -715,3 +718,23 @@ def test_a_later_amendment_still_outranks_the_slug():
     assert slug_cycle(item) == 2040
     assert newest_cycle(item) == 2079
     assert roll_handoff.select_older_than([item], 2071) == []
+
+
+def test_a_number_in_the_middle_of_a_slug_is_not_a_stamp():
+    # `[retro-2076-last-before-the-pause]` was live on the board on
+    # 2026-09-23, 1 of 13 items, and its number is not the suffix. Only
+    # a trailing number is the item's own stamp; anything else in a slug
+    # is a word that happens to be a number, so this falls back to the
+    # prose the way it did before `slug_cycle` existed.
+    item = "**[retro-2076-last-before-the-pause]** The fourteenth one."
+    assert slug_cycle(item) is None
+    assert newest_cycle(item) is None
+
+
+def test_a_slugged_item_citing_no_cycle_stops_being_immortal():
+    # The fix cuts both ways. `select_older_than` never selects an
+    # undated item, so before this an item whose prose cited nothing
+    # could not be retired at all, however old. Its slug dates it now.
+    item = "**[quiet-finding-2000]** No citation anywhere in this prose."
+    assert newest_cycle(item) == 2000
+    assert roll_handoff.select_older_than([item], 2071) == [0]
