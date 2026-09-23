@@ -99,3 +99,11 @@ def test_full_bound_lists_every_hit_and_prints_only_the_top_n(tmp_path):
     # ...but only two bodies are printed, and the report says so.
     assert text.count("=====") == 4  # two headers, each with two ===== runs
     assert "2 more hit(s) listed above without their text" in text
+
+
+def test_a_capitalised_term_still_matches(tmp_path):
+    store = str(tmp_path)
+    write(store, "one.md", "about kubernetes", "x")
+    out = io.StringIO()
+    mr.report(["Kubernetes"], store=store, out=out)
+    assert "one.md" in out.getvalue()

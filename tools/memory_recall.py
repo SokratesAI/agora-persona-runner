@@ -124,7 +124,10 @@ def score(record, terms, require_all=True):
     body = record["body"].lower()
     total = 0
     matched = 0
-    for term in terms:
+    # Lower here rather than trusting the caller: `main` already lowers, and a
+    # direct `report(["Kubernetes"])` that silently matched nothing would be a
+    # negative guaranteed in advance.
+    for term in (t.lower() for t in terms):
         hit = 0
         if term in slug:
             hit = max(hit, WEIGHT_SLUG)
