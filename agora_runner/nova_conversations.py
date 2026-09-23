@@ -430,6 +430,15 @@ def conversations():
             if p.get("role") == "curator" or not curator:
                 curator = p.get("name") or ""
                 curator_id = p.get("personaId") or ""
+        # Agora is a shared hub: Marcus and Aristoteles (Lyceum) run their
+        # own personas in the same conversation store, and a thread curated
+        # by one of them is not a Nova thread that happens to be tagged
+        # oddly -- it is someone else's app. An empty curator_id (older
+        # rows from before curation was consistently written) still passes,
+        # so this narrows the list rather than risking a real Nova thread
+        # dropping out for want of a tag.
+        if curator_id and curator_id not in (NOVA_PERSONA_ID, ANSWER_PERSONA_ID):
+            continue
         rows.append({
             "id": cid,
             "name": c.get("name") or "(unnamed)",
