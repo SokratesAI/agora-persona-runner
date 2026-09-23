@@ -275,8 +275,9 @@ def schedule_due(schedule, last_run_iso, created_iso, now_utc):
 def merge_history(thread, self_name, multi):
     """Provider-ready history: The owner → user; personas → assistant, other
     personas' lines prefixed "[Name]:" in multi-persona threads so models
-    can tell speakers apart; consecutive same-role turns merged; leading
-    assistant turns dropped (both providers want a user turn first);
+    can tell speakers apart; consecutive same-role turns merged; a leading
+    assistant run relabelled as a user turn rather than dropped (both
+    providers want a user turn first, and those words are often the ask);
     forgotten, system, AND activity messages excluded everywhere. Each
     entry also carries `attachments` (may be empty) -- 2026-07-24, see
     fetch_attachment_bytes -- so anthropic_generate/gemini_generate can
@@ -322,6 +323,34 @@ def merge_history(thread, self_name, multi):
             merged[-1]["attachments"].extend(attachments)
         else:
             merged.append({"role": role, "content": content, "attachments": list(attachments)})
+    # Both providers want a user turn first. This used to `pop(0)` every
+    # leading assistant turn, which deleted the words rather than the role --
+    # and in a `needs_input` ask thread the first message IS the question, so
+    # the persona woke with nothing but his one-line reply. The owner, comments
+    # board 2026-09-23: "I answered this on the chat you sent, but there is a
+    # [bug] where you start a new session when I answer." There was no second
+    # session; the thread was right and its opening message had been dropped
+    # on the way to the model. It told him "This chat has nothing before your
+    # 'Fun!' message" and then searched 2,144 other conversations for what had
+    # been in front of it.
+    #
+    # The run is kept only when a real user turn follows it, because that is
+    # the case where it is context for something a person said. With nothing
+    # after it, dropping is still right and is load-bearing: a heartbeat fires
+    # into a thread whose last message is the PREVIOUS cycle's own reply, and
+    # `pending_user_turn` reads a trailing user turn as "the owner spoke and
+    # nobody answered" and folds it into the trigger -- so converting there
+    # would hand a cycle its own last reply as if he had typed it.
+    #
+    # The prefix names no speaker: a merged run in a multi-persona thread has
+    # several, each already prefixed above.
+    if len(merged) > 1 and merged[0]["role"] != "user" and merged[1]["role"] == "user":
+        opening = merged.pop(0)
+        if opening["content"]:
+            merged[0]["content"] = (
+                f"[earlier in this thread]: {opening['content']}"
+                + (f"\n\n{merged[0]['content']}" if merged[0]["content"] else ""))
+        merged[0]["attachments"] = opening["attachments"] + merged[0]["attachments"]
     while merged and merged[0]["role"] != "user":
         merged.pop(0)
     return merged

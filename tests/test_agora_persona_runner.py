@@ -10256,3 +10256,39 @@ def test_replies_over_the_cap_wait_for_a_later_tick_untouched(runner):
         runner.poll.join_running_turns()
     assert prepared[4:] == ["c0", "c1", "c2", "c3", "c4", "c5"]
     assert answered == {f"c{i}" for i in range(6)}
+
+
+def test_merge_history_keeps_the_ask_that_opened_the_thread(runner):
+    """The owner, comments board 2026-09-23: "I answered this on the chat you
+    sent, but there is a [bug] where you start a new session when I answer."
+
+    There was no second session. `needs_input` opens a thread whose FIRST
+    message is the question, under sender `Nova`; when he replies, the persona
+    used to wake with only his reply, because every leading assistant turn was
+    popped. It told him "This chat has nothing before your 'Fun!' message" and
+    then searched 2,144 other conversations for the context that had been in
+    front of it.
+
+    The two turns collapse into ONE user message, which is the point rather
+    than an accident: a `claude-cli` persona is forwarded `history[-1]` only
+    (see run_heartbeat), so a separate leading turn would still not reach it.
+    """
+    thread = [
+        {"sender": "Nova", "text": "**Which eight numbers?**\n\nthe reasoning"},
+        {"sender": "Edvard", "text": "Fun! Your scorings seems about right."},
+    ]
+    assert runner.merge_history(thread, "Nova", False) == [{
+        "role": "user",
+        "content": ("[earlier in this thread]: **Which eight numbers?**\n\nthe reasoning"
+                    "\n\nFun! Your scorings seems about right."),
+        "attachments": [],
+    }]
+
+
+def test_merge_history_still_drops_an_opening_nobody_answered(runner):
+    """The conversion above is scoped to "a person replied to it". A heartbeat
+    fires into a thread whose last message is the previous cycle's own reply,
+    and `pending_user_turn` reads a trailing user turn as the owner speaking --
+    so converting here would hand a cycle its own last words back as his."""
+    thread = [{"sender": "Nova", "text": "previous cycle's reply"}]
+    assert runner.merge_history(thread, "Nova", False) == []
