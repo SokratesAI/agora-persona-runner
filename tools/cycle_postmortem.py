@@ -687,6 +687,12 @@ VERDICT_CACHE = os.environ.get(
     os.path.join(os.path.expanduser("~"), ".nova-postmortem-verdicts.json"),
 )
 
+#: The same record, in the one store both pods reach. See
+#: `_mirror_verdicts_to_vault`.
+VERDICT_VAULT_PATH = (
+    "projects/sokrates/projects/agora/nova/resources/cycle-verdicts.json"
+)
+
 #: What is worth remembering. `lost` and `silent` are deliberately absent:
 #: their rows print a recovered reply, a branch landing, a runner lifecycle
 #: line -- things a four-key record cannot carry, and a remembered `lost` row
@@ -732,6 +738,32 @@ def save_verdicts(results, path=None):
             json.dump(state, fh)
     except OSError:
         pass
+    _mirror_verdicts_to_vault(state)
+
+
+def _mirror_verdicts_to_vault(state, path=VERDICT_VAULT_PATH):
+    """Put the same record where the runner pod can read it. Best effort.
+
+    The disk cache above lives on the bridge pod, and the heartbeat line
+    that wants these verdicts (`agora_runner.cycle_health.describe`) is
+    assembled in the runner pod, which has no `/data` at all and a `$HOME`
+    that is recreated on every deploy. So the cache cannot be shared as a
+    file, and the vault is the one store both pods reach. Idea #335.
+
+    Never raised: this is a convenience for a line that already prints
+    without it, and `cycle_postmortem`'s own report must not fail because
+    the vault was busy.
+    """
+    try:
+        from agora_runner.vault import vault_read_path, vault_write_path
+
+        body = json.dumps(state, indent=1, sort_keys=True) + "\n"
+        if vault_read_path(path) == body:
+            return "unchanged"
+        return vault_write_path(path, body, allow_shrink=True)
+    except Exception as e:
+        return f"FAILED({e})"
+
 
 
 def collect(window=DEFAULT_WINDOW, judge_all=False, cache=None):

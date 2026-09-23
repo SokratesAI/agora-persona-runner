@@ -1,5 +1,8 @@
 """The self-check the owner asked for after spotting Cycle 134's missing hour."""
 
+import json
+
+from agora_runner import cycle_health
 from datetime import datetime, timedelta
 
 import pytest
@@ -313,3 +316,68 @@ def test_a_neighbour_with_no_timestamp_leaves_that_end_unbounded():
     absent rather than widened to the next neighbour out, which would move
     the bracket without saying so."""
     assert gap_windows([127], {}) == [(127, None, None)]
+
+
+# --- idea #335: a gap number carries the verdict cycle_postmortem settled ---
+
+
+def _gap_report(missing, verdicts=None):
+    """The report `describe` reads, with only the fields this line uses."""
+    return {
+        "entries": 40,
+        "unreadable": [],
+        "missing": list(missing),
+        "verdicts": dict(verdicts or {}),
+        "silent_intervals": None,
+        "stalled": False,
+    }
+
+
+def test_gap_line_names_the_verdict_that_is_already_settled():
+    line = cycle_health.describe(
+        _gap_report([2101, 2107], {2101: "failed", 2107: "absent"})
+    )
+    assert "2101 (failed)" in line
+    assert "2107 (absent)" in line
+    assert "all of them are already judged" in line
+
+
+def test_gap_line_counts_only_the_unjudged_ones_as_work():
+    line = cycle_health.describe(_gap_report([2101, 2107], {2101: "failed"}))
+    assert "2101 (failed)" in line
+    # The unjudged one stays bare, and the command is scoped to it.
+    assert "2107," in line or line.rstrip().endswith("2107") or ", 2107 " in line
+    assert "1 of them are unjudged" in line
+
+
+def test_gap_line_is_unchanged_when_nothing_has_been_judged():
+    line = cycle_health.describe(_gap_report([2101, 2107]))
+    assert "2 cycle number(s) have no journal entry: 2101, 2107" in line
+    assert "(failed)" not in line
+    assert "unjudged" not in line
+
+
+def test_unreadable_verdicts_never_suppress_the_gap():
+    for text in (None, "", "not json", "[]", '{"x": {"verdict": "failed"}}'):
+        assert cycle_health.read_verdicts(text) == {}
+    line = cycle_health.describe(
+        _gap_report([2101], cycle_health.read_verdicts("not json"))
+    )
+    assert "1 cycle number(s) have no journal entry: 2101" in line
+
+
+def test_read_verdicts_takes_the_shape_cycle_postmortem_writes():
+    from tools import cycle_postmortem
+
+    results = [{"number": 2101, "verdict": "failed", "messages": 2,
+                "detail": "the run died"}]
+    cache = {}
+    state = {}
+    # Reproduce save_verdicts' own record shape rather than inventing one.
+    for row in results:
+        if row["verdict"] in cycle_postmortem._CACHEABLE:
+            state[str(row["number"])] = {
+                k: row.get(k) for k in cycle_postmortem._CACHED_KEYS
+            }
+    cache.update(state)
+    assert cycle_health.read_verdicts(json.dumps(cache)) == {2101: "failed"}

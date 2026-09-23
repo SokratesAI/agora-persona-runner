@@ -390,8 +390,8 @@ def nova_health_note(persona, previous_run_at, schedule=None):
         return ""
     try:
         from agora_runner.cycle_health import (
-            HEARTBEAT_MINUTES, describe, heartbeat_findings,
-            nova_cadence_minutes,
+            HEARTBEAT_MINUTES, VERDICTS_PATH, describe, heartbeat_findings,
+            nova_cadence_minutes, read_verdicts,
         )
         from agora_runner.nova_journal import JOURNAL_DIR
         from agora_runner.turns import schedule_minutes
@@ -412,12 +412,27 @@ def nova_health_note(persona, previous_run_at, schedule=None):
             log(f"cadence lookup failed, measuring in this heartbeat's own: {e}")
             cadence = None
         files, mtimes = vault_bulk_list(JOURNAL_DIR)
-        line = describe(heartbeat_findings(
+        report = heartbeat_findings(
             list(files), mtimes, datetime.now(OSLO),
             _parse_run_at(previous_run_at),
             cadence or schedule_minutes(schedule) or HEARTBEAT_MINUTES,
             unreadable=getattr(files, "unreadable", ()),
-        ))
+        )
+        # Only when there is a gap to explain: the healthy run is the
+        # common one and it has nothing to annotate, so it should not pay
+        # a vault read. Best effort and deliberately swallowed -- the
+        # verdicts annotate a finding that is already being reported, so a
+        # failed read costs the explanation and not the finding. Inside
+        # the outer `except` it would cost both.
+        if report.get("missing"):
+            try:
+                from agora_runner.vault import vault_read_path
+
+                report["verdicts"] = read_verdicts(
+                    vault_read_path(VERDICTS_PATH))
+            except Exception as e:
+                log(f"cycle verdicts unreadable, gaps go unannotated: {e}")
+        line = describe(report)
     except Exception as e:
         # Never re-raised -- a self-check is not worth a cycle's hour. But
         # not silent either, and the reason is specific to reporting each
