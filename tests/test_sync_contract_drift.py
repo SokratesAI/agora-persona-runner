@@ -361,6 +361,14 @@ def test_the_comparison_puts_the_process_back_how_it_found_it(
     """
     os.environ["COUCHDB_DB"] = SENTINEL_DB
     os.environ.pop("COUCHDB_NOVA_DB", None)
+    # And its fallback, or the literal below stops being a literal. Since
+    # `agora_runner.config` reads `CDB_NOVA_DB` when `COUCHDB_NOVA_DB` is
+    # empty, an unset Nova database resolves to whatever the *ambient* pod
+    # exports -- `""` on a CI runner and `nova` in the bridge pod, so the
+    # assertion would pass or fail on where the suite happens to run rather
+    # than on whether the restore worked. The fixture saves every name in
+    # `_PROBE_ENV`, which includes this one, so popping it here is put back.
+    os.environ.pop("CDB_NOVA_DB", None)
     importlib.reload(restored_config)
     assert restored_config.COUCHDB_DB == SENTINEL_DB, "the sentinel never took"
 
@@ -368,6 +376,7 @@ def test_the_comparison_puts_the_process_back_how_it_found_it(
 
     assert os.environ["COUCHDB_DB"] == SENTINEL_DB
     assert "COUCHDB_NOVA_DB" not in os.environ
+    assert "CDB_NOVA_DB" not in os.environ
     assert restored_config.COUCHDB_DB == SENTINEL_DB
     assert restored_config.COUCHDB_NOVA_DB == ""
     assert not set(sync_contract._PROBE_MODULES) & set(sys.modules)
